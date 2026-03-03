@@ -11,6 +11,7 @@ function Invoke-P4 {
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = 'p4.exe'
     $psi.Arguments = ($Args | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
+    $psi.WorkingDirectory = (Get-Location).Path
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false

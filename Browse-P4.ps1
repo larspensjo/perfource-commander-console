@@ -2,23 +2,22 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [string]$IdeasPath = (Join-Path $PSScriptRoot '..\docs\FutureIdeas.md')
+    [int]$MaxChanges = 200
 )
 
 $ErrorActionPreference = 'Stop'
 
-Import-Module (Join-Path $PSScriptRoot 'common\IdeaDocCore.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'browser\Reducer.psm1')
-Import-Module (Join-Path $PSScriptRoot 'browser\Input.psm1')
-Import-Module (Join-Path $PSScriptRoot 'browser\Render.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'p4\Models.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'p4\P4Cli.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'tui\Reducer.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'tui\Input.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'tui\Render.psm1') -Force -DisableNameChecking
 
-$resolvedPath = Resolve-IdeaDocPath -Path $IdeasPath
-$lines = Read-TextLines -Path $resolvedPath
-$doc = ConvertFrom-IdeaDoc -Lines $lines
+$ideas = Get-P4PendingChangelistIdeaLikeEntries -Max $MaxChanges
 
 $width = [Console]::WindowWidth
 $height = [Console]::WindowHeight
-$state = New-BrowserState -Ideas $doc.Entries -InitialWidth $width -InitialHeight $height
+$state = New-BrowserState -Ideas $ideas -InitialWidth $width -InitialHeight $height
 
 $previousCursorVisible = [Console]::CursorVisible
 [Console]::CursorVisible = $false

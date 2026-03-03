@@ -1,6 +1,358 @@
 Set-StrictMode -Version Latest
 
-Import-Module (Join-Path $PSScriptRoot '..\common\Tui.psm1') -Force -Global -DisableNameChecking
+$SCROLLBAR_THUMB_GLYPH = [char]0x2591
+$SCROLLBAR_TRACK_GLYPH = [char]0x2502
+
+function Get-PropertyValueOrDefault {
+    param(
+        [AllowNull()]$Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Default = $null
+    )
+
+    if ($null -eq $Object) { return $Default }
+
+    if ($Object -is [System.Collections.IDictionary]) {
+        if ($Object.Contains($Name)) {
+            $value = $Object[$Name]
+            if ($null -eq $value) { return $Default }
+            return $value
+        }
+        return $Default
+    }
+
+    $match = $Object.PSObject.Properties.Match($Name)
+    if ($null -eq $match -or $match.Count -eq 0) { return $Default }
+    $value = $match[0].Value
+    if ($null -eq $value) { return $Default }
+    return $value
+}
+
+function Test-IsSegmentLike {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) { return $false }
+    if ($Value -is [System.Collections.IDictionary]) { return $true }
+    return $Value.PSObject.Properties.Match('Text').Count -gt 0
+}
+
+function Merge-AdjacentSegments {
+    param([Parameter(Mandatory = $true)]$Segments)
+
+    $flat = @()
+    foreach ($segment in @($Segments)) {
+        if ($null -eq $segment) { continue }
+        if ($segment -is [System.Collections.IEnumerable] -and -not ($segment -is [string]) -and -not (Test-IsSegmentLike -Value $segment)) {
+            $flat += @(Merge-AdjacentSegments -Segments $segment)
+            continue
+        }
+
+        $text = [string](Get-PropertyValueOrDefault -Object $segment -Name 'Text' -Default '')
+        $color = [string](Get-PropertyValueOrDefault -Object $segment -Name 'Color' -Default 'Gray')
+        $background = [string](Get-PropertyValueOrDefault -Object $segment -Name 'BackgroundColor' -Default '')
+        $flat += @(@{ Text = $text; Color = $color; BackgroundColor = $background })
+    }
+
+    if ($flat.Count -eq 0) {
+        Write-Output -NoEnumerate @()
+        return
+    }
+
+    $merged = @()
+    foreach ($segment in $flat) {
+        if ($merged.Count -eq 0) {
+            $merged += @($segment)
+            continue
+        }
+
+        $last = $merged[$merged.Count - 1]
+        if ($last.Color -eq $segment.Color -and $last.BackgroundColor -eq $segment.BackgroundColor) {
+            $last.Text = [string]$last.Text + [string]$segment.Text
+            $merged[$merged.Count - 1] = $last
+        } else {
+            $merged += @($segment)
+        }
+    }
+
+    Write-Output -NoEnumerate @($merged)
+}
+
+function Write-ColorSegments {
+    param(
+        [Parameter(Mandatory = $true)]$Segments,
+        [Parameter(Mandatory = $true)][int]$Width,
+        [switch]$NoEmit
+    )
+
+    if ($Width -le 0) {
+        Write-Output -NoEnumerate @()
+        return
+    }
+
+    $flat = @()
+    foreach ($segment in @($Segments)) {
+        if ($null -eq $segment) { continue }
+        if ($segment -is [System.Collections.IEnumerable] -and -not ($segment -is [string]) -and -not (Test-IsSegmentLike -Value $segment)) {
+            $flat += @(Write-ColorSegments -Segments $segment -Width 2147483647 -NoEmit)
+            continue
+        }
+
+        $flat += @(@{
+            Text = [string](Get-PropertyValueOrDefault -Object $segment -Name 'Text' -Default '')
+            Color = [string](Get-PropertyValueOrDefault -Object $segment -Name 'Color' -Default 'Gray')
+            BackgroundColor = [string](Get-PropertyValueOrDefault -Object $segment -Name 'BackgroundColor' -Default '')
+        })
+    }
+
+    if ($flat.Count -eq 0) {
+        Write-Output -NoEnumerate @(@{ Text = (' ' * $Width); Color = 'Gray'; BackgroundColor = '' })
+        return
+    }
+
+    $text = (($flat | ForEach-Object { [string]$_.Text }) -join '')
+    $baseColor = [string]$flat[0].Color
+    $baseBackground = [string]$flat[0].BackgroundColor
+
+    if ($text.Length -gt $Width) {
+        if ($Width -le 3) {
+            $text = $text.Substring(0, $Width)
+        } else {
+            $text = $text.Substring(0, $Width - 3) + '...'
+        }
+    } elseif ($text.Length -lt $Width) {
+        $text = $text + (' ' * ($Width - $text.Length))
+    }
+
+    Write-Output -NoEnumerate @(@{ Text = $text; Color = $baseColor; BackgroundColor = $baseBackground })
+}
+
+function Build-BoxTopSegments {
+    param(
+        [Parameter(Mandatory = $true)][string]$Title,
+        [Parameter(Mandatory = $true)][int]$Width,
+        [Parameter(Mandatory = $true)][string]$BorderColor,
+        [Parameter(Mandatory = $true)][string]$TitleColor
+    )
+
+    if ($Width -le 0) {
+        Write-Output -NoEnumerate @()
+        return
+    }
+    if ($Width -eq 1) {
+        Write-Output -NoEnumerate @(@{ Text = '╭'; Color = $BorderColor })
+        return
+    }
+
+    $innerWidth = [Math]::Max(0, $Width - 2)
+    $inner = '─' * $innerWidth
+    if ($innerWidth -gt 0 -and -not [string]::IsNullOrEmpty($Title)) {
+        $trimmedTitle = if ($Title.Length -gt $innerWidth) { $Title.Substring(0, $innerWidth) } else { $Title }
+        $start = [Math]::Max(0, [Math]::Floor(($innerWidth - $trimmedTitle.Length) / 2))
+        $innerChars = $inner.ToCharArray()
+        for ($i = 0; $i -lt $trimmedTitle.Length; $i++) {
+            $innerChars[$start + $i] = $trimmedTitle[$i]
+        }
+        $inner = -join $innerChars
+    }
+
+    Write-Output -NoEnumerate @(
+        @{ Text = '╭'; Color = $BorderColor },
+        @{ Text = $inner; Color = $TitleColor },
+        @{ Text = '╮'; Color = $BorderColor }
+    )
+}
+
+function Build-BoxBottomSegments {
+    param(
+        [Parameter(Mandatory = $true)][int]$Width,
+        [Parameter(Mandatory = $true)][string]$BorderColor
+    )
+
+    if ($Width -le 0) {
+        Write-Output -NoEnumerate @()
+        return
+    }
+    if ($Width -eq 1) {
+        Write-Output -NoEnumerate @(@{ Text = '╰'; Color = $BorderColor })
+        return
+    }
+
+    Write-Output -NoEnumerate @(
+        @{ Text = '╰'; Color = $BorderColor },
+        @{ Text = ('─' * [Math]::Max(0, $Width - 2)); Color = $BorderColor },
+        @{ Text = '╯'; Color = $BorderColor }
+    )
+}
+
+function Build-BorderedRowSegments {
+    param(
+        [Parameter(Mandatory = $true)]$InnerSegments,
+        [Parameter(Mandatory = $true)][int]$Width,
+        [Parameter(Mandatory = $true)][string]$BorderColor
+    )
+
+    if ($Width -le 0) {
+        Write-Output -NoEnumerate @()
+        return
+    }
+    if ($Width -eq 1) {
+        Write-Output -NoEnumerate @(@{ Text = '│'; Color = $BorderColor })
+        return
+    }
+
+    $innerWidth = [Math]::Max(0, $Width - 2)
+    $inner = Write-ColorSegments -Segments $InnerSegments -Width $innerWidth -NoEmit
+    Write-Output -NoEnumerate @(
+        @{ Text = '│'; Color = $BorderColor },
+        @($inner),
+        @{ Text = '│'; Color = $BorderColor }
+    )
+}
+
+function Compose-FrameRow {
+    param(
+        [Parameter(Mandatory = $true)][int]$Y,
+        [Parameter(Mandatory = $true)]$LeftSegments,
+        [Parameter(Mandatory = $true)][int]$LeftWidth,
+        [Parameter(Mandatory = $true)]$RightSegments,
+        [Parameter(Mandatory = $true)][int]$RightWidth,
+        [AllowEmptyString()][string]$RightBackgroundColor = '',
+        [Parameter(Mandatory = $true)][int]$TotalWidth,
+        [Parameter(Mandatory = $true)][bool]$IsLastRow
+    )
+
+    $left = Write-ColorSegments -Segments $LeftSegments -Width ([Math]::Max(0, $LeftWidth)) -NoEmit
+    $right = Write-ColorSegments -Segments $RightSegments -Width ([Math]::Max(0, $RightWidth)) -NoEmit
+
+    if (-not [string]::IsNullOrEmpty($RightBackgroundColor)) {
+        $right = @($right | ForEach-Object {
+            @{
+                Text = [string](Get-PropertyValueOrDefault -Object $_ -Name 'Text' -Default '')
+                Color = [string](Get-PropertyValueOrDefault -Object $_ -Name 'Color' -Default 'Gray')
+                BackgroundColor = $RightBackgroundColor
+            }
+        })
+    }
+
+    $gap = @(@{ Text = ' '; Color = 'DarkGray'; BackgroundColor = '' })
+    $combined = @($left + $gap + $right)
+    $combined = Merge-AdjacentSegments -Segments $combined
+
+    $targetWidth = if ($IsLastRow) { [Math]::Max(0, $TotalWidth - 1) } else { [Math]::Max(0, $TotalWidth) }
+    $combined = Write-ColorSegments -Segments $combined -Width $targetWidth -NoEmit
+    $combined = Merge-AdjacentSegments -Segments $combined
+
+    return [pscustomobject]@{
+        Y = $Y
+        Segments = $combined
+        Signature = Get-FrameRowSignature -Segments $combined
+    }
+}
+
+function Get-FrameRowSignature {
+    param([Parameter(Mandatory = $true)]$Segments)
+
+    $parts = foreach ($segment in @($Segments)) {
+        $color = [string](Get-PropertyValueOrDefault -Object $segment -Name 'Color' -Default 'Gray')
+        $background = [string](Get-PropertyValueOrDefault -Object $segment -Name 'BackgroundColor' -Default '')
+        $text = [string](Get-PropertyValueOrDefault -Object $segment -Name 'Text' -Default '')
+        "$color|$background|$text"
+    }
+
+    return ($parts -join ';')
+}
+
+function Get-FrameDiff {
+    param(
+        [AllowNull()]$PreviousFrame,
+        [Parameter(Mandatory = $true)]$NextFrame
+    )
+
+    if ($null -eq $PreviousFrame) {
+        Write-Output -NoEnumerate @($NextFrame.Rows)
+        return
+    }
+    if ($PreviousFrame.Width -ne $NextFrame.Width -or $PreviousFrame.Height -ne $NextFrame.Height) {
+        Write-Output -NoEnumerate @($NextFrame.Rows)
+        return
+    }
+
+    $changed = @()
+    $maxRows = [Math]::Min($PreviousFrame.Rows.Count, $NextFrame.Rows.Count)
+    for ($i = 0; $i -lt $maxRows; $i++) {
+        if ($PreviousFrame.Rows[$i].Signature -ne $NextFrame.Rows[$i].Signature) {
+            $changed += @($NextFrame.Rows[$i])
+        }
+    }
+
+    if ($NextFrame.Rows.Count -gt $maxRows) {
+        for ($i = $maxRows; $i -lt $NextFrame.Rows.Count; $i++) {
+            $changed += @($NextFrame.Rows[$i])
+        }
+    }
+
+    Write-Output -NoEnumerate @($changed)
+}
+
+function Flush-FrameDiff {
+    param(
+        [Parameter(Mandatory = $true)]$ChangedRows,
+        [Parameter(Mandatory = $true)]$Frame
+    )
+
+    try {
+        foreach ($row in @($ChangedRows)) {
+            [Console]::SetCursorPosition(0, [int]$row.Y)
+            foreach ($segment in @($row.Segments)) {
+                $text = [string](Get-PropertyValueOrDefault -Object $segment -Name 'Text' -Default '')
+                $fg = [string](Get-PropertyValueOrDefault -Object $segment -Name 'Color' -Default 'Gray')
+                $bg = [string](Get-PropertyValueOrDefault -Object $segment -Name 'BackgroundColor' -Default '')
+
+                try { [Console]::ForegroundColor = [System.ConsoleColor]::$fg } catch { [Console]::ForegroundColor = [System.ConsoleColor]::Gray }
+                if ([string]::IsNullOrEmpty($bg)) {
+                    [Console]::BackgroundColor = [System.ConsoleColor]::Black
+                } else {
+                    try { [Console]::BackgroundColor = [System.ConsoleColor]::$bg } catch { [Console]::BackgroundColor = [System.ConsoleColor]::Black }
+                }
+
+                [Console]::Write($text)
+            }
+        }
+
+        [Console]::ResetColor()
+        return $true
+    }
+    catch {
+        try { [Console]::ResetColor() } catch {}
+        return $false
+    }
+}
+
+function Get-ScrollThumb {
+    param(
+        [Parameter(Mandatory = $true)][int]$TotalItems,
+        [Parameter(Mandatory = $true)][int]$ViewRows,
+        [Parameter(Mandatory = $true)][int]$ScrollTop
+    )
+
+    if ($ViewRows -le 0) { return $null }
+    if ($TotalItems -le $ViewRows) { return $null }
+
+    $maxScroll = [Math]::Max(1, $TotalItems - $ViewRows)
+    $clampedTop = [Math]::Min([Math]::Max(0, $ScrollTop), $maxScroll)
+
+    $rawSize = [Math]::Round(($ViewRows * $ViewRows) / [double]$TotalItems)
+    $size = [Math]::Max(1, [Math]::Min($ViewRows, [int]$rawSize))
+    $travel = [Math]::Max(0, $ViewRows - $size)
+    $start = if ($travel -eq 0) { 0 } else { [int][Math]::Round(($clampedTop / [double]$maxScroll) * $travel) }
+    $end = [Math]::Min($ViewRows - 1, $start + $size - 1)
+
+    return [pscustomobject]@{
+        Size = $size
+        Start = $start
+        End = $end
+    }
+}
 
 $script:PreviousFrame = $null
 
@@ -254,7 +606,7 @@ function Build-StatusBarRow {
     )
 
     $hideMode = if ($State.Ui.HideUnavailableTags) { 'On' } else { 'Off' }
-    $statusText = "Total: $($State.Data.AllIdeas.Count) | Filtered: $($State.Derived.VisibleIdeaIds.Count) | Selected Tags: $($State.Query.SelectedTags.Count) | HideUnavailable: $hideMode | [Tab] Switch [Space] Toggle [PgUp/PgDn] Page [Home/End] Jump [H] Hide [Q] Quit"
+    $statusText = "Total: $($State.Data.AllIdeas.Count) | Filtered: $($State.Derived.VisibleIdeaIds.Count) | Selected Tags: $($State.Query.SelectedTags.Count) | HideUnavailable: $hideMode | [Tab] Switch [Space] Toggle [PgUp/PgDn] Page [Home/End] Jump [F5] Reload [H] Hide [Q] Quit"
     $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
 
     $segments = Write-ColorSegments -Segments @(@{

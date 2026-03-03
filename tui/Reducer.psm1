@@ -2,6 +2,7 @@ Set-StrictMode -Version Latest
 
 Import-Module (Join-Path $PSScriptRoot 'Filtering.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Layout.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
 
 function New-BrowserState {
     param(
@@ -345,6 +346,24 @@ function Invoke-BrowserReducer {
                         break
                     }
                 }
+            }
+
+            return Update-BrowserDerivedState -State $next
+        }
+        'Reload' {
+            try {
+                $fresh = Get-P4PendingChangelistIdeaLikeEntries -Max 200
+                $next.Data.AllIdeas = @($fresh)
+                $next.Data.AllTags = @(
+                    $next.Data.AllIdeas |
+                        ForEach-Object { @($_.Tags) } |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                        Sort-Object -Unique
+                )
+                $next.Runtime.LastError = $null
+            }
+            catch {
+                $next.Runtime.LastError = $_.Exception.Message
             }
 
             return Update-BrowserDerivedState -State $next

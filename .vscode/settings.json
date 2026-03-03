@@ -1,0 +1,14 @@
+{
+  "workbench.colorCustomizations": {
+    "titleBar.activeBackground": "#cc6600",
+    "titleBar.activeForeground": "#ffffff",
+    "titleBar.inactiveBackground": "#994400",
+    "titleBar.inactiveForeground": "#cfcfcf"
+  },
+  "window.title": "${folderName} — ${activeEditorShort} — ${rootPath}",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "chat.tools.terminal.autoApprove": {
+    "Test-Path": true
+  }
+}

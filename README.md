@@ -1,0 +1,2 @@
+# perfource-commander-console
+Perforce (p4) terminal user interface (TUI) for browsing and managing changelists, files, shelves, and streams—Total Commander–inspired, fast keyboard-driven workflow, built as a wrapper around p4.exe.

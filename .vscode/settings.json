@@ -9,6 +9,11 @@
   "files.trimTrailingWhitespace": true,
   "files.insertFinalNewline": true,
   "chat.tools.terminal.autoApprove": {
-    "Test-Path": true
+    "Test-Path": true,
+    "Test-ModuleManifest": true,
+    "/^pwsh -NoProfile -Command \"Test-ModuleManifest 'c:\\\\Users\\\\lpensjo\\\\src\\\\perfource-commander-console\\\\PerfourceCommanderConsole\\.psd1' \\| Select-Object Name, Version, ExportedFunctions\"$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
   }
 }

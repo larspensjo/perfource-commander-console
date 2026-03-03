@@ -105,7 +105,8 @@ function Write-ColorSegments {
     }
 
     if ($flat.Count -eq 0) {
-        Write-Output -NoEnumerate @(@{ Text = (' ' * $Width); Color = 'Gray'; BackgroundColor = '' })
+        $padText = if ($Width -lt [int]::MaxValue) { ' ' * $Width } else { '' }
+        Write-Output -NoEnumerate @(@{ Text = $padText; Color = 'Gray'; BackgroundColor = '' })
         return
     }
 
@@ -119,7 +120,7 @@ function Write-ColorSegments {
         } else {
             $text = $text.Substring(0, $Width - 3) + '...'
         }
-    } elseif ($text.Length -lt $Width) {
+    } elseif ($text.Length -lt $Width -and $Width -lt [int]::MaxValue) {
         $text = $text + (' ' * ($Width - $text.Length))
     }
 

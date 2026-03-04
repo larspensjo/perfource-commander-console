@@ -312,6 +312,26 @@ Describe 'CommandModal reducer actions' {
         $next.Runtime.CommandModal.IsOpen | Should -BeTrue
     }
 
+    It 'ToggleCommandModal opens modal when closed' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleCommandModal' })
+        $next.Runtime.CommandModal.IsOpen | Should -BeTrue
+    }
+
+    It 'ToggleCommandModal closes modal when open' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ShowCommandModal' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleCommandModal' })
+        $next.Runtime.CommandModal.IsOpen | Should -BeFalse
+    }
+
+    It 'ToggleCommandModal is a no-op while busy' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'CommandStart'; CommandLine = 'p4 changes'; StartedAt = (Get-Date)
+        })
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleCommandModal' })
+        $next.Runtime.CommandModal.IsOpen | Should -BeTrue
+        $next.Runtime.CommandModal.IsBusy | Should -BeTrue
+    }
+
     It 'HideCommandModal closes modal when not busy' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ShowCommandModal' })
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'HideCommandModal' })

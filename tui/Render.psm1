@@ -721,7 +721,7 @@ function Build-StatusBarRow {
     )
 
     $hideMode = if ($State.Ui.HideUnavailableFilters) { 'On' } else { 'Off' }
-    $statusText = "Total: $($State.Data.AllChanges.Count) | Filtered: $($State.Derived.VisibleChangeIds.Count) | Selected Filters: $($State.Query.SelectedFilters.Count) | HideUnavailable: $hideMode | [Tab] Switch [Space] Toggle [PgUp/PgDn] Page [Home/End] [F5] Reload [X/Del] Delete [H] Hide [F6] CmdLog [Q] Quit"
+    $statusText = "Total: $($State.Data.AllChanges.Count) | Filtered: $($State.Derived.VisibleChangeIds.Count) | Selected Filters: $($State.Query.SelectedFilters.Count) | HideUnavailable: $hideMode | [Tab] Switch [Space] Toggle [PgUp/PgDn] Page [Home/End] [F5] Reload [X/Del] Delete [H] Hide [F12] CmdLog [Q] Quit"
     $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
 
     $segments = Write-ColorSegments -Segments @(@{
@@ -793,7 +793,7 @@ function Build-CommandModalRows {
     }
 
     # Footer
-    $footerText  = if ($isBusy) { 'Please wait...' } else { '[F6] Reopen  [Esc] Dismiss  [Q] Quit' }
+    $footerText  = if ($isBusy) { 'Please wait...' } else { '[Esc] Dismiss  [F12] Toggle  [Q] Quit' }
     $footerColor = if ($isBusy) { 'Yellow' } else { 'DarkGray' }
     $contentRows.Add(@(@{ Text = $footerText; Color = $footerColor }))
 

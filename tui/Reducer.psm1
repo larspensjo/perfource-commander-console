@@ -278,6 +278,12 @@ function Invoke-BrowserReducer {
             $next.Runtime.CommandModal.IsOpen = $true
             return $next
         }
+        'ToggleCommandModal' {
+            if (-not $next.Runtime.CommandModal.IsBusy) {
+                $next.Runtime.CommandModal.IsOpen = -not $next.Runtime.CommandModal.IsOpen
+            }
+            return $next
+        }
         'HideCommandModal' {
             if (-not $next.Runtime.CommandModal.IsBusy) {
                 $next.Runtime.CommandModal.IsOpen = $false

@@ -559,6 +559,7 @@ Describe 'Frame helpers' {
                 $overlaid2 = Apply-ModalOverlay -Frame $frame2 -CommandModal $state.Runtime.CommandModal
                 $idleText  = ($overlaid2.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
                 $idleText | Should -Match 'Dismiss'
+                $idleText | Should -Match 'Toggle'
             }
         }
     }

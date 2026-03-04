@@ -1,4 +1,4 @@
-$modulePath = Join-Path $PSScriptRoot '..\browser\Reducer.psm1'
+$modulePath = Join-Path $PSScriptRoot '..\tui\Reducer.psm1'
 Import-Module $modulePath -Force
 
 Describe 'Browser reducer' {

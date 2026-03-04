@@ -210,6 +210,48 @@ function Build-BorderedRowSegments {
     )
 }
 
+function Resize-SegmentRow {
+    # Truncate or pad a row of multi-colored segments to exactly $Width characters,
+    # preserving each segment's Color and BackgroundColor.
+    param(
+        [Parameter(Mandatory = $true)]$Segments,
+        [Parameter(Mandatory = $true)][int]$Width
+    )
+
+    if ($Width -le 0) { return @() }
+
+    $result = [System.Collections.Generic.List[object]]::new()
+    $remaining = $Width
+
+    foreach ($seg in @($Segments)) {
+        if ($remaining -le 0) { break }
+        $text  = [string](Get-PropertyValueOrDefault -Object $seg -Name 'Text'            -Default '')
+        $color = [string](Get-PropertyValueOrDefault -Object $seg -Name 'Color'           -Default 'Gray')
+        $bg    = [string](Get-PropertyValueOrDefault -Object $seg -Name 'BackgroundColor' -Default '')
+
+        if ($text.Length -le $remaining) {
+            $result.Add(@{ Text = $text; Color = $color; BackgroundColor = $bg })
+            $remaining -= $text.Length
+        } else {
+            $result.Add(@{ Text = $text.Substring(0, $remaining); Color = $color; BackgroundColor = $bg })
+            $remaining = 0
+        }
+    }
+
+    if ($remaining -gt 0) {
+        if ($result.Count -gt 0) {
+            # Widen the trailing segment in-place to consume remaining space
+            $last = $result[$result.Count - 1]
+            $last.Text = [string]$last.Text + (' ' * $remaining)
+            $result[$result.Count - 1] = $last
+        } else {
+            $result.Add(@{ Text = (' ' * $remaining); Color = 'Gray'; BackgroundColor = '' })
+        }
+    }
+
+    return $result.ToArray()
+}
+
 function Compose-FrameRow {
     param(
         [Parameter(Mandatory = $true)][int]$Y,
@@ -240,7 +282,7 @@ function Compose-FrameRow {
     $combined = Merge-AdjacentSegments -Segments $combined
 
     $targetWidth = if ($IsLastRow) { [Math]::Max(0, $TotalWidth - 1) } else { [Math]::Max(0, $TotalWidth) }
-    $combined = Write-ColorSegments -Segments $combined -Width $targetWidth -NoEmit
+    $combined = Resize-SegmentRow -Segments $combined -Width $targetWidth
     $combined = Merge-AdjacentSegments -Segments $combined
 
     return [pscustomobject]@{
@@ -776,4 +818,4 @@ function Render-BrowserState {
     }
 }
 
-Export-ModuleMember -Function Render-BrowserState
+Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb

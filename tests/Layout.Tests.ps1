@@ -1,6 +1,6 @@
 Describe 'Get-BrowserLayout' {
     BeforeAll {
-        $modulePath = Join-Path $PSScriptRoot '..\browser\Layout.psm1'
+        $modulePath = Join-Path $PSScriptRoot '..\tui\Layout.psm1'
         Import-Module $modulePath -Force
     }
 

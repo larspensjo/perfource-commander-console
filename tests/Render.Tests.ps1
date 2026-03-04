@@ -1,4 +1,4 @@
-$modulePath = Join-Path $PSScriptRoot '..\browser\Render.psm1'
+$modulePath = Join-Path $PSScriptRoot '..\tui\Render.psm1'
 Import-Module $modulePath -Force
 
 function New-RenderTestState {

@@ -5,12 +5,12 @@ Import-Module (Join-Path $PSScriptRoot 'Models.psm1') -Force
 function Invoke-P4 {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string[]]$Args
+        [Parameter(Mandatory)][string[]]$P4Args
     )
 
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = 'p4.exe'
-    $psi.Arguments = ($Args | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
+    $psi.Arguments = ($P4Args | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
     $psi.WorkingDirectory = (Get-Location).Path
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
@@ -46,7 +46,7 @@ function Get-P4Info {
     [CmdletBinding()]
     param()
 
-    $lines = Invoke-P4 -Args @('-ztag', 'info')
+    $lines = Invoke-P4 -P4Args @('-ztag', 'info')
 
     $kv = @{}
     foreach ($line in $lines) {
@@ -99,7 +99,7 @@ function Get-P4PendingChangelists {
     )
 
     $info = Get-P4Info
-    $lines = Invoke-P4 -Args @(
+    $lines = Invoke-P4 -P4Args @(
         '-ztag', 'changes',
         '-s', 'pending',
         '-u', $info.User,

@@ -1,6 +1,6 @@
 Describe 'Get-VisibleIdeaIds' {
     BeforeAll {
-        $modulePath = Join-Path $PSScriptRoot '..\browser\Filtering.psm1'
+        $modulePath = Join-Path $PSScriptRoot '..\tui\Filtering.psm1'
         Import-Module $modulePath -Force
 
         $ideas = @(

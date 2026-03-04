@@ -1,33 +1,37 @@
 # PerFourceCommanderConsole — Next Step: `p4 describe` Details (On-demand + Cached)
 
-Goal: when you move the cursor in the **Changelists** list (currently labeled **Ideas**), the **Details** pane shows real Perforce details:
+Goal: when you press **Enter** (or **D**) on a changelist in the **Changelists** pane, the **Details** pane shows real Perforce details:
 - full changelist description (multi-line)
 - file list (depot path + action/type if available)
-- cached per changelist to avoid re-running `p4 describe` repeatedly
+- cached per changelist so subsequent views are instant
 
-This document assumes your codebase still uses an “Idea-like” entry shape (Id/Title/Tags/etc.) and suggests minimal incremental edits.
+This document assumes the codebase uses an "Idea-like" entry shape (Id/Title/Tags/etc.) and makes minimal incremental edits.
+
+### Design principles applied
+
+- **Unidirectional data flow** — I/O lives outside the reducer; the reducer stays pure.
+- **Correctness by Construction** — the ztag parser handles the real indexed-key format emitted by `p4 -ztag describe`.
+- **Unit tests lock-in functionality** — every new function gets Pester tests.
 
 ---
 
 ## Overview of changes
 
-### Files to edit / add
+### Files to edit
 
-**Add**
-- (Optional) `p4\Describe.psm1` (you can also keep everything in `p4\P4Cli.psm1`)
-
-**Edit**
-- `p4\P4Cli.psm1` — add `Get-P4Describe` and parsing helpers
-- `browser\Reducer.psm1` — detect selection changes; populate a describe cache
-- `browser\Render.psm1` — render describe output in Details pane
-- `browser\State.psm1` (or where `New-BrowserState` lives) — add cache fields to the state shape
-- `browser\Input.psm1` — optional: add F5 reload/clear cache
+| File | Change |
+|------|--------|
+| `p4\P4Cli.psm1` | Add `Get-P4Describe` with indexed-key parser |
+| `tui\Reducer.psm1` | Add `DescribeCache` + `LastSelectedId` to state; add `Describe` action type; update `Copy-BrowserState` |
+| `tui\Render.psm1` | Render describe output in the Details pane |
+| `tui\Input.psm1` | Map **Enter** / **D** to `Describe` action; F5 clears cache |
+| `PerfourceCommanderConsole.psm1` | Fetch describe in main loop (after reduce, before render) |
+| `tests\P4Cli.Tests.ps1` | New: tests for `Get-P4Describe` parsing |
+| `tests\Reducer.Tests.ps1` | Add tests for Describe action + cache + Copy-BrowserState |
 
 ---
 
 ## 1) Data shape for describe output
-
-Use a small explicit object:
 
 ```powershell
 # Returned by Get-P4Describe
@@ -39,8 +43,7 @@ Use a small explicit object:
   Time        = [datetime]...
   Description = @(
     'First line...',
-    'Second line...',
-    ...
+    'Second line...'
   )
   Files       = @(
     [pscustomobject]@{ DepotPath='//depot/foo/bar.cpp'; Action='edit'; Type='text' },
@@ -57,40 +60,31 @@ Keep `Description` as an array of lines to make wrapping/clipping simple.
 
 Use `-ztag` for stable parsing.
 
-### 2.1 Add a helper to parse ztag “records”
+### 2.1 Understand the actual `-ztag describe` output
 
-If you already have a helper like this, reuse it. Otherwise add:
+`p4 -ztag describe -s <CL>` emits a **single flat record** with indexed keys — not multiple records:
 
-```powershell
-function ConvertFrom-P4ZTagGroups {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string[]]$Lines)
-
-    # Creates a new record when a key repeats.
-    $records = @()
-    $cur = @{}
-
-    foreach ($line in $Lines) {
-        if ($line -match '^\.\.\.\s+(?<k>\S+)\s+(?<v>.*)$') {
-            $k = $Matches.k
-            $v = $Matches.v
-
-            if ($cur.ContainsKey($k)) {
-                $records += ,$cur
-                $cur = @{}
-            }
-            $cur[$k] = $v
-        }
-    }
-
-    if ($cur.Count -gt 0) { $records += ,$cur }
-    return $records
-}
 ```
+... change 26806903
+... user DICE\pensjo
+... client DICE\pensjo2_content_dev
+... status pending
+... time 1740000000
+... desc First line of description.
+Second line...
+... depotFile0 //depot/foo/bar.cpp
+... action0 edit
+... type0 text
+... depotFile1 //depot/foo/new.txt
+... action1 add
+... type1 text
+```
+
+The existing `ConvertFrom-P4ZTagRecords` (which splits when a key repeats) would break this format because `depotFile0` and `depotFile1` are different keys. A dedicated parser is needed.
 
 ### 2.2 Add `Get-P4Describe`
 
-Append to `p4\P4Cli.psm1`:
+Reuse `Invoke-P4` (with `-P4Args`) and parse the single flat record, extracting indexed file entries:
 
 ```powershell
 function Get-P4Describe {
@@ -99,34 +93,44 @@ function Get-P4Describe {
         [Parameter(Mandatory)][int]$Change
     )
 
-    $lines = Invoke-P4 -Args @('-ztag', 'describe', '-s', "$Change")
-    $recs  = ConvertFrom-P4ZTagGroups -Lines $lines
+    $lines = Invoke-P4 -P4Args @('-ztag', 'describe', '-s', "$Change")
 
-    $header = $recs | Where-Object { $_.ContainsKey('change') -and $_.ContainsKey('user') } | Select-Object -First 1
-    if (-not $header) { throw "Failed to parse describe header for CL $Change" }
+    # Parse all ztag key-value pairs into a single flat hashtable.
+    $kv = @{}
+    foreach ($line in $lines) {
+        if ($line -match '^\.\.\.\s+(?<k>\S+)\s+(?<v>.*)$') {
+            $kv[$Matches.k] = $Matches.v
+        }
+    }
 
-    $time = if ($header.ContainsKey('time')) {
-        [datetime]::UnixEpoch.AddSeconds([double]$header.time).ToLocalTime()
+    if (-not $kv.ContainsKey('change')) {
+        throw "Failed to parse describe output for CL $Change"
+    }
+
+    $time = if ($kv.ContainsKey('time')) {
+        [datetime]::UnixEpoch.AddSeconds([double]$kv.time).ToLocalTime()
     } else { Get-Date }
 
-    $descText  = $header.desc
+    $descText  = if ($kv.ContainsKey('desc')) { $kv.desc } else { '' }
     $descLines = if ($descText) { $descText -split "`r?`n" } else { @() }
 
-    $files = foreach ($r in $recs) {
-        if ($r.ContainsKey('depotFile')) {
-            [pscustomobject]@{
-                DepotPath = $r.depotFile
-                Action    = $r.action
-                Type      = $r.type
-            }
+    # Extract indexed file entries: depotFile0/action0/type0, depotFile1/action1/type1, ...
+    $files = @()
+    for ($i = 0; ; $i++) {
+        $depotKey = "depotFile$i"
+        if (-not $kv.ContainsKey($depotKey)) { break }
+        $files += [pscustomobject]@{
+            DepotPath = [string]$kv[$depotKey]
+            Action    = if ($kv.ContainsKey("action$i")) { [string]$kv["action$i"] } else { '' }
+            Type      = if ($kv.ContainsKey("type$i"))   { [string]$kv["type$i"]   } else { '' }
         }
     }
 
     [pscustomobject]@{
-        Change      = [int]$header.change
-        User        = $header.user
-        Client      = $header.client
-        Status      = $header.status
+        Change      = [int]$kv.change
+        User        = [string]$kv.user
+        Client      = [string]$kv.client
+        Status      = [string]$kv.status
         Time        = $time
         Description = @($descLines | Where-Object { $_ -ne '' })
         Files       = @($files)
@@ -137,7 +141,7 @@ function Get-P4Describe {
 Export it:
 
 ```powershell
-Export-ModuleMember -Function Get-P4Describe
+Export-ModuleMember -Function ..., Get-P4Describe
 ```
 
 ### 2.3 Manual sanity check
@@ -149,15 +153,13 @@ Import-Module .\p4\P4Cli.psm1 -Force
 
 ---
 
-## 3) Add a describe cache to browser state
+## 3) Add describe cache and tracking to browser state
 
-Find `New-BrowserState` and extend it.
+Edit `New-BrowserState` in `tui\Reducer.psm1`.
 
 Add:
-- `State.Data.DescribeCache = @{}` (hashtable: changeNumber -> describe object)
-- `State.Runtime.LastSelectedId = $null` (track selection changes)
-
-Example shape:
+- `State.Data.DescribeCache = @{}` — hashtable: change number (int) -> describe object
+- `State.Runtime.LastSelectedId = $null` — tracks which CL the details pane shows
 
 ```powershell
 Data = [pscustomobject]@{
@@ -167,138 +169,211 @@ Data = [pscustomobject]@{
 }
 
 Runtime = [pscustomobject]@{
-  LastError      = $null
-  LastSelectedId = $null
+  IsRunning       = $true
+  LastError       = $null
+  LastSelectedId  = $null
+}
+```
+
+### 3.1 Update `Copy-BrowserState`
+
+The cache is append-only, so share it by reference. `LastSelectedId` must be copied explicitly:
+
+```powershell
+Data = [pscustomobject]@{
+    AllIdeas      = @($State.Data.AllIdeas)
+    AllTags       = @($State.Data.AllTags)
+    DescribeCache = $State.Data.DescribeCache          # shared reference (append-only)
+}
+
+Runtime = [pscustomobject]@{
+    IsRunning       = $State.Runtime.IsRunning
+    LastError       = $State.Runtime.LastError
+    LastSelectedId  = $State.Runtime.LastSelectedId     # new field
 }
 ```
 
 ---
 
-## 4) Wire selection changes -> fetch describe in `browser\Reducer.psm1`
+## 4) Add `Describe` action and keep the reducer pure
 
-### 4.1 Parse CL number from the current `Id`
+### 4.1 Map keys in `tui\Input.psm1`
 
-Add helper:
+Add to `ConvertFrom-KeyInfoToAction`:
 
 ```powershell
-function TryGet-ChangeNumberFromIdeaId {
+'Enter' { return [pscustomobject]@{ Type = 'Describe' } }
+'D'     { return [pscustomobject]@{ Type = 'Describe' } }
+```
+
+### 4.2 Handle `Describe` action in `Invoke-BrowserReducer`
+
+The reducer only records _which_ CL the user wants to view — no I/O:
+
+```powershell
+'Describe' {
+    if ($next.Derived.VisibleIdeaIds.Count -eq 0) { return $next }
+    $idx = [Math]::Max(0, [Math]::Min($next.Cursor.IdeaIndex,
+                                       $next.Derived.VisibleIdeaIds.Count - 1))
+    $next.Runtime.LastSelectedId = $next.Derived.VisibleIdeaIds[$idx]
+    return Update-BrowserDerivedState -State $next
+}
+```
+
+### 4.3 Parse CL number helper (in `tui\Reducer.psm1`)
+
+```powershell
+function ConvertTo-ChangeNumberFromIdeaId {
     param([string]$Id)
     if ($Id -match '^CL-(\d+)$') { return [int]$Matches[1] }
     return $null
 }
 ```
 
-### 4.2 Add a post-reduce hook: `Update-DescribeForSelection`
+### 4.4 Fetch describe in the main loop (not in the reducer)
+
+In `PerfourceCommanderConsole.psm1`, **after** reduce but **before** render — this keeps the reducer pure and I/O explicit:
 
 ```powershell
-function Update-DescribeForSelection {
-    param($State)
+# After: $state = Invoke-BrowserReducer -State $state -Action $action
+# Before: Render-BrowserState -State $state
 
-    if (-not $State.Derived.VisibleIdeaIds -or $State.Derived.VisibleIdeaIds.Count -eq 0) {
-        $State.Runtime.LastSelectedId = $null
-        return $State
-    }
-
-    $idx = $State.Cursor.IdeaIndex
-    $idx = [Math]::Max(0, [Math]::Min($idx, $State.Derived.VisibleIdeaIds.Count - 1))
-    $selId = $State.Derived.VisibleIdeaIds[$idx]
-
-    if ($State.Runtime.LastSelectedId -eq $selId) { return $State }
-    $State.Runtime.LastSelectedId = $selId
-
-    $change = TryGet-ChangeNumberFromIdeaId -Id $selId
-    if (-not $change) { return $State }
-
-    if (-not $State.Data.DescribeCache.ContainsKey($change)) {
+if ($null -ne $state.Runtime.LastSelectedId) {
+    $change = ConvertTo-ChangeNumberFromIdeaId -Id $state.Runtime.LastSelectedId
+    if ($null -ne $change -and -not $state.Data.DescribeCache.ContainsKey($change)) {
         try {
-            Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
-            $State.Data.DescribeCache[$change] = Get-P4Describe -Change $change
-            $State.Runtime.LastError = $null
+            $state.Data.DescribeCache[$change] = Get-P4Describe -Change $change
+            $state.Runtime.LastError = $null
         } catch {
-            $State.Runtime.LastError = $_.Exception.Message
+            $state.Runtime.LastError = $_.Exception.Message
         }
     }
-
-    return $State
 }
 ```
 
-### 4.3 Ensure it is called after every reduce
-
-At the bottom of your reducer entry point (often `Invoke-BrowserReducer`), do:
-
-```powershell
-$State = Update-DescribeForSelection -State $State
-return $State
-```
-
-This will automatically fetch describe when:
-- cursor moves
-- tags/filters change visibility (selection changes)
-- list reload happens
+**Why the main loop and not the reducer?**
+- The reducer is a pure function: state + action -> new state.
+- `Get-P4Describe` calls `p4.exe` (network I/O). Mixing I/O into the reducer makes it untestable and breaks the UDDF contract.
+- Fetching on an explicit user action (Enter/D) avoids flooding the server when the user holds an arrow key.
 
 ---
 
-## 5) Render describe output in `browser\Render.psm1`
+## 5) Render describe output in `tui\Render.psm1`
 
-Replace the Details body (currently Summary/Rationale) with:
+Replace the body of `Build-DetailSegments` with real describe output.
 
-1) Header: `CL`, `Status`, `User`, `Client`, `Time`
-2) Blank line
-3) Description lines
-4) Blank line
-5) Files list
-
-### 5.1 Find selected item and cache entry
-
-In the details render function:
+### 5.1 Find the cache entry
 
 ```powershell
-$selId = $State.Derived.VisibleIdeaIds[$State.Cursor.IdeaIndex]
-$change = TryGet-ChangeNumberFromIdeaId $selId
 $desc = $null
-if ($change -and $State.Data.DescribeCache.ContainsKey($change)) {
-    $desc = $State.Data.DescribeCache[$change]
+if ($null -ne $State.Runtime.LastSelectedId) {
+    $change = ConvertTo-ChangeNumberFromIdeaId -Id $State.Runtime.LastSelectedId
+    if ($null -ne $change -and $State.Data.DescribeCache.ContainsKey($change)) {
+        $desc = $State.Data.DescribeCache[$change]
+    }
 }
 ```
 
 ### 5.2 Render rules
 
-- If `$State.Runtime.LastError` is set, show it at the top of the details pane.
-- If `$desc` is `$null`, show “Loading...” (selection changed but not cached yet).
-- Clip to pane height; long lists can scroll later.
-
-Suggested file line formatting:
-
-```
-edit  //depot/path/file.cpp
-add   //depot/path/new.txt
-```
+- If `$State.Runtime.LastError` is set, show the error at the top of the pane.
+- If `$desc` is `$null`, show the existing Idea summary (no describe fetched yet).
+- If `$desc` is present, show:
+  1. Header: `CL <number>  <status>  <user>  <client>`
+  2. Time line
+  3. Blank line
+  4. Description lines
+  5. Blank line
+  6. Files list formatted as: `edit  //depot/path/file.cpp`
+- Clip to pane height; long lists can scroll in a future increment.
 
 ---
 
-## 6) Optional: F5 reload clears cache
+## 6) F5 reload clears cache
 
-If you already have reload (or add it), clear describe cache too:
+In the existing `Reload` case of `Invoke-BrowserReducer`, add:
 
 ```powershell
-$State.Data.DescribeCache = @{}
-$State.Runtime.LastSelectedId = $null
+$next.Data.DescribeCache = @{}
+$next.Runtime.LastSelectedId = $null
 ```
 
 ---
 
-## 7) Smoke-test checklist
+## 7) Unit tests
 
-1) Start app: list is populated (already).
-2) Move selection: details updates with multi-line description + files.
-3) Move back to a previously visited CL: details renders instantly (cache hit).
-4) Break auth (expired ticket): details shows error message; UI remains responsive.
+### 7.1 `tests\P4Cli.Tests.ps1` (new file)
+
+Test `Get-P4Describe` by mocking `Invoke-P4` to return sample `-ztag` output:
+
+```powershell
+Describe 'Get-P4Describe' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'parses a describe record with indexed file keys' {
+        Mock Invoke-P4 {
+            return @(
+                '... change 12345',
+                '... user testuser',
+                '... client testclient',
+                '... status pending',
+                '... time 1700000000',
+                '... desc Line one',
+                '... depotFile0 //depot/a.txt',
+                '... action0 edit',
+                '... type0 text',
+                '... depotFile1 //depot/b.txt',
+                '... action1 add',
+                '... type1 binary'
+            )
+        }
+        $result = Get-P4Describe -Change 12345
+        $result.Change | Should -Be 12345
+        $result.Files.Count | Should -Be 2
+        $result.Files[0].DepotPath | Should -Be '//depot/a.txt'
+        $result.Files[1].Action | Should -Be 'add'
+    }
+
+    It 'throws when describe output has no change key' {
+        Mock Invoke-P4 { return @('... user someone') }
+        { Get-P4Describe -Change 99999 } | Should -Throw '*Failed to parse*'
+    }
+}
+```
+
+### 7.2 `tests\Reducer.Tests.ps1` (additions)
+
+- Test that `Describe` action sets `LastSelectedId`.
+- Test that `Copy-BrowserState` preserves `DescribeCache` and `LastSelectedId`.
+- Test that `Reload` clears the cache.
+
+### 7.3 `ConvertTo-ChangeNumberFromIdeaId` tests
+
+```powershell
+It 'extracts change number from CL-prefixed id' {
+    ConvertTo-ChangeNumberFromIdeaId -Id 'CL-12345' | Should -Be 12345
+}
+It 'returns null for non-CL id' {
+    ConvertTo-ChangeNumberFromIdeaId -Id 'FI-001' | Should -BeNullOrEmpty
+}
+```
 
 ---
 
-## 8) Next increment after this
+## 8) Smoke-test checklist
+
+1. Start app — list is populated (existing behavior).
+2. Press Enter on an item — details pane updates with description + files.
+3. Move cursor away and back, press Enter again — details render instantly (cache hit).
+4. Press F5 — cache is cleared; next Enter re-fetches.
+5. Break auth (expired ticket) — details shows error message; UI remains responsive.
+
+---
+
+## 9) Next increment after this
 
 Once `describe` works:
-- Make the files block scrollable within Details (or split a Files pane)
-- Add a first advanced command (command palette): `Shelve`, `Unshelve`, `Submit`, `Diff`
+- Make the files block scrollable within the Details pane (or split into a dedicated Files pane)
+- Add a command palette: `Shelve`, `Unshelve`, `Submit`, `Diff`

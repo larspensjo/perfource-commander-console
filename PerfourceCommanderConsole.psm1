@@ -59,6 +59,19 @@ function Start-P4Browser {
             $action  = ConvertFrom-KeyInfoToAction -KeyInfo $keyInfo
             if ($null -ne $action) {
                 $state = Invoke-BrowserReducer -State $state -Action $action
+
+                # Fetch describe on-demand (I/O lives outside the reducer to keep it pure)
+                if (-not [string]::IsNullOrWhiteSpace([string]$state.Runtime.LastSelectedId)) {
+                    $change = ConvertTo-ChangeNumberFromIdeaId -Id $state.Runtime.LastSelectedId
+                    if ($null -ne $change -and -not $state.Data.DescribeCache.ContainsKey($change)) {
+                        try {
+                            $state.Data.DescribeCache[$change] = Get-P4Describe -Change $change
+                            $state.Runtime.LastError = $null
+                        } catch {
+                            $state.Runtime.LastError = $_.Exception.Message
+                        }
+                    }
+                }
             }
         }
     }

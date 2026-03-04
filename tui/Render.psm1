@@ -1,4 +1,4 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 
 $SCROLLBAR_THUMB_GLYPH = [char]0x2591
 $SCROLLBAR_TRACK_GLYPH = [char]0x2502
@@ -577,7 +577,7 @@ function Build-IdeaSegments {
     Write-Output -NoEnumerate $segments
 }
 
-function Build-DetailSegments {
+function Build-IdeaSummarySegments {
     param([AllowNull()]$Idea)
 
     if ($null -eq $Idea) {
@@ -589,14 +589,14 @@ function Build-DetailSegments {
         return
     }
 
-    $ideaId = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Id' -Default '')
+    $ideaId   = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Id'       -Default '')
     $priority = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Priority' -Default '')
-    $effort = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Effort' -Default '')
-    $risk = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Risk' -Default '')
-    $summary = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Summary' -Default '')
+    $effort   = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Effort'   -Default '')
+    $risk     = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Risk'     -Default '')
+    $summary  = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Summary'  -Default '')
     $rationale = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Rationale' -Default '')
-    $tagsRaw = Get-PropertyValueOrDefault -Object $Idea -Name 'Tags' -Default @()
-    $tags = @($tagsRaw | ForEach-Object { [string]$_ })
+    $tagsRaw  = Get-PropertyValueOrDefault -Object $Idea -Name 'Tags' -Default @()
+    $tags     = @($tagsRaw | ForEach-Object { [string]$_ })
     $tagsText = $tags -join ', '
 
     Write-Output -NoEnumerate @(
@@ -628,6 +628,70 @@ function Build-DetailSegments {
             @{ Text = $rationale; Color = 'Gray' }
         )
     )
+}
+
+function Build-DetailSegments {
+    param([Parameter(Mandatory = $true)]$State)
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+
+    # Show last error if present
+    $lastError = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'LastError' -Default $null
+    if (-not [string]::IsNullOrWhiteSpace([string]$lastError)) {
+        $rows.Add(@(@{ Text = "Error: $lastError"; Color = 'Red' }))
+    }
+
+    # Resolve selected idea
+    $selectedIdea = $null
+    if ($State.Derived.VisibleIdeaIds.Count -gt 0) {
+        $selectedId = $State.Derived.VisibleIdeaIds[[Math]::Min($State.Cursor.IdeaIndex, $State.Derived.VisibleIdeaIds.Count - 1)]
+        $selectedIdea = Get-IdeaById -Ideas $State.Data.AllIdeas -Id $selectedId
+    }
+
+    # Look up describe from cache via LastSelectedId
+    $desc = $null
+    $lastSelectedId = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'LastSelectedId' -Default $null
+    $describeCache  = Get-PropertyValueOrDefault -Object $State.Data   -Name 'DescribeCache'  -Default $null
+    if (-not [string]::IsNullOrWhiteSpace([string]$lastSelectedId) -and $null -ne $describeCache) {
+        $change = $null
+        if ([string]$lastSelectedId -match '^CL-(\d+)$') { $change = [int]$Matches[1] }
+        if ($null -ne $change -and $describeCache.ContainsKey($change)) {
+            $desc = $describeCache[$change]
+        }
+    }
+
+    if ($null -ne $desc) {
+        # Render describe output
+        $timeStr = if ($desc.Time) { $desc.Time.ToString('yyyy-MM-dd HH:mm') } else { '' }
+        $rows.Add(@(
+            @{ Text = "CL $($desc.Change)"; Color = 'Cyan' },
+            @{ Text = '  '; Color = 'Gray' },
+            @{ Text = [string]$desc.Status; Color = 'DarkYellow' },
+            @{ Text = '  '; Color = 'Gray' },
+            @{ Text = [string]$desc.User; Color = 'Gray' },
+            @{ Text = '  '; Color = 'Gray' },
+            @{ Text = [string]$desc.Client; Color = 'DarkGray' }
+        ))
+        $rows.Add(@(@{ Text = $timeStr; Color = 'DarkGray' }))
+        $rows.Add(@(@{ Text = ''; Color = 'Gray' }))
+        foreach ($line in @($desc.Description)) {
+            $rows.Add(@(@{ Text = [string]$line; Color = 'Gray' }))
+        }
+        $rows.Add(@(@{ Text = ''; Color = 'Gray' }))
+        foreach ($file in @($desc.Files)) {
+            $rows.Add(@(
+                @{ Text = ('{0,-8}' -f [string]$file.Action); Color = 'DarkYellow' },
+                @{ Text = [string]$file.DepotPath; Color = 'Gray' }
+            ))
+        }
+    } else {
+        # Fall back to idea summary
+        foreach ($summaryRow in @(Build-IdeaSummarySegments -Idea $selectedIdea)) {
+            $rows.Add($summaryRow)
+        }
+    }
+
+    Write-Output -NoEnumerate $rows.ToArray()
 }
 
 function Get-PaneBorderColor {
@@ -699,14 +763,7 @@ function Build-FrameFromState {
     $tagThumb = Get-ScrollThumb -TotalItems $State.Derived.VisibleTags.Count -ViewRows $tagViewRows -ScrollTop $State.Cursor.TagScrollTop
     $ideaThumb = Get-ScrollThumb -TotalItems $State.Derived.VisibleIdeaIds.Count -ViewRows $ideaViewRows -ScrollTop $State.Cursor.IdeaScrollTop
 
-    $detailSegments = @()
-    if ($State.Derived.VisibleIdeaIds.Count -eq 0) {
-        $detailSegments = Build-DetailSegments -Idea $null
-    } else {
-        $selectedId = $State.Derived.VisibleIdeaIds[[Math]::Min($State.Cursor.IdeaIndex, $State.Derived.VisibleIdeaIds.Count - 1)]
-        $selectedIdea = Get-IdeaById -Ideas $State.Data.AllIdeas -Id $selectedId
-        $detailSegments = Build-DetailSegments -Idea $selectedIdea
-    }
+    $detailSegments = Build-DetailSegments -State $State
 
     for ($globalRow = 0; $globalRow -lt $layout.TagPane.H; $globalRow++) {
         $leftSegments = @()

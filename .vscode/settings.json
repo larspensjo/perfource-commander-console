@@ -26,6 +26,19 @@
     "/^pwsh -NoProfile -File \\.vscode\\\\Invoke-Linter\\.ps1 2>&1$/": {
       "approve": true,
       "matchCommandLine": true
+    },
+    "/^pwsh -NoProfile -File \\.vscode/Invoke-Linter\\.ps1$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^pwsh -NoProfile -Command \"Invoke-Pester tests/ -Output Detailed\"$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "Invoke-Pester": true,
+    "/^# Re-save Render\\.psm1 with UTF-8 BOM so PowerShell 5\\.1 parses unicode correctly\n\\$path = 'C:\\\\Users\\\\lpensjo\\\\src\\\\perfource-commander-console\\\\tui\\\\Render\\.psm1'\n\\$content = \\[System\\.IO\\.File\\]::ReadAllText\\(\\$path, \\[System\\.Text\\.Encoding\\]::UTF8\\)\n\\$utf8Bom = New-Object System\\.Text\\.UTF8Encoding\\(\\$true\\)\n\\[System\\.IO\\.File\\]::WriteAllText\\(\\$path, \\$content, \\$utf8Bom\\)\n\\$bytes = \\[System\\.IO\\.File\\]::ReadAllBytes\\(\\$path\\)\n\"BOM bytes: \\$\\(\\$bytes\\[0\\]\\) \\$\\(\\$bytes\\[1\\]\\) \\$\\(\\$bytes\\[2\\]\\)\"\n$/": {
+      "approve": true,
+      "matchCommandLine": true
     }
   }
 }

@@ -137,4 +137,54 @@ function Get-P4PendingChangelistIdeaLikeEntries {
         ForEach-Object { ConvertTo-IdeaLikeEntryFromP4Changelist -Changelist $_ }
 }
 
-Export-ModuleMember -Function Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4PendingChangelistIdeaLikeEntries
+function Get-P4Describe {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][int]$Change
+    )
+
+    $lines = Invoke-P4 -P4Args @('-ztag', 'describe', '-s', "$Change")
+
+    # Parse all ztag key-value pairs into a single flat hashtable.
+    $kv = @{}
+    foreach ($line in $lines) {
+        if ($line -match '^\.\.\.\s+(?<k>\S+)\s+(?<v>.*)$') {
+            $kv[$Matches.k] = $Matches.v
+        }
+    }
+
+    if (-not $kv.ContainsKey('change')) {
+        throw "Failed to parse describe output for CL $Change"
+    }
+
+    $time = if ($kv.ContainsKey('time')) {
+        ([datetime]'1970-01-01T00:00:00Z').AddSeconds([double]$kv.time).ToLocalTime()
+    } else { Get-Date }
+
+    $descText  = if ($kv.ContainsKey('desc')) { $kv.desc } else { '' }
+    $descLines = if ($descText) { $descText -split "`r?`n" } else { @() }
+
+    # Extract indexed file entries: depotFile0/action0/type0, depotFile1/action1/type1, ...
+    $files = @()
+    for ($i = 0; ; $i++) {
+        $depotKey = "depotFile$i"
+        if (-not $kv.ContainsKey($depotKey)) { break }
+        $files += [pscustomobject]@{
+            DepotPath = [string]$kv[$depotKey]
+            Action    = if ($kv.ContainsKey("action$i")) { [string]$kv["action$i"] } else { '' }
+            Type      = if ($kv.ContainsKey("type$i"))   { [string]$kv["type$i"]   } else { '' }
+        }
+    }
+
+    [pscustomobject]@{
+        Change      = [int]$kv.change
+        User        = [string]$kv.user
+        Client      = [string]$kv.client
+        Status      = [string]$kv.status
+        Time        = $time
+        Description = @($descLines | Where-Object { $_ -ne '' })
+        Files       = @($files)
+    }
+}
+
+Export-ModuleMember -Function Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4PendingChangelistIdeaLikeEntries, Get-P4Describe

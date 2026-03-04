@@ -147,4 +147,55 @@ Describe 'Browser reducer' {
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Quit' })
         $next.Runtime.IsRunning | Should -BeFalse
     }
+
+    It 'Describe action sets LastSelectedId to the currently focused idea' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Describe' })
+        $next.Runtime.LastSelectedId | Should -Be $state.Derived.VisibleIdeaIds[$state.Cursor.IdeaIndex]
+    }
+
+    It 'Describe action on empty list is a no-op' {
+        $emptyState = New-BrowserState -Ideas @() -InitialWidth 120 -InitialHeight 40
+        $next = Invoke-BrowserReducer -State $emptyState -Action ([pscustomobject]@{ Type = 'Describe' })
+        $next.Runtime.LastSelectedId | Should -BeNullOrEmpty
+    }
+
+    It 'Copy-BrowserState preserves DescribeCache by reference and copies LastSelectedId' {
+        $state.Data.DescribeCache[42] = 'cached-value'
+        $state.Runtime.LastSelectedId = 'FI-2'
+        $copy = Copy-BrowserState -State $state
+        $copy.Data.DescribeCache[42]    | Should -Be 'cached-value'
+        $copy.Runtime.LastSelectedId    | Should -Be 'FI-2'
+        # shared reference — mutation visible in copy
+        $state.Data.DescribeCache[99] = 'new-entry'
+        $copy.Data.DescribeCache[99]    | Should -Be 'new-entry'
+    }
+
+    It 'Reload clears DescribeCache and LastSelectedId' {
+        Mock Get-P4PendingChangelistIdeaLikeEntries -ModuleName Reducer { return @() }
+        $state.Data.DescribeCache[1] = 'something'
+        $state.Runtime.LastSelectedId = 'FI-1'
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Reload' })
+        $next.Data.DescribeCache.Count  | Should -Be 0
+        $next.Runtime.LastSelectedId    | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'ConvertTo-ChangeNumberFromIdeaId' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+    }
+
+    It 'extracts change number from CL-prefixed id' {
+        ConvertTo-ChangeNumberFromIdeaId -Id 'CL-12345' | Should -Be 12345
+    }
+
+    It 'returns null for a non-CL id' {
+        ConvertTo-ChangeNumberFromIdeaId -Id 'FI-001' | Should -BeNullOrEmpty
+    }
+
+    It 'returns null for an empty string' {
+        ConvertTo-ChangeNumberFromIdeaId -Id '' | Should -BeNullOrEmpty
+    }
 }

@@ -16,6 +16,8 @@ function ConvertFrom-KeyInfoToAction {
         'Home' { return [pscustomobject]@{ Type = 'MoveHome' } }
         'End' { return [pscustomobject]@{ Type = 'MoveEnd' } }
         'Spacebar' { return [pscustomobject]@{ Type = 'ToggleTag' } }
+        'Enter' { return [pscustomobject]@{ Type = 'Describe' } }
+        'D' { return [pscustomobject]@{ Type = 'Describe' } }
         'F5' { return [pscustomobject]@{ Type = 'Reload' } }
         default { return $null }
     }

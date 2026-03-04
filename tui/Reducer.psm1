@@ -6,7 +6,7 @@ Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
 
 function New-BrowserState {
     param(
-        [Parameter(Mandatory = $true)][object[]]$Ideas,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Ideas,
         [Parameter(Mandatory = $false)][int]$InitialWidth = 120,
         [Parameter(Mandatory = $false)][int]$InitialHeight = 40
     )
@@ -15,8 +15,9 @@ function New-BrowserState {
 
     $state = [pscustomobject]@{
         Data = [pscustomobject]@{
-            AllIdeas = @($Ideas)
-            AllTags = @($tags)
+            AllIdeas      = @($Ideas)
+            AllTags       = @($tags)
+            DescribeCache = @{}
         }
         Ui = [pscustomobject]@{
             ActivePane = 'Tags'
@@ -41,8 +42,9 @@ function New-BrowserState {
             IdeaScrollTop = 0
         }
         Runtime = [pscustomobject]@{
-            IsRunning = $true
-            LastError = $null
+            IsRunning      = $true
+            LastError      = $null
+            LastSelectedId = $null
         }
     }
 
@@ -54,8 +56,9 @@ function Copy-BrowserState {
 
     $copy = [pscustomobject]@{
         Data = [pscustomobject]@{
-            AllIdeas = @($State.Data.AllIdeas)
-            AllTags = @($State.Data.AllTags)
+            AllIdeas      = @($State.Data.AllIdeas)
+            AllTags       = @($State.Data.AllTags)
+            DescribeCache = $State.Data.DescribeCache          # shared reference (append-only)
         }
         Ui = [pscustomobject]@{
             ActivePane = $State.Ui.ActivePane
@@ -80,8 +83,9 @@ function Copy-BrowserState {
             IdeaScrollTop = $State.Cursor.IdeaScrollTop
         }
         Runtime = [pscustomobject]@{
-            IsRunning = $State.Runtime.IsRunning
-            LastError = $State.Runtime.LastError
+            IsRunning      = $State.Runtime.IsRunning
+            LastError      = $State.Runtime.LastError
+            LastSelectedId = $State.Runtime.LastSelectedId
         }
     }
 
@@ -350,7 +354,16 @@ function Invoke-BrowserReducer {
 
             return Update-BrowserDerivedState -State $next
         }
+        'Describe' {
+            if ($next.Derived.VisibleIdeaIds.Count -eq 0) { return $next }
+            $idx = [Math]::Max(0, [Math]::Min($next.Cursor.IdeaIndex,
+                                               $next.Derived.VisibleIdeaIds.Count - 1))
+            $next.Runtime.LastSelectedId = $next.Derived.VisibleIdeaIds[$idx]
+            return Update-BrowserDerivedState -State $next
+        }
         'Reload' {
+            $next.Data.DescribeCache = @{}
+            $next.Runtime.LastSelectedId = $null
             try {
                 $fresh = Get-P4PendingChangelistIdeaLikeEntries -Max 200
                 $next.Data.AllIdeas = @($fresh)
@@ -382,4 +395,10 @@ function Invoke-BrowserReducer {
     }
 }
 
-Export-ModuleMember -Function New-BrowserState, Invoke-BrowserReducer, Update-BrowserDerivedState
+function ConvertTo-ChangeNumberFromIdeaId {
+    param([string]$Id)
+    if ($Id -match '^CL-(\d+)$') { return [int]$Matches[1] }
+    return $null
+}
+
+Export-ModuleMember -Function New-BrowserState, Copy-BrowserState, Invoke-BrowserReducer, Update-BrowserDerivedState, ConvertTo-ChangeNumberFromIdeaId

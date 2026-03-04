@@ -13,6 +13,14 @@
 
 * When a bug is found or fixed, analyze the lessons learned. If there is a robustness issue, investigate if there is a change that can prevent future problems of the same type to recur.
 
+## PowerShell 5.1 Compatibility
+
+This project runs on Windows PowerShell 5.1. Keep the following constraints in mind when editing any `.ps1` / `.psm1` file:
+
+* **UTF-8 BOM required.** PowerShell 5.1 reads files as Windows-1252 unless the file starts with a UTF-8 BOM (`EF BB BF`). Any file that contains non-ASCII characters (box-drawing glyphs, arrows, accented letters, etc.) **must** be saved as *UTF-8 with BOM*. Files that are pure ASCII are safe without a BOM. When creating or rewriting such a file via a tool that writes UTF-8 without BOM, prepend the BOM explicitly or use `[System.IO.File]::WriteAllText` / `-Encoding utf8` with BOM support. Missing BOMs cause silent mojibake that breaks string comparisons at runtime and is hard to detect.
+* **No `Sort-Object -Stable`.** The `-Stable` flag was added in PowerShell 6. Use a secondary sort key to get deterministic ordering instead.
+* **No `[datetime]::UnixEpoch`.** Use `[datetime]::new(1970,1,1,0,0,0,[DateTimeKind]::Utc)` as the epoch constant.
+
 ## Validating Changes
 
 ### Linter

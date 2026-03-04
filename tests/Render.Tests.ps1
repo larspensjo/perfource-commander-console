@@ -598,7 +598,7 @@ Describe 'Segment builders' {
                 Rationale = 'Rationale text'
             }
 
-            $rows = Build-DetailSegments -Idea $idea
+            $rows = Build-IdeaSummarySegments -Idea $idea
             $rows.Count | Should -Be 6
             $rows[0][0].Color | Should -Be 'DarkYellow'
             $rows[0][1].Color | Should -Be 'DarkGray'
@@ -608,7 +608,7 @@ Describe 'Segment builders' {
 
         It 'handles missing detail fields safely' {
             $idea = [pscustomobject]@{ Id = 'FI-empty' }
-            $rows = Build-DetailSegments -Idea $idea
+            $rows = Build-IdeaSummarySegments -Idea $idea
             $rows.Count | Should -Be 6
             $rows[2][1].Text | Should -Be ''
             $rows[4][1].Text | Should -Be ''

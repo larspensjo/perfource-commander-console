@@ -110,6 +110,7 @@ function Get-P4PendingChangelists {
     $info = Get-P4Info
     $lines = Invoke-P4 -P4Args @(
         '-ztag', 'changes',
+        '-l',
         '-s', 'pending',
         '-u', $info.User,
         '-c', $info.Client,

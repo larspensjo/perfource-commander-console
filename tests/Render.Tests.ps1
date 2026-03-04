@@ -620,7 +620,7 @@ Describe 'Write-ColorSegments' {
                 @{ Text = 'ABCDEFGHIJ'; Color = 'Red' }
             ) -Width 7
             $result.Count | Should -Be 1
-            $result[0].Text | Should -Be 'ABCD...'
+            $result[0].Text | Should -Be ("ABCDEF$([char]0x2026)")
             ($result | ForEach-Object { $_.Text.Length } | Measure-Object -Sum).Sum | Should -Be 7
         }
 

@@ -121,10 +121,10 @@ function Write-ColorSegments {
     $baseBackground = [string]$flat[0].BackgroundColor
 
     if ($text.Length -gt $Width) {
-        if ($Width -le 3) {
+        if ($Width -le 1) {
             $text = $text.Substring(0, $Width)
         } else {
-            $text = $text.Substring(0, $Width - 3) + '...'
+            $text = $text.Substring(0, $Width - 1) + [char]0x2026
         }
     } elseif ($text.Length -lt $Width -and $Width -lt [int]::MaxValue) {
         $text = $text + (' ' * ($Width - $text.Length))

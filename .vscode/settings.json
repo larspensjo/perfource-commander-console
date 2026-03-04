@@ -14,6 +14,10 @@
     "/^pwsh -NoProfile -Command \"Test-ModuleManifest 'c:\\\\Users\\\\lpensjo\\\\src\\\\perfource-commander-console\\\\PerfourceCommanderConsole\\.psd1' \\| Select-Object Name, Version, ExportedFunctions\"$/": {
       "approve": true,
       "matchCommandLine": true
+    },
+    "/^pwsh -NoProfile -Command \"Set-Location 'c:\\\\Users\\\\lpensjo\\\\src\\\\perfource-commander-console'; Invoke-Pester -Path tests -PassThru \\| Select-Object TotalCount, PassedCount, FailedCount, SkippedCount\"$/": {
+      "approve": true,
+      "matchCommandLine": true
     }
   }
 }

@@ -24,18 +24,24 @@ function New-P4Changelist {
 function ConvertTo-ChangelistEntry {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][object]$Changelist
+        [Parameter(Mandatory)][object]$Changelist,
+        [Parameter(Mandatory = $false)][bool]$IsEmpty = $false
     )
 
     $title = [string]$Changelist.Description
     if ([string]::IsNullOrWhiteSpace($title)) { $title = '(no description)' }
 
+    $filters = @($Changelist.Status, $Changelist.Client, $Changelist.User) |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                    Select-Object -Unique
+    if ($IsEmpty) {
+        $filters = @($filters) + @('Empty')
+    }
+
     [pscustomobject]@{
         Id        = "CL-$($Changelist.Change)"
         Title     = $title
-        Filters = @($Changelist.Status, $Changelist.Client, $Changelist.User) |
-                    Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
-                    Select-Object -Unique
+        Filters   = $filters
         Priority  = 'P2'
         Risk      = 'M'
         Effort    = 'M'

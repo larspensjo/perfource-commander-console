@@ -72,6 +72,37 @@ function Start-P4Browser {
                         }
                     }
                 }
+
+                # Delete changelist on-demand
+                if (-not [string]::IsNullOrWhiteSpace([string]$state.Runtime.DeleteChangeId)) {
+                    $change = ConvertTo-ChangeNumberFromId -Id $state.Runtime.DeleteChangeId
+                    $state.Runtime.DeleteChangeId = $null
+                    if ($null -ne $change) {
+                        try {
+                            Remove-P4Changelist -Change $change
+                            # Remove from local state without full reload
+                            $deletedId = "CL-$change"
+                            $state.Data.AllChanges = @($state.Data.AllChanges | Where-Object { $_.Id -ne $deletedId })
+                            $filterUniverse = @(
+                                $state.Data.AllChanges |
+                                    ForEach-Object { @($_.Filters) }
+                            )
+                            if ($null -ne $state.Query -and $null -ne $state.Query.SelectedFilters) {
+                                $filterUniverse += @($state.Query.SelectedFilters)
+                            }
+                            $state.Data.AllFilters = @(
+                                $filterUniverse |
+                                    Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                                    Sort-Object -Unique
+                            )
+                            $state.Data.DescribeCache.Remove($change) | Out-Null
+                            $state = Update-BrowserDerivedState -State $state
+                            $state.Runtime.LastError = $null
+                        } catch {
+                            $state.Runtime.LastError = $_.Exception.Message
+                        }
+                    }
+                }
             }
         }
     }

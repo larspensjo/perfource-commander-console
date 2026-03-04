@@ -714,7 +714,7 @@ function Build-StatusBarRow {
     )
 
     $hideMode = if ($State.Ui.HideUnavailableFilters) { 'On' } else { 'Off' }
-    $statusText = "Total: $($State.Data.AllChanges.Count) | Filtered: $($State.Derived.VisibleChangeIds.Count) | Selected Filters: $($State.Query.SelectedFilters.Count) | HideUnavailable: $hideMode | [Tab] Switch [Space] Toggle [PgUp/PgDn] Page [Home/End] Jump [F5] Reload [H] Hide [Q] Quit"
+    $statusText = "Total: $($State.Data.AllChanges.Count) | Filtered: $($State.Derived.VisibleChangeIds.Count) | Selected Filters: $($State.Query.SelectedFilters.Count) | HideUnavailable: $hideMode | [Tab] Switch [Space] Toggle [PgUp/PgDn] Page [Home/End] [F5] Reload [X/Del] Delete [H] Hide [Q] Quit"
     $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
 
     $segments = Write-ColorSegments -Segments @(@{

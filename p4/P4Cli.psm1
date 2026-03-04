@@ -133,8 +133,16 @@ function Get-P4ChangelistEntries {
         [int]$Max = 200
     )
 
-    Get-P4PendingChangelists -Max $Max |
-        ForEach-Object { ConvertTo-ChangelistEntry -Changelist $_ }
+    $changelists = Get-P4PendingChangelists -Max $Max
+    $openedSet = Get-P4OpenedChangeNumbers
+    $shelvedSet = Get-P4ShelvedChangeNumbers
+    if ($null -eq $openedSet) { $openedSet = [System.Collections.Generic.HashSet[int]]::new() }
+    if ($null -eq $shelvedSet) { $shelvedSet = [System.Collections.Generic.HashSet[int]]::new() }
+
+    $changelists | ForEach-Object {
+        $isEmpty = -not $openedSet.Contains([int]$_.Change) -and -not $shelvedSet.Contains([int]$_.Change)
+        ConvertTo-ChangelistEntry -Changelist $_ -IsEmpty $isEmpty
+    }
 }
 
 function Get-P4Describe {
@@ -187,4 +195,104 @@ function Get-P4Describe {
     }
 }
 
-Export-ModuleMember -Function Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe
+function Test-IsP4NoOpenedFilesError {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Message
+    )
+
+    return ($Message -match '(?i)file\(s\)\s+not\s+opened|no\s+such\s+file\(s\)')
+}
+
+function Test-IsP4NoShelvedChangesError {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Message
+    )
+
+    return ($Message -match '(?i)no\s+matching\s+changelists')
+}
+
+function Get-P4OpenedChangeNumbers {
+    <#
+    .SYNOPSIS
+        Returns the set of changelist numbers that have at least one opened file.
+    .DESCRIPTION
+        Runs 'p4 -ztag opened -u <user> -c <client>' once to get all open files,
+        then extracts the distinct changelist numbers.
+    #>
+    [CmdletBinding()]
+    param()
+
+    try {
+        $lines = Invoke-P4 -P4Args @('-ztag', 'opened')
+    }
+    catch {
+        $errorMessage = [string]$_.Exception.Message
+        if (-not (Test-IsP4NoOpenedFilesError -Message $errorMessage)) {
+            throw
+        }
+        # No files opened is not an error
+        return ,([System.Collections.Generic.HashSet[int]]::new())
+    }
+
+    $result = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($line in $lines) {
+        if ($line -match '^\.\.\.\s+change\s+(\d+)') {
+            [void]$result.Add([int]$Matches[1])
+        }
+    }
+
+    return ,$result
+}
+
+function Get-P4ShelvedChangeNumbers {
+    <#
+    .SYNOPSIS
+        Returns the set of changelist numbers that have shelved files.
+    .DESCRIPTION
+        Uses 'p4 -ztag changes -s shelved -u <user> -c <client>' to efficiently
+        find all CLs with shelved files in a single command.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $info = Get-P4Info
+    try {
+        $lines = Invoke-P4 -P4Args @('-ztag', 'changes', '-s', 'shelved', '-u', $info.User, '-c', $info.Client)
+    }
+    catch {
+        $errorMessage = [string]$_.Exception.Message
+        if (-not (Test-IsP4NoShelvedChangesError -Message $errorMessage)) {
+            throw
+        }
+        return ,([System.Collections.Generic.HashSet[int]]::new())
+    }
+
+    $result = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($line in $lines) {
+        if ($line -match '^\.\.\.\s+change\s+(\d+)') {
+            [void]$result.Add([int]$Matches[1])
+        }
+    }
+
+    return ,$result
+}
+
+function Remove-P4Changelist {
+    <#
+    .SYNOPSIS
+        Deletes a pending changelist.
+    .DESCRIPTION
+        Runs 'p4 change -d <change>' to delete the specified changelist.
+        The changelist must be empty (no open files, no shelved files).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][int]$Change
+    )
+
+    Invoke-P4 -P4Args @('change', '-d', "$Change") | Out-Null
+}
+
+Export-ModuleMember -Function Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4ShelvedChangeNumbers, Remove-P4Changelist

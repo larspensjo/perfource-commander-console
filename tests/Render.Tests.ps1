@@ -93,6 +93,7 @@ function New-RenderTestState {
         Runtime = [pscustomobject]@{
             IsRunning = $true
             LastError = $null
+            DeleteChangeId = $null
         }
     }
 }
@@ -218,6 +219,7 @@ Describe 'Frame helpers' {
                     Runtime = [pscustomobject]@{
                         IsRunning = $true
                         LastError = $null
+                        DeleteChangeId = $null
                     }
                 }
             }

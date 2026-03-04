@@ -96,3 +96,160 @@ Describe 'ConvertFrom-P4ZTagRecords' {
         $records[1].change | Should -Be '2'
     }
 }
+
+Describe 'Get-P4OpenedChangeNumbers' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'returns set of change numbers from opened output' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @(
+                '... depotFile //depot/a.txt',
+                '... change 100',
+                '... action edit',
+                '... depotFile //depot/b.txt',
+                '... change 200',
+                '... action add',
+                '... depotFile //depot/c.txt',
+                '... change 100',
+                '... action edit'
+            )
+        }
+
+        $result = Get-P4OpenedChangeNumbers
+        $result.Contains(100) | Should -BeTrue
+        $result.Contains(200) | Should -BeTrue
+        $result.Count | Should -Be 2
+    }
+
+    It 'returns empty set when no files are opened' {
+        Mock Invoke-P4 -ModuleName P4Cli { throw 'no such file(s).' }
+
+        $result = Get-P4OpenedChangeNumbers
+        ($result -is [System.Collections.Generic.HashSet[int]]) | Should -BeTrue
+        $result.Count | Should -Be 0
+    }
+
+    It 'returns empty hashset when opened output is empty' {
+        Mock Invoke-P4 -ModuleName P4Cli { return @() }
+
+        $result = Get-P4OpenedChangeNumbers
+        ($result -is [System.Collections.Generic.HashSet[int]]) | Should -BeTrue
+        $result.Count | Should -Be 0
+    }
+
+    It 'rethrows unexpected opened errors' {
+        Mock Invoke-P4 -ModuleName P4Cli { throw 'network timeout' }
+
+        { Get-P4OpenedChangeNumbers } | Should -Throw '*network timeout*'
+    }
+
+    It 'invokes p4 opened without client changelist filter args' {
+        Mock Invoke-P4 -ModuleName P4Cli { return @() }
+
+        Get-P4OpenedChangeNumbers | Out-Null
+
+        Assert-MockCalled Invoke-P4 -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
+            $P4Args.Count -eq 2 -and $P4Args[0] -eq '-ztag' -and $P4Args[1] -eq 'opened'
+        }
+    }
+}
+
+Describe 'Get-P4ShelvedChangeNumbers' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'returns set of change numbers from shelved changes output' {
+        Mock Get-P4Info -ModuleName P4Cli { return [pscustomobject]@{ User = 'u'; Client = 'c'; Port = 'p'; Root = 'r' } }
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @(
+                '... change 300',
+                '... user u',
+                '... change 400',
+                '... user u'
+            )
+        }
+
+        $result = Get-P4ShelvedChangeNumbers
+        $result.Contains(300) | Should -BeTrue
+        $result.Contains(400) | Should -BeTrue
+        $result.Count | Should -Be 2
+    }
+
+    It 'returns empty set when no shelved changelists exist' {
+        Mock Get-P4Info -ModuleName P4Cli { return [pscustomobject]@{ User = 'u'; Client = 'c'; Port = 'p'; Root = 'r' } }
+        Mock Invoke-P4 -ModuleName P4Cli { throw 'no matching changelists.' }
+
+        $result = Get-P4ShelvedChangeNumbers
+        ($result -is [System.Collections.Generic.HashSet[int]]) | Should -BeTrue
+        $result.Count | Should -Be 0
+    }
+
+    It 'returns empty hashset when shelved output is empty' {
+        Mock Get-P4Info -ModuleName P4Cli { return [pscustomobject]@{ User = 'u'; Client = 'c'; Port = 'p'; Root = 'r' } }
+        Mock Invoke-P4 -ModuleName P4Cli { return @() }
+
+        $result = Get-P4ShelvedChangeNumbers
+        ($result -is [System.Collections.Generic.HashSet[int]]) | Should -BeTrue
+        $result.Count | Should -Be 0
+    }
+
+    It 'rethrows unexpected shelved errors' {
+        Mock Get-P4Info -ModuleName P4Cli { return [pscustomobject]@{ User = 'u'; Client = 'c'; Port = 'p'; Root = 'r' } }
+        Mock Invoke-P4 -ModuleName P4Cli { throw 'authentication failed' }
+
+        { Get-P4ShelvedChangeNumbers } | Should -Throw '*authentication failed*'
+    }
+}
+
+Describe 'Get-P4ChangelistEntries' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+        Import-Module (Join-Path $PSScriptRoot '..\p4\Models.psm1') -Force
+    }
+
+    It 'marks changelist as Empty when opened and shelved sets are empty' {
+        $now = Get-Date
+        Mock Get-P4PendingChangelists -ModuleName P4Cli {
+            return @(
+                New-P4Changelist -Change 123 -User 'u' -Client 'c' -Time $now -Status 'pending' -Description 'desc'
+            )
+        }
+        Mock Get-P4OpenedChangeNumbers -ModuleName P4Cli {
+            return [System.Collections.Generic.HashSet[int]]::new()
+        }
+        Mock Get-P4ShelvedChangeNumbers -ModuleName P4Cli {
+            return [System.Collections.Generic.HashSet[int]]::new()
+        }
+
+        $result = @(Get-P4ChangelistEntries)
+        $result.Count | Should -Be 1
+        $result[0].Filters | Should -Contain 'Empty'
+    }
+}
+
+Describe 'ConvertTo-ChangelistEntry with IsEmpty' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\Models.psm1') -Force
+    }
+
+    It 'adds Empty filter when IsEmpty is true' {
+        $cl = New-P4Changelist -Change 1 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'test'
+        $entry = ConvertTo-ChangelistEntry -Changelist $cl -IsEmpty $true
+        $entry.Filters | Should -Contain 'Empty'
+    }
+
+    It 'does not add Empty filter when IsEmpty is false' {
+        $cl = New-P4Changelist -Change 2 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'test'
+        $entry = ConvertTo-ChangelistEntry -Changelist $cl -IsEmpty $false
+        $entry.Filters | Should -Not -Contain 'Empty'
+    }
+
+    It 'does not add Empty filter by default' {
+        $cl = New-P4Changelist -Change 3 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'test'
+        $entry = ConvertTo-ChangelistEntry -Changelist $cl
+        $entry.Filters | Should -Not -Contain 'Empty'
+    }
+}

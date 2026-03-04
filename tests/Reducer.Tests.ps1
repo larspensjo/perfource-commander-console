@@ -164,9 +164,11 @@ Describe 'Browser reducer' {
     It 'Copy-BrowserState preserves DescribeCache by reference and copies LastSelectedId' {
         $state.Data.DescribeCache[42] = 'cached-value'
         $state.Runtime.LastSelectedId = 'FI-2'
+        $state.Runtime.DeleteChangeId = 'FI-3'
         $copy = Copy-BrowserState -State $state
         $copy.Data.DescribeCache[42]    | Should -Be 'cached-value'
         $copy.Runtime.LastSelectedId    | Should -Be 'FI-2'
+        $copy.Runtime.DeleteChangeId    | Should -Be 'FI-3'
         # shared reference — mutation visible in copy
         $state.Data.DescribeCache[99] = 'new-entry'
         $copy.Data.DescribeCache[99]    | Should -Be 'new-entry'
@@ -179,6 +181,27 @@ Describe 'Browser reducer' {
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Reload' })
         $next.Data.DescribeCache.Count  | Should -Be 0
         $next.Runtime.LastSelectedId    | Should -BeNullOrEmpty
+    }
+
+    It 'Reload preserves selected filters in AllFilters' {
+        Mock Get-P4ChangelistEntries -ModuleName Reducer { return @() }
+        [void]$state.Query.SelectedFilters.Add('orphan-filter')
+
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Reload' })
+        $next.Data.AllFilters | Should -Contain 'orphan-filter'
+    }
+
+    It 'DeleteChange action sets DeleteChangeId to the currently focused changelist' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'DeleteChange' })
+        $next.Runtime.DeleteChangeId | Should -Be $state.Derived.VisibleChangeIds[$state.Cursor.ChangeIndex]
+    }
+
+    It 'DeleteChange action on empty list is a no-op' {
+        $emptyState = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
+        $next = Invoke-BrowserReducer -State $emptyState -Action ([pscustomobject]@{ Type = 'DeleteChange' })
+        $next.Runtime.DeleteChangeId | Should -BeNullOrEmpty
     }
 }
 

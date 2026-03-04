@@ -42,9 +42,10 @@ function New-BrowserState {
             ChangeScrollTop = 0
         }
         Runtime = [pscustomobject]@{
-            IsRunning      = $true
-            LastError      = $null
-            LastSelectedId = $null
+            IsRunning       = $true
+            LastError       = $null
+            LastSelectedId  = $null
+            DeleteChangeId  = $null
         }
     }
 
@@ -83,9 +84,10 @@ function Copy-BrowserState {
             ChangeScrollTop = $State.Cursor.ChangeScrollTop
         }
         Runtime = [pscustomobject]@{
-            IsRunning      = $State.Runtime.IsRunning
-            LastError      = $State.Runtime.LastError
-            LastSelectedId = $State.Runtime.LastSelectedId
+            IsRunning       = $State.Runtime.IsRunning
+            LastError       = $State.Runtime.LastError
+            LastSelectedId  = $State.Runtime.LastSelectedId
+            DeleteChangeId  = $State.Runtime.DeleteChangeId
         }
     }
 
@@ -361,15 +363,26 @@ function Invoke-BrowserReducer {
             $next.Runtime.LastSelectedId = $next.Derived.VisibleChangeIds[$idx]
             return Update-BrowserDerivedState -State $next
         }
+        'DeleteChange' {
+            if ($next.Derived.VisibleChangeIds.Count -eq 0) { return $next }
+            $idx = [Math]::Max(0, [Math]::Min($next.Cursor.ChangeIndex,
+                                               $next.Derived.VisibleChangeIds.Count - 1))
+            $next.Runtime.DeleteChangeId = $next.Derived.VisibleChangeIds[$idx]
+            return Update-BrowserDerivedState -State $next
+        }
         'Reload' {
             $next.Data.DescribeCache = @{}
             $next.Runtime.LastSelectedId = $null
             try {
                 $fresh = Get-P4ChangelistEntries -Max 200
                 $next.Data.AllChanges = @($fresh)
-                $next.Data.AllFilters = @(
+                $filterUniverse = @(
                     $next.Data.AllChanges |
-                        ForEach-Object { @($_.Filters) } |
+                        ForEach-Object { @($_.Filters) }
+                )
+                $filterUniverse += @($next.Query.SelectedFilters)
+                $next.Data.AllFilters = @(
+                    $filterUniverse |
                         Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
                         Sort-Object -Unique
                 )

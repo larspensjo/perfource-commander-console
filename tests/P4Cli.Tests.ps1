@@ -1,6 +1,27 @@
 $modulePath = Join-Path $PSScriptRoot '..\p4\P4Cli.psm1'
 Import-Module $modulePath -Force
 
+Describe 'Format-P4CommandLine' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'prepends p4 and leaves plain arguments unquoted' {
+        $result = Format-P4CommandLine -P4Args @('changes', '-s', 'pending')
+        $result | Should -Be 'p4 changes -s pending'
+    }
+
+    It 'quotes arguments that contain spaces' {
+        $result = Format-P4CommandLine -P4Args @('changes', '-u', 'user name with spaces')
+        $result | Should -Be 'p4 changes -u "user name with spaces"'
+    }
+
+    It 'handles a single argument' {
+        $result = Format-P4CommandLine -P4Args @('info')
+        $result | Should -Be 'p4 info'
+    }
+}
+
 Describe 'Get-P4Describe' {
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force

@@ -21,6 +21,8 @@ function ConvertFrom-KeyInfoToAction {
         'Delete' { return [pscustomobject]@{ Type = 'DeleteChange' } }
         'X' { return [pscustomobject]@{ Type = 'DeleteChange' } }
         'F5' { return [pscustomobject]@{ Type = 'Reload' } }
+        'F6' { return [pscustomobject]@{ Type = 'ShowCommandModal' } }
+        'Escape' { return [pscustomobject]@{ Type = 'HideCommandModal' } }
         default { return $null }
     }
 }

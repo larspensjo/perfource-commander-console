@@ -1,5 +1,7 @@
 Set-StrictMode -Version Latest
 
+$script:CommandHistoryMaxSize = 50
+
 Import-Module (Join-Path $PSScriptRoot 'Filtering.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Layout.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
@@ -46,6 +48,13 @@ function New-BrowserState {
             LastError       = $null
             LastSelectedId  = $null
             DeleteChangeId  = $null
+            ReloadRequested = $false
+            CommandModal    = [pscustomobject]@{
+                IsOpen         = $false
+                IsBusy         = $false
+                CurrentCommand = ''
+                History        = @()
+            }
         }
     }
 
@@ -88,6 +97,13 @@ function Copy-BrowserState {
             LastError       = $State.Runtime.LastError
             LastSelectedId  = $State.Runtime.LastSelectedId
             DeleteChangeId  = $State.Runtime.DeleteChangeId
+            ReloadRequested = $State.Runtime.ReloadRequested
+            CommandModal    = [pscustomobject]@{
+                IsOpen         = $State.Runtime.CommandModal.IsOpen
+                IsBusy         = $State.Runtime.CommandModal.IsBusy
+                CurrentCommand = $State.Runtime.CommandModal.CurrentCommand
+                History        = @($State.Runtime.CommandModal.History)
+            }
         }
     }
 
@@ -228,6 +244,46 @@ function Invoke-BrowserReducer {
     }
 
     switch ($Action.Type) {
+        'CommandStart' {
+            $next.Runtime.CommandModal.IsBusy         = $true
+            $next.Runtime.CommandModal.IsOpen         = $true
+            $next.Runtime.CommandModal.CurrentCommand = [string]$Action.CommandLine
+            return $next
+        }
+        'CommandFinish' {
+            $startedAt  = [datetime]$Action.StartedAt
+            $endedAt    = [datetime]$Action.EndedAt
+            $durationMs = [int](($endedAt - $startedAt).TotalMilliseconds)
+            $succeeded  = [bool]$Action.Succeeded
+            $historyItem = [pscustomobject]@{
+                StartedAt   = $startedAt
+                EndedAt     = $endedAt
+                CommandLine = [string]$Action.CommandLine
+                ExitCode    = [int]$Action.ExitCode
+                Succeeded   = $succeeded
+                ErrorText   = [string]$Action.ErrorText
+                DurationMs  = $durationMs
+            }
+            $trimmed = @($historyItem) + @($next.Runtime.CommandModal.History |
+                Select-Object -First ($script:CommandHistoryMaxSize - 1))
+            $next.Runtime.CommandModal.History        = $trimmed
+            $next.Runtime.CommandModal.IsBusy         = $false
+            $next.Runtime.CommandModal.CurrentCommand = ''
+            if ($succeeded) {
+                $next.Runtime.CommandModal.IsOpen = $false
+            }
+            return $next
+        }
+        'ShowCommandModal' {
+            $next.Runtime.CommandModal.IsOpen = $true
+            return $next
+        }
+        'HideCommandModal' {
+            if (-not $next.Runtime.CommandModal.IsBusy) {
+                $next.Runtime.CommandModal.IsOpen = $false
+            }
+            return $next
+        }
         'Quit' {
             $next.Runtime.IsRunning = $false
             return $next
@@ -373,25 +429,7 @@ function Invoke-BrowserReducer {
         'Reload' {
             $next.Data.DescribeCache = @{}
             $next.Runtime.LastSelectedId = $null
-            try {
-                $fresh = Get-P4ChangelistEntries -Max 200
-                $next.Data.AllChanges = @($fresh)
-                $filterUniverse = @(
-                    $next.Data.AllChanges |
-                        ForEach-Object { @($_.Filters) }
-                )
-                $filterUniverse += @($next.Query.SelectedFilters)
-                $next.Data.AllFilters = @(
-                    $filterUniverse |
-                        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
-                        Sort-Object -Unique
-                )
-                $next.Runtime.LastError = $null
-            }
-            catch {
-                $next.Runtime.LastError = $_.Exception.Message
-            }
-
+            $next.Runtime.ReloadRequested = $true
             return Update-BrowserDerivedState -State $next
         }
         'Resize' {

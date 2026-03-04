@@ -21,6 +21,28 @@ This project targets PowerShell 7.0 or newer. Use PowerShell 7 behavior as the r
 * **UTF-8 is the default text encoding.** Use UTF-8 for source files; a BOM is optional unless a specific integration requires it.
 * **PowerShell 7 language/runtime features are allowed.** This includes APIs such as `[datetime]::UnixEpoch` and cmdlet options such as `Sort-Object -Stable`.
 
+## PowerShell Coding Conventions
+
+### `Write-Output -NoEnumerate` — never wrap the call in `@()`
+
+Several functions in this codebase (e.g. `Merge-AdjacentSegments`, `Write-ColorSegments`) return an array **as a single value** using `Write-Output -NoEnumerate @($array)`. This is the deliberate convention for preserving array identity across the PowerShell pipeline.
+
+**Footgun:** wrapping such a call in `@()` silently re-wraps the returned array as a 1-element array:
+
+```powershell
+# WRONG — produces @( @(seg1,seg2,...) ), Count=1
+$segs = @(Merge-AdjacentSegments -Segments $input)
+
+# CORRECT — produces @(seg1, seg2, ...) as intended
+$segs = Merge-AdjacentSegments -Segments $input
+```
+
+This bug produces no error; the variable just holds a nested array instead of a flat one, causing downstream code to silently misbehave (e.g. rendering blank rows). Always assign the result directly.
+
+Any function that uses `Write-Output -NoEnumerate` should carry a `# Returns array-as-value; do NOT wrap call in @()` comment on its closing line or in its help block.
+
+---
+
 ## Validating Changes
 
 ### Linter

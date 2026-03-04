@@ -94,6 +94,12 @@ function New-RenderTestState {
             IsRunning = $true
             LastError = $null
             DeleteChangeId = $null
+            CommandModal = [pscustomobject]@{
+                IsOpen         = $false
+                IsBusy         = $false
+                CurrentCommand = ''
+                History        = @()
+            }
         }
     }
 }
@@ -220,6 +226,12 @@ Describe 'Frame helpers' {
                         IsRunning = $true
                         LastError = $null
                         DeleteChangeId = $null
+                        CommandModal = [pscustomobject]@{
+                            IsOpen         = $false
+                            IsBusy         = $false
+                            CurrentCommand = ''
+                            History        = @()
+                        }
                     }
                 }
             }
@@ -491,6 +503,62 @@ Describe 'Frame helpers' {
                 $frameA = Build-FrameFromState -State $state
                 $frameB = Build-FrameFromState -State $state
                 (Get-FrameDiff -PreviousFrame $frameA -NextFrame $frameB).Count | Should -Be 0
+            }
+        }
+        Context 'CommandModal overlay' {
+            It 'does not overlay the frame when CommandModal is closed' {
+                $state = New-RenderStateFixture
+                $state.Runtime.CommandModal.IsOpen = $false
+                $frame = Build-FrameFromState -State $state
+                $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+                $allText | Should -Not -Match 'p4 Commands'
+            }
+
+            It 'renders modal overlay when CommandModal is open and includes current command' {
+                $state = New-RenderStateFixture
+                $state.Runtime.CommandModal.IsOpen         = $true
+                $state.Runtime.CommandModal.IsBusy         = $true
+                $state.Runtime.CommandModal.CurrentCommand = 'p4 changes -s pending'
+                $frame    = Build-FrameFromState -State $state
+                $overlaid = Apply-ModalOverlay -Frame $frame -CommandModal $state.Runtime.CommandModal
+                $allText  = ($overlaid.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+                $allText | Should -Match 'p4 Commands'
+                $allText | Should -Match 'p4 changes -s pending'
+            }
+
+            It 'renders history rows newest-first and includes duration' {
+                $state  = New-RenderStateFixture
+                $start1 = [datetime]'2026-01-01 10:00:00'
+                $end1   = [datetime]'2026-01-01 10:00:02'
+                $start2 = [datetime]'2026-01-01 10:00:05'
+                $end2   = [datetime]'2026-01-01 10:00:06'
+                $state.Runtime.CommandModal.IsOpen   = $true
+                $state.Runtime.CommandModal.IsBusy   = $false
+                $state.Runtime.CommandModal.History  = @(
+                    [pscustomobject]@{ StartedAt = $start2; EndedAt = $end2; CommandLine = 'p4 describe -s 200'; ExitCode = 0; Succeeded = $true; ErrorText = ''; DurationMs = 1000 },
+                    [pscustomobject]@{ StartedAt = $start1; EndedAt = $end1; CommandLine = 'p4 changes';         ExitCode = 0; Succeeded = $true; ErrorText = ''; DurationMs = 2000 }
+                )
+                $frame    = Build-FrameFromState -State $state
+                $overlaid = Apply-ModalOverlay -Frame $frame -CommandModal $state.Runtime.CommandModal
+                $allText  = ($overlaid.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+                $allText | Should -Match 'p4 describe -s 200'
+                $allText | Should -Match '1000ms'
+            }
+
+            It 'footer shows Please wait while busy and dismiss hint when idle' {
+                $state = New-RenderStateFixture
+                $state.Runtime.CommandModal.IsOpen = $true
+                $state.Runtime.CommandModal.IsBusy = $true
+                $frame    = Build-FrameFromState -State $state
+                $overlaid = Apply-ModalOverlay -Frame $frame -CommandModal $state.Runtime.CommandModal
+                $busyText = ($overlaid.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+                $busyText | Should -Match 'Please wait'
+
+                $state.Runtime.CommandModal.IsBusy = $false
+                $frame2    = Build-FrameFromState -State $state
+                $overlaid2 = Apply-ModalOverlay -Frame $frame2 -CommandModal $state.Runtime.CommandModal
+                $idleText  = ($overlaid2.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+                $idleText | Should -Match 'Dismiss'
             }
         }
     }

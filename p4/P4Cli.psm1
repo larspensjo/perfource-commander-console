@@ -2,6 +2,15 @@ Set-StrictMode -Version Latest
 
 Import-Module (Join-Path $PSScriptRoot 'Models.psm1') -Force
 
+function Format-P4CommandLine {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string[]]$P4Args
+    )
+    $quoted = $P4Args | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
+    return 'p4 ' + ($quoted -join ' ')
+}
+
 function Invoke-P4 {
     [CmdletBinding()]
     param(
@@ -10,7 +19,7 @@ function Invoke-P4 {
 
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = 'p4.exe'
-    $psi.Arguments = ($P4Args | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
+    $psi.Arguments = (Format-P4CommandLine -P4Args $P4Args).Substring(3)  # strip leading 'p4 '
     $psi.WorkingDirectory = (Get-Location).Path
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
@@ -295,4 +304,4 @@ function Remove-P4Changelist {
     Invoke-P4 -P4Args @('change', '-d', "$Change") | Out-Null
 }
 
-Export-ModuleMember -Function Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4ShelvedChangeNumbers, Remove-P4Changelist
+Export-ModuleMember -Function Format-P4CommandLine, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4ShelvedChangeNumbers, Remove-P4Changelist

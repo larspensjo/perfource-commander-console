@@ -9,6 +9,56 @@ Import-Module (Join-Path $PSScriptRoot 'tui\Reducer.psm1')   -Force
 Import-Module (Join-Path $PSScriptRoot 'tui\Input.psm1')     -Force
 Import-Module (Join-Path $PSScriptRoot 'tui\Render.psm1')    -Force -DisableNameChecking
 
+function Invoke-BrowserSideEffect {
+    <#
+    .SYNOPSIS
+        Wraps a p4 I/O block with CommandStart/CommandFinish modal lifecycle dispatch.
+    .DESCRIPTION
+        Dispatches CommandStart, renders the modal, invokes WorkItem (which performs I/O
+        and returns an updated state), then dispatches CommandFinish.  Returns the final
+        updated state.  On exception the modal stays open (CommandFinish Succeeded=$false).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][string]$CommandLine,
+        [Parameter(Mandatory = $true)][scriptblock]$WorkItem
+    )
+
+    $s = Invoke-BrowserReducer -State $State -Action ([pscustomobject]@{
+        Type        = 'CommandStart'
+        CommandLine = $CommandLine
+        StartedAt   = (Get-Date)
+    })
+    Render-BrowserState -State $s
+
+    $startedAt = Get-Date
+    $exitCode  = 0
+    $succeeded = $true
+    $errorText = ''
+    try {
+        $s = & $WorkItem $s
+    }
+    catch {
+        $exitCode  = 1
+        $succeeded = $false
+        $errorText = $_.Exception.Message
+        $s.Runtime.LastError = $errorText
+    }
+    $endedAt = Get-Date
+
+    $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{
+        Type        = 'CommandFinish'
+        CommandLine = $CommandLine
+        StartedAt   = $startedAt
+        EndedAt     = $endedAt
+        ExitCode    = $exitCode
+        Succeeded   = $succeeded
+        ErrorText   = $errorText
+    })
+
+    return $s
+}
+
 function Start-P4Browser {
     <#
     .SYNOPSIS
@@ -16,7 +66,7 @@ function Start-P4Browser {
     .DESCRIPTION
         Launches an interactive terminal user interface for browsing and managing
         Perforce changelists, files, shelves, and streams. Keyboard-driven,
-        Total Commander–inspired workflow.
+        Total Commander-inspired workflow.
     .PARAMETER MaxChanges
         Maximum number of pending changelists to load. Defaults to 200.
     .EXAMPLE
@@ -30,11 +80,9 @@ function Start-P4Browser {
         [int]$MaxChanges = 200
     )
 
-    $changes = Get-P4ChangelistEntries -Max $MaxChanges
-
     $width  = [Console]::WindowWidth
     $height = [Console]::WindowHeight
-    $state  = New-BrowserState -Changes $changes -InitialWidth $width -InitialHeight $height
+    $state  = New-BrowserState -Changes @() -InitialWidth $width -InitialHeight $height
 
     $previousOutputEncoding = [Console]::OutputEncoding
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -43,6 +91,22 @@ function Start-P4Browser {
     [Console]::CursorVisible = $false
 
     try {
+        # Initial load
+        $loadCmdLine = "p4 changes -s pending -m $MaxChanges"
+        $state = Invoke-BrowserSideEffect -State $state -CommandLine $loadCmdLine -WorkItem {
+            param($s)
+            $fresh = Get-P4ChangelistEntries -Max $MaxChanges
+            $s.Data.AllChanges = @($fresh)
+            $filterUniverse = @($s.Data.AllChanges | ForEach-Object { @($_.Filters) })
+            $s.Data.AllFilters = @(
+                $filterUniverse |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                    Sort-Object -Unique
+            )
+            $s.Runtime.LastError = $null
+            return Update-BrowserDerivedState -State $s
+        }
+
         while ($state.Runtime.IsRunning) {
             $currentWidth  = [Console]::WindowWidth
             $currentHeight = [Console]::WindowHeight
@@ -60,15 +124,36 @@ function Start-P4Browser {
             if ($null -ne $action) {
                 $state = Invoke-BrowserReducer -State $state -Action $action
 
+                # Handle reload flag (Reload I/O lives outside the reducer for purity)
+                if ($state.Runtime.ReloadRequested) {
+                    $state.Runtime.ReloadRequested = $false
+                    $reloadCmdLine = "p4 changes -s pending -m 200"
+                    $state = Invoke-BrowserSideEffect -State $state -CommandLine $reloadCmdLine -WorkItem {
+                        param($s)
+                        $fresh = Get-P4ChangelistEntries -Max 200
+                        $s.Data.AllChanges = @($fresh)
+                        $filterUniverse = @($s.Data.AllChanges | ForEach-Object { @($_.Filters) })
+                        $filterUniverse += @($s.Query.SelectedFilters)
+                        $s.Data.AllFilters = @(
+                            $filterUniverse |
+                                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                                Sort-Object -Unique
+                        )
+                        $s.Runtime.LastError = $null
+                        return Update-BrowserDerivedState -State $s
+                    }
+                }
+
                 # Fetch describe on-demand (I/O lives outside the reducer to keep it pure)
                 if (-not [string]::IsNullOrWhiteSpace([string]$state.Runtime.LastSelectedId)) {
                     $change = ConvertTo-ChangeNumberFromId -Id $state.Runtime.LastSelectedId
                     if ($null -ne $change -and -not $state.Data.DescribeCache.ContainsKey($change)) {
-                        try {
-                            $state.Data.DescribeCache[$change] = Get-P4Describe -Change $change
-                            $state.Runtime.LastError = $null
-                        } catch {
-                            $state.Runtime.LastError = $_.Exception.Message
+                        $describeCmdLine = Format-P4CommandLine -P4Args @('describe', '-s', "$change")
+                        $state = Invoke-BrowserSideEffect -State $state -CommandLine $describeCmdLine -WorkItem {
+                            param($s)
+                            $s.Data.DescribeCache[$change] = Get-P4Describe -Change $change
+                            $s.Runtime.LastError = $null
+                            return $s
                         }
                     }
                 }
@@ -78,28 +163,24 @@ function Start-P4Browser {
                     $change = ConvertTo-ChangeNumberFromId -Id $state.Runtime.DeleteChangeId
                     $state.Runtime.DeleteChangeId = $null
                     if ($null -ne $change) {
-                        try {
+                        $deleteCmdLine = Format-P4CommandLine -P4Args @('change', '-d', "$change")
+                        $state = Invoke-BrowserSideEffect -State $state -CommandLine $deleteCmdLine -WorkItem {
+                            param($s)
                             Remove-P4Changelist -Change $change
-                            # Remove from local state without full reload
                             $deletedId = "CL-$change"
-                            $state.Data.AllChanges = @($state.Data.AllChanges | Where-Object { $_.Id -ne $deletedId })
-                            $filterUniverse = @(
-                                $state.Data.AllChanges |
-                                    ForEach-Object { @($_.Filters) }
-                            )
-                            if ($null -ne $state.Query -and $null -ne $state.Query.SelectedFilters) {
-                                $filterUniverse += @($state.Query.SelectedFilters)
+                            $s.Data.AllChanges = @($s.Data.AllChanges | Where-Object { $_.Id -ne $deletedId })
+                            $filterUniverse = @($s.Data.AllChanges | ForEach-Object { @($_.Filters) })
+                            if ($null -ne $s.Query -and $null -ne $s.Query.SelectedFilters) {
+                                $filterUniverse += @($s.Query.SelectedFilters)
                             }
-                            $state.Data.AllFilters = @(
+                            $s.Data.AllFilters = @(
                                 $filterUniverse |
                                     Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
                                     Sort-Object -Unique
                             )
-                            $state.Data.DescribeCache.Remove($change) | Out-Null
-                            $state = Update-BrowserDerivedState -State $state
-                            $state.Runtime.LastError = $null
-                        } catch {
-                            $state.Runtime.LastError = $_.Exception.Message
+                            $s.Data.DescribeCache.Remove($change) | Out-Null
+                            $s.Runtime.LastError = $null
+                            return Update-BrowserDerivedState -State $s
                         }
                     }
                 }

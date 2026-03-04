@@ -36,6 +36,11 @@ function Test-IsSegmentLike {
     return $Value.PSObject.Properties.Match('Text').Count -gt 0
 }
 
+# Returns an array-as-value via Write-Output -NoEnumerate.
+# CALLER: do NOT wrap this call in @() — that re-wraps the returned array as a
+# 1-element array, which silently breaks any downstream segment processing.
+# Correct:  $segs = Merge-AdjacentSegments -Segments $input
+# WRONG:    $segs = @(Merge-AdjacentSegments -Segments $input)  # nests array!
 function Merge-AdjacentSegments {
     param([Parameter(Mandatory = $true)]$Segments)
 
@@ -77,6 +82,8 @@ function Merge-AdjacentSegments {
     Write-Output -NoEnumerate @($merged)
 }
 
+# Returns an array-as-value via Write-Output -NoEnumerate.
+# CALLER: do NOT wrap this call in @() — see Merge-AdjacentSegments note above.
 function Write-ColorSegments {
     param(
         [Parameter(Mandatory = $true)]$Segments,
@@ -714,7 +721,7 @@ function Build-StatusBarRow {
     )
 
     $hideMode = if ($State.Ui.HideUnavailableFilters) { 'On' } else { 'Off' }
-    $statusText = "Total: $($State.Data.AllChanges.Count) | Filtered: $($State.Derived.VisibleChangeIds.Count) | Selected Filters: $($State.Query.SelectedFilters.Count) | HideUnavailable: $hideMode | [Tab] Switch [Space] Toggle [PgUp/PgDn] Page [Home/End] [F5] Reload [X/Del] Delete [H] Hide [Q] Quit"
+    $statusText = "Total: $($State.Data.AllChanges.Count) | Filtered: $($State.Derived.VisibleChangeIds.Count) | Selected Filters: $($State.Query.SelectedFilters.Count) | HideUnavailable: $hideMode | [Tab] Switch [Space] Toggle [PgUp/PgDn] Page [Home/End] [F5] Reload [X/Del] Delete [H] Hide [F6] CmdLog [Q] Quit"
     $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
 
     $segments = Write-ColorSegments -Segments @(@{
@@ -738,6 +745,122 @@ function Build-StatusBarRow {
         Y = $Layout.StatusPane.Y
         Segments = $mergedSegments
         Signature = $signature
+    }
+}
+
+function Build-CommandModalRows {
+    param(
+        [Parameter(Mandatory = $true)]$CommandModal,
+        [Parameter(Mandatory = $true)][int]$Width,
+        [Parameter(Mandatory = $true)][int]$MaxRows
+    )
+
+    $borderColor    = 'DarkCyan'
+    $isBusy         = [bool](Get-PropertyValueOrDefault   -Object $CommandModal -Name 'IsBusy'          -Default $false)
+    $currentCommand = [string](Get-PropertyValueOrDefault -Object $CommandModal -Name 'CurrentCommand' -Default '')
+    $history        = @(Get-PropertyValueOrDefault        -Object $CommandModal -Name 'History'        -Default @())
+
+    # Box height: top + inner content rows + bottom border; minimum 4
+    $boxHeight = [Math]::Max(4, [Math]::Min($MaxRows, 12))
+    $innerRows = $boxHeight - 2
+
+    $contentRows = [System.Collections.Generic.List[object]]::new()
+
+    if ($isBusy) {
+        $contentRows.Add(@(
+            @{ Text = 'Running: '; Color = 'DarkGray' },
+            @{ Text = $currentCommand; Color = 'Yellow' }
+        ))
+    }
+
+    foreach ($entry in $history) {
+        if ($contentRows.Count -ge ($innerRows - 1)) { break }  # reserve 1 row for footer
+        $ts         = ([datetime]$entry.StartedAt).ToString('HH:mm:ss')
+        $tag        = if ([bool]$entry.Succeeded) { '[OK] ' } else { '[ERR]' }
+        $tagColor   = if ([bool]$entry.Succeeded) { 'Green' } else { 'Red' }
+        $durationMs = [int]$entry.DurationMs
+        $cmdLine    = [string]$entry.CommandLine
+        $contentRows.Add(@(
+            @{ Text = "$ts "; Color = 'DarkGray' },
+            @{ Text = $tag;   Color = $tagColor },
+            @{ Text = " ${durationMs}ms  $cmdLine"; Color = 'Gray' }
+        ))
+    }
+
+    # Pad remaining inner rows with blank lines
+    while ($contentRows.Count -lt ($innerRows - 1)) {
+        $contentRows.Add(@(@{ Text = ''; Color = 'Gray' }))
+    }
+
+    # Footer
+    $footerText  = if ($isBusy) { 'Please wait...' } else { '[F6] Reopen  [Esc] Dismiss  [Q] Quit' }
+    $footerColor = if ($isBusy) { 'Yellow' } else { 'DarkGray' }
+    $contentRows.Add(@(@{ Text = $footerText; Color = $footerColor }))
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+    $rows.Add((Build-BoxTopSegments    -Title '[p4 Commands]' -Width $Width -BorderColor $borderColor -TitleColor 'Cyan'))
+    foreach ($row in $contentRows) {
+        $rows.Add((Build-BorderedRowSegments -InnerSegments $row -Width $Width -BorderColor $borderColor))
+    }
+    $rows.Add((Build-BoxBottomSegments -Width $Width -BorderColor $borderColor))
+
+    # Emit each row as a single (array) object — `return $rows.ToArray()` would unroll
+    # both the outer list and each inner segment array, collapsing rows into individual
+    # segments.  Write-Output -NoEnumerate preserves every row-array as one pipeline item.
+    foreach ($row in $rows) {
+        Write-Output -NoEnumerate $row
+    }
+}
+
+function Apply-ModalOverlay {
+    param(
+        [Parameter(Mandatory = $true)]$Frame,
+        [Parameter(Mandatory = $true)]$CommandModal
+    )
+
+    $width      = $Frame.Width
+    $height     = $Frame.Height
+    $leftPad    = 2
+    $modalWidth = [Math]::Max(4, $width - 4)
+    $rightPad   = $width - $leftPad - $modalWidth
+
+    $maxRows   = [Math]::Max(4, [Math]::Min([int][Math]::Floor($height / 3), 12))
+    $modalRows = Build-CommandModalRows -CommandModal $CommandModal -Width $modalWidth -MaxRows $maxRows
+
+    # Anchor above the status bar (last row)
+    $modalStart = $height - 1 - $modalRows.Count
+    if ($modalStart -lt 0) { $modalStart = 0 }
+
+    $newRows = [object[]]::new($Frame.Rows.Count)
+    for ($i = 0; $i -lt $Frame.Rows.Count; $i++) {
+        $newRows[$i] = $Frame.Rows[$i]
+    }
+
+    for ($i = 0; $i -lt $modalRows.Count; $i++) {
+        $frameRowIndex = $modalStart + $i
+        if ($frameRowIndex -ge 0 -and $frameRowIndex -lt ($height - 1)) {  # never overwrite status bar
+            $leftSeg  = @{ Text = (' ' * $leftPad);  Color = 'Black'; BackgroundColor = '' }
+            $rightSeg = @{ Text = (' ' * $rightPad); Color = 'Black'; BackgroundColor = '' }
+            $segs     = @($leftSeg) + @($modalRows[$i]) + @($rightSeg)
+            # Build-BorderedRowSegments embeds inner segments as a nested array; flatten
+            # before Resize-SegmentRow (which, unlike Write-ColorSegments, does not recurse).
+            # NOTE: do NOT wrap in @() here — Merge-AdjacentSegments uses Write-Output -NoEnumerate,
+            # so @(call) would re-wrap the returned array as a single element, producing Count=1.
+            $segs     = Merge-AdjacentSegments -Segments $segs
+            $segs     = Resize-SegmentRow -Segments $segs -Width $width
+            $segs     = Merge-AdjacentSegments -Segments $segs
+            $newRows[$frameRowIndex] = [pscustomobject]@{
+                Y         = $frameRowIndex
+                Segments  = $segs
+                Signature = Get-FrameRowSignature -Segments $segs
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Width  = $Frame.Width
+        Height = $Frame.Height
+        Rows   = $newRows
     }
 }
 
@@ -869,6 +992,10 @@ function Render-BrowserState {
     }
 
     $nextFrame = Build-FrameFromState -State $State
+    $commandModal = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'CommandModal' -Default $null
+    if ($null -ne $commandModal -and [bool](Get-PropertyValueOrDefault -Object $commandModal -Name 'IsOpen' -Default $false)) {
+        $nextFrame = Apply-ModalOverlay -Frame $nextFrame -CommandModal $commandModal
+    }
     $changedRows = Get-FrameDiff -PreviousFrame $script:PreviousFrame -NextFrame $nextFrame
     $flushOk = Flush-FrameDiff -ChangedRows $changedRows -Frame $nextFrame
     if ($flushOk) {

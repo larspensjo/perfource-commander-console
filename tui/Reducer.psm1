@@ -6,16 +6,16 @@ Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
 
 function New-BrowserState {
     param(
-        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Ideas,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Changes,
         [Parameter(Mandatory = $false)][int]$InitialWidth = 120,
         [Parameter(Mandatory = $false)][int]$InitialHeight = 40
     )
 
-    $tags = @($Ideas | ForEach-Object { @($_.Tags) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    $tags = @($Changes | ForEach-Object { @($_.Tags) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
 
     $state = [pscustomobject]@{
         Data = [pscustomobject]@{
-            AllIdeas      = @($Ideas)
+            AllChanges    = @($Changes)
             AllTags       = @($tags)
             DescribeCache = @{}
         }
@@ -32,14 +32,14 @@ function New-BrowserState {
             SortMode = 'Default'
         }
         Derived = [pscustomobject]@{
-            VisibleIdeaIds = @()
+            VisibleChangeIds = @()
             VisibleTags = @()
         }
         Cursor = [pscustomobject]@{
             TagIndex = 0
             TagScrollTop = 0
-            IdeaIndex = 0
-            IdeaScrollTop = 0
+            ChangeIndex = 0
+            ChangeScrollTop = 0
         }
         Runtime = [pscustomobject]@{
             IsRunning      = $true
@@ -56,7 +56,7 @@ function Copy-BrowserState {
 
     $copy = [pscustomobject]@{
         Data = [pscustomobject]@{
-            AllIdeas      = @($State.Data.AllIdeas)
+            AllChanges    = @($State.Data.AllChanges)
             AllTags       = @($State.Data.AllTags)
             DescribeCache = $State.Data.DescribeCache          # shared reference (append-only)
         }
@@ -73,14 +73,14 @@ function Copy-BrowserState {
             SortMode = $State.Query.SortMode
         }
         Derived = [pscustomobject]@{
-            VisibleIdeaIds = @($State.Derived.VisibleIdeaIds)
+            VisibleChangeIds = @($State.Derived.VisibleChangeIds)
             VisibleTags = @($State.Derived.VisibleTags)
         }
         Cursor = [pscustomobject]@{
             TagIndex = $State.Cursor.TagIndex
             TagScrollTop = $State.Cursor.TagScrollTop
-            IdeaIndex = $State.Cursor.IdeaIndex
-            IdeaScrollTop = $State.Cursor.IdeaScrollTop
+            ChangeIndex = $State.Cursor.ChangeIndex
+            ChangeScrollTop = $State.Cursor.ChangeScrollTop
         }
         Runtime = [pscustomobject]@{
             IsRunning      = $State.Runtime.IsRunning
@@ -99,21 +99,21 @@ function Copy-BrowserState {
 function Update-BrowserDerivedState {
     param([Parameter(Mandatory = $true)]$State)
 
-    $visibleIdeaIds = Get-VisibleIdeaIds -AllIdeas $State.Data.AllIdeas -SelectedTags $State.Query.SelectedTags -SearchText $State.Query.SearchText -SearchMode $State.Query.SearchMode -SortMode $State.Query.SortMode
-    $State.Derived.VisibleIdeaIds = @($visibleIdeaIds)
+    $visibleChangeIds = Get-VisibleChangeIds -AllChanges $State.Data.AllChanges -SelectedTags $State.Query.SelectedTags -SearchText $State.Query.SearchText -SearchMode $State.Query.SearchMode -SortMode $State.Query.SortMode
+    $State.Derived.VisibleChangeIds = @($visibleChangeIds)
 
-    $visibleIdeaIdSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($id in $State.Derived.VisibleIdeaIds) {
-        [void]$visibleIdeaIdSet.Add([string]$id)
+    $visibleChangeIdSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($id in $State.Derived.VisibleChangeIds) {
+        [void]$visibleChangeIdSet.Add([string]$id)
     }
 
-    $visibleIdeas = @($State.Data.AllIdeas | Where-Object { $visibleIdeaIdSet.Contains([string]$_.Id) })
+    $visibleChanges = @($State.Data.AllChanges | Where-Object { $visibleChangeIdSet.Contains([string]$_.Id) })
 
     $tagItems = New-Object System.Collections.Generic.List[object]
     foreach ($tag in $State.Data.AllTags) {
         $matchCount = 0
-        foreach ($idea in $visibleIdeas) {
-            if (@($idea.Tags) -contains $tag) {
+        foreach ($cl in $visibleChanges) {
+            if (@($cl.Tags) -contains $tag) {
                 $matchCount++
             }
         }
@@ -135,34 +135,34 @@ function Update-BrowserDerivedState {
     }
     $State.Derived.VisibleTags = @($visibleTags)
 
-    $visibleCount = $State.Derived.VisibleIdeaIds.Count
+    $visibleCount = $State.Derived.VisibleChangeIds.Count
     if ($visibleCount -eq 0) {
-        $State.Cursor.IdeaIndex = 0
-        $State.Cursor.IdeaScrollTop = 0
+        $State.Cursor.ChangeIndex = 0
+        $State.Cursor.ChangeScrollTop = 0
     } else {
-        if ($State.Cursor.IdeaIndex -ge $visibleCount) {
-            $State.Cursor.IdeaIndex = $visibleCount - 1
+        if ($State.Cursor.ChangeIndex -ge $visibleCount) {
+            $State.Cursor.ChangeIndex = $visibleCount - 1
         }
-        if ($State.Cursor.IdeaIndex -lt 0) {
-            $State.Cursor.IdeaIndex = 0
+        if ($State.Cursor.ChangeIndex -lt 0) {
+            $State.Cursor.ChangeIndex = 0
         }
-        if ($State.Cursor.IdeaScrollTop -lt 0) {
-            $State.Cursor.IdeaScrollTop = 0
+        if ($State.Cursor.ChangeScrollTop -lt 0) {
+            $State.Cursor.ChangeScrollTop = 0
         }
 
-        $ideaViewport = 1
+        $changeViewport = 1
         if ($State.Ui.Layout -and $State.Ui.Layout.Mode -eq 'Normal') {
-            $ideaViewport = [Math]::Max(1, $State.Ui.Layout.ListPane.H - 1)
+            $changeViewport = [Math]::Max(1, $State.Ui.Layout.ListPane.H - 1)
         }
-        $maxIdeaScroll = [Math]::Max(0, $visibleCount - $ideaViewport)
-        if ($State.Cursor.IdeaScrollTop -gt $maxIdeaScroll) {
-            $State.Cursor.IdeaScrollTop = $maxIdeaScroll
+        $maxChangeScroll = [Math]::Max(0, $visibleCount - $changeViewport)
+        if ($State.Cursor.ChangeScrollTop -gt $maxChangeScroll) {
+            $State.Cursor.ChangeScrollTop = $maxChangeScroll
         }
-        if ($State.Cursor.IdeaIndex -lt $State.Cursor.IdeaScrollTop) {
-            $State.Cursor.IdeaScrollTop = $State.Cursor.IdeaIndex
+        if ($State.Cursor.ChangeIndex -lt $State.Cursor.ChangeScrollTop) {
+            $State.Cursor.ChangeScrollTop = $State.Cursor.ChangeIndex
         }
-        if ($State.Cursor.IdeaIndex -ge ($State.Cursor.IdeaScrollTop + $ideaViewport)) {
-            $State.Cursor.IdeaScrollTop = [Math]::Max(0, $State.Cursor.IdeaIndex - $ideaViewport + 1)
+        if ($State.Cursor.ChangeIndex -ge ($State.Cursor.ChangeScrollTop + $changeViewport)) {
+            $State.Cursor.ChangeScrollTop = [Math]::Max(0, $State.Cursor.ChangeIndex - $changeViewport + 1)
         }
     }
 
@@ -217,7 +217,7 @@ function Invoke-BrowserReducer {
         return 1
     }
 
-    function Get-IdeaViewportSize {
+    function Get-ChangeViewportSize {
         param($CurrentState)
         if ($CurrentState.Ui.Layout -and $CurrentState.Ui.Layout.Mode -eq 'Normal') {
             return [Math]::Max(1, $CurrentState.Ui.Layout.ListPane.H - 1)
@@ -232,7 +232,7 @@ function Invoke-BrowserReducer {
         }
         'SwitchPane' {
             if ($next.Ui.ActivePane -eq 'Tags') {
-                $next.Ui.ActivePane = 'Ideas'
+                $next.Ui.ActivePane = 'Changelists'
             } else {
                 $next.Ui.ActivePane = 'Tags'
             }
@@ -242,7 +242,7 @@ function Invoke-BrowserReducer {
             if ($next.Ui.ActivePane -eq 'Tags') {
                 if ($next.Cursor.TagIndex -gt 0) { $next.Cursor.TagIndex-- }
             } else {
-                if ($next.Cursor.IdeaIndex -gt 0) { $next.Cursor.IdeaIndex-- }
+                if ($next.Cursor.ChangeIndex -gt 0) { $next.Cursor.ChangeIndex-- }
             }
             return Update-BrowserDerivedState -State $next
         }
@@ -251,8 +251,8 @@ function Invoke-BrowserReducer {
                 $maxTagIndex = [Math]::Max(0, $next.Derived.VisibleTags.Count - 1)
                 if ($next.Cursor.TagIndex -lt $maxTagIndex) { $next.Cursor.TagIndex++ }
             } else {
-                $maxIdeaIndex = [Math]::Max(0, $next.Derived.VisibleIdeaIds.Count - 1)
-                if ($next.Cursor.IdeaIndex -lt $maxIdeaIndex) { $next.Cursor.IdeaIndex++ }
+                $maxChangeIndex = [Math]::Max(0, $next.Derived.VisibleChangeIds.Count - 1)
+                if ($next.Cursor.ChangeIndex -lt $maxChangeIndex) { $next.Cursor.ChangeIndex++ }
             }
             return Update-BrowserDerivedState -State $next
         }
@@ -261,8 +261,8 @@ function Invoke-BrowserReducer {
                 $step = Get-TagViewportSize -CurrentState $next
                 $next.Cursor.TagIndex = [Math]::Max(0, $next.Cursor.TagIndex - $step)
             } else {
-                $step = Get-IdeaViewportSize -CurrentState $next
-                $next.Cursor.IdeaIndex = [Math]::Max(0, $next.Cursor.IdeaIndex - $step)
+                $step = Get-ChangeViewportSize -CurrentState $next
+                $next.Cursor.ChangeIndex = [Math]::Max(0, $next.Cursor.ChangeIndex - $step)
             }
             return Update-BrowserDerivedState -State $next
         }
@@ -272,9 +272,9 @@ function Invoke-BrowserReducer {
                 $maxTagIndex = [Math]::Max(0, $next.Derived.VisibleTags.Count - 1)
                 $next.Cursor.TagIndex = [Math]::Min($maxTagIndex, $next.Cursor.TagIndex + $step)
             } else {
-                $step = Get-IdeaViewportSize -CurrentState $next
-                $maxIdeaIndex = [Math]::Max(0, $next.Derived.VisibleIdeaIds.Count - 1)
-                $next.Cursor.IdeaIndex = [Math]::Min($maxIdeaIndex, $next.Cursor.IdeaIndex + $step)
+                $step = Get-ChangeViewportSize -CurrentState $next
+                $maxChangeIndex = [Math]::Max(0, $next.Derived.VisibleChangeIds.Count - 1)
+                $next.Cursor.ChangeIndex = [Math]::Min($maxChangeIndex, $next.Cursor.ChangeIndex + $step)
             }
             return Update-BrowserDerivedState -State $next
         }
@@ -283,8 +283,8 @@ function Invoke-BrowserReducer {
                 $next.Cursor.TagIndex = 0
                 $next.Cursor.TagScrollTop = 0
             } else {
-                $next.Cursor.IdeaIndex = 0
-                $next.Cursor.IdeaScrollTop = 0
+                $next.Cursor.ChangeIndex = 0
+                $next.Cursor.ChangeScrollTop = 0
             }
             return Update-BrowserDerivedState -State $next
         }
@@ -292,7 +292,7 @@ function Invoke-BrowserReducer {
             if ($next.Ui.ActivePane -eq 'Tags') {
                 $next.Cursor.TagIndex = [Math]::Max(0, $next.Derived.VisibleTags.Count - 1)
             } else {
-                $next.Cursor.IdeaIndex = [Math]::Max(0, $next.Derived.VisibleIdeaIds.Count - 1)
+                $next.Cursor.ChangeIndex = [Math]::Max(0, $next.Derived.VisibleChangeIds.Count - 1)
             }
             return Update-BrowserDerivedState -State $next
         }
@@ -315,8 +315,8 @@ function Invoke-BrowserReducer {
                 [void]$next.Query.SelectedTags.Add($tag)
             }
 
-            $next.Cursor.IdeaIndex = 0
-            $next.Cursor.IdeaScrollTop = 0
+            $next.Cursor.ChangeIndex = 0
+            $next.Cursor.ChangeScrollTop = 0
             $next = Update-BrowserDerivedState -State $next
 
             $targetTagIndex = -1
@@ -355,20 +355,20 @@ function Invoke-BrowserReducer {
             return Update-BrowserDerivedState -State $next
         }
         'Describe' {
-            if ($next.Derived.VisibleIdeaIds.Count -eq 0) { return $next }
-            $idx = [Math]::Max(0, [Math]::Min($next.Cursor.IdeaIndex,
-                                               $next.Derived.VisibleIdeaIds.Count - 1))
-            $next.Runtime.LastSelectedId = $next.Derived.VisibleIdeaIds[$idx]
+            if ($next.Derived.VisibleChangeIds.Count -eq 0) { return $next }
+            $idx = [Math]::Max(0, [Math]::Min($next.Cursor.ChangeIndex,
+                                               $next.Derived.VisibleChangeIds.Count - 1))
+            $next.Runtime.LastSelectedId = $next.Derived.VisibleChangeIds[$idx]
             return Update-BrowserDerivedState -State $next
         }
         'Reload' {
             $next.Data.DescribeCache = @{}
             $next.Runtime.LastSelectedId = $null
             try {
-                $fresh = Get-P4PendingChangelistIdeaLikeEntries -Max 200
-                $next.Data.AllIdeas = @($fresh)
+                $fresh = Get-P4ChangelistEntries -Max 200
+                $next.Data.AllChanges = @($fresh)
                 $next.Data.AllTags = @(
-                    $next.Data.AllIdeas |
+                    $next.Data.AllChanges |
                         ForEach-Object { @($_.Tags) } |
                         Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
                         Sort-Object -Unique
@@ -395,10 +395,10 @@ function Invoke-BrowserReducer {
     }
 }
 
-function ConvertTo-ChangeNumberFromIdeaId {
+function ConvertTo-ChangeNumberFromId {
     param([string]$Id)
     if ($Id -match '^CL-(\d+)$') { return [int]$Matches[1] }
     return $null
 }
 
-Export-ModuleMember -Function New-BrowserState, Copy-BrowserState, Invoke-BrowserReducer, Update-BrowserDerivedState, ConvertTo-ChangeNumberFromIdeaId
+Export-ModuleMember -Function New-BrowserState, Copy-BrowserState, Invoke-BrowserReducer, Update-BrowserDerivedState, ConvertTo-ChangeNumberFromId

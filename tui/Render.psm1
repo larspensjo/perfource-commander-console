@@ -400,13 +400,13 @@ function Get-ScrollThumb {
 
 $script:PreviousFrame = $null
 
-function Get-IdeaById {
+function Get-ChangeById {
     param(
-        [Parameter(Mandatory = $true)][object[]]$Ideas,
+        [Parameter(Mandatory = $true)][object[]]$Changes,
         [Parameter(Mandatory = $true)][string]$Id
     )
 
-    return $Ideas | Where-Object { $_.Id -eq $Id } | Select-Object -First 1
+    return $Changes | Where-Object { $_.Id -eq $Id } | Select-Object -First 1
 }
 
 function Get-VisibleTagByIndex {
@@ -541,14 +541,14 @@ function Build-TagSegments {
     Write-Output -NoEnumerate $segments
 }
 
-function Build-IdeaSegments {
+function Build-ChangeSegments {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Marker,
-        [AllowNull()]$Idea,
+        [AllowNull()]$Change,
         [Parameter(Mandatory = $true)][bool]$IsSelected
     )
 
-    if ($null -eq $Idea) {
+    if ($null -eq $Change) {
         if ([string]::IsNullOrEmpty($Marker) -or $Marker -eq ' ') {
             Write-Output -NoEnumerate @()
             return
@@ -559,50 +559,50 @@ function Build-IdeaSegments {
         return
     }
 
-    $ideaId = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Id' -Default '')
-    $ideaTitle = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Title' -Default '')
+    $changeId = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Id' -Default '')
+    $changeTitle = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Title' -Default '')
 
     $markerColor = if ($IsSelected) { 'Cyan' } else { Get-MarkerColor -Marker $Marker }
     $titleColor = if ($IsSelected) { 'White' } else { 'Gray' }
 
     $segments = @(
         @{ Text = $Marker; Color = $markerColor },
-        @{ Text = " $ideaId"; Color = 'DarkGray' }
+        @{ Text = " $changeId"; Color = 'DarkGray' }
     )
 
-    if ($ideaTitle.Length -gt 0) {
-        $segments += @{ Text = " $ideaTitle"; Color = $titleColor }
+    if ($changeTitle.Length -gt 0) {
+        $segments += @{ Text = " $changeTitle"; Color = $titleColor }
     }
 
     Write-Output -NoEnumerate $segments
 }
 
-function Build-IdeaSummarySegments {
-    param([AllowNull()]$Idea)
+function Build-ChangeSummarySegments {
+    param([AllowNull()]$Change)
 
-    if ($null -eq $Idea) {
+    if ($null -eq $Change) {
         Write-Output -NoEnumerate @(
             @(
-                @{ Text = 'No matching ideas'; Color = 'DarkGray' }
+                @{ Text = 'No matching changelists'; Color = 'DarkGray' }
             )
         )
         return
     }
 
-    $ideaId   = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Id'       -Default '')
-    $priority = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Priority' -Default '')
-    $effort   = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Effort'   -Default '')
-    $risk     = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Risk'     -Default '')
-    $summary  = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Summary'  -Default '')
-    $rationale = [string](Get-PropertyValueOrDefault -Object $Idea -Name 'Rationale' -Default '')
-    $tagsRaw  = Get-PropertyValueOrDefault -Object $Idea -Name 'Tags' -Default @()
+    $changeId  = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Id'       -Default '')
+    $priority = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Priority' -Default '')
+    $effort   = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Effort'   -Default '')
+    $risk     = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Risk'     -Default '')
+    $summary  = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Summary'  -Default '')
+    $rationale = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Rationale' -Default '')
+    $tagsRaw  = Get-PropertyValueOrDefault -Object $Change -Name 'Tags' -Default @()
     $tags     = @($tagsRaw | ForEach-Object { [string]$_ })
     $tagsText = $tags -join ', '
 
     Write-Output -NoEnumerate @(
         @(
             @{ Text = 'ID: '; Color = 'DarkYellow' },
-            @{ Text = $ideaId; Color = 'DarkGray' }
+            @{ Text = $changeId; Color = 'DarkGray' }
         ),
         @(
             @{ Text = 'Priority: '; Color = 'DarkYellow' },
@@ -641,11 +641,11 @@ function Build-DetailSegments {
         $rows.Add(@(@{ Text = "Error: $lastError"; Color = 'Red' }))
     }
 
-    # Resolve selected idea
-    $selectedIdea = $null
-    if ($State.Derived.VisibleIdeaIds.Count -gt 0) {
-        $selectedId = $State.Derived.VisibleIdeaIds[[Math]::Min($State.Cursor.IdeaIndex, $State.Derived.VisibleIdeaIds.Count - 1)]
-        $selectedIdea = Get-IdeaById -Ideas $State.Data.AllIdeas -Id $selectedId
+    # Resolve selected changelist entry
+    $selectedChange = $null
+    if ($State.Derived.VisibleChangeIds.Count -gt 0) {
+        $selectedId = $State.Derived.VisibleChangeIds[[Math]::Min($State.Cursor.ChangeIndex, $State.Derived.VisibleChangeIds.Count - 1)]
+        $selectedChange = Get-ChangeById -Changes $State.Data.AllChanges -Id $selectedId
     }
 
     # Look up describe from cache via LastSelectedId
@@ -685,8 +685,8 @@ function Build-DetailSegments {
             ))
         }
     } else {
-        # Fall back to idea summary
-        foreach ($summaryRow in @(Build-IdeaSummarySegments -Idea $selectedIdea)) {
+        # Fall back to changelist summary
+        foreach ($summaryRow in @(Build-ChangeSummarySegments -Change $selectedChange)) {
             $rows.Add($summaryRow)
         }
     }
@@ -714,7 +714,7 @@ function Build-StatusBarRow {
     )
 
     $hideMode = if ($State.Ui.HideUnavailableTags) { 'On' } else { 'Off' }
-    $statusText = "Total: $($State.Data.AllIdeas.Count) | Filtered: $($State.Derived.VisibleIdeaIds.Count) | Selected Tags: $($State.Query.SelectedTags.Count) | HideUnavailable: $hideMode | [Tab] Switch [Space] Toggle [PgUp/PgDn] Page [Home/End] Jump [F5] Reload [H] Hide [Q] Quit"
+    $statusText = "Total: $($State.Data.AllChanges.Count) | Filtered: $($State.Derived.VisibleChangeIds.Count) | Selected Tags: $($State.Query.SelectedTags.Count) | HideUnavailable: $hideMode | [Tab] Switch [Space] Toggle [PgUp/PgDn] Page [Home/End] Jump [F5] Reload [H] Hide [Q] Quit"
     $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
 
     $segments = Write-ColorSegments -Segments @(@{
@@ -750,18 +750,18 @@ function Build-FrameFromState {
     $rows = [System.Collections.Generic.List[object]]::new($layout.Height)
 
     $tagBorderColor = Get-PaneBorderColor -PaneName 'Tags' -State $State
-    $ideaBorderColor = Get-PaneBorderColor -PaneName 'Ideas' -State $State
+    $changeBorderColor = Get-PaneBorderColor -PaneName 'Changelists' -State $State
     $detailBorderColor = 'DarkGray'
 
     $tagTitleColor = $tagBorderColor
-    $ideaTitleColor = $ideaBorderColor
+    $changeTitleColor = $changeBorderColor
     $detailTitleColor = 'DarkGray'
 
     $tagViewRows = [Math]::Max(1, $layout.TagPane.H - 2)
-    $ideaViewRows = [Math]::Max(1, $layout.ListPane.H - 2)
+    $changeViewRows = [Math]::Max(1, $layout.ListPane.H - 2)
     $detailRows = [Math]::Max(0, $layout.DetailPane.H - 2)
     $tagThumb = Get-ScrollThumb -TotalItems $State.Derived.VisibleTags.Count -ViewRows $tagViewRows -ScrollTop $State.Cursor.TagScrollTop
-    $ideaThumb = Get-ScrollThumb -TotalItems $State.Derived.VisibleIdeaIds.Count -ViewRows $ideaViewRows -ScrollTop $State.Cursor.IdeaScrollTop
+    $changeThumb = Get-ScrollThumb -TotalItems $State.Derived.VisibleChangeIds.Count -ViewRows $changeViewRows -ScrollTop $State.Cursor.ChangeScrollTop
 
     $detailSegments = Build-DetailSegments -State $State
 
@@ -783,38 +783,38 @@ function Build-FrameFromState {
         $rightBackgroundColor = ''
         if ($globalRow -lt $layout.ListPane.H) {
             if ($globalRow -eq 0) {
-                $rightSegments = Build-BoxTopSegments -Title '[Ideas]' -Width $layout.ListPane.W -BorderColor $ideaBorderColor -TitleColor $ideaTitleColor
+                $rightSegments = Build-BoxTopSegments -Title '[Changelists]' -Width $layout.ListPane.W -BorderColor $changeBorderColor -TitleColor $changeTitleColor
             } elseif ($globalRow -eq ($layout.ListPane.H - 1)) {
-                $rightSegments = Build-BoxBottomSegments -Width $layout.ListPane.W -BorderColor $ideaBorderColor
+                $rightSegments = Build-BoxBottomSegments -Width $layout.ListPane.W -BorderColor $changeBorderColor
             } else {
-                $ideaInnerRow = $globalRow - 1
-                $ideaMarker = ' '
-                $ideaIndex = $State.Cursor.IdeaScrollTop + $ideaInnerRow
-                $idea = $null
-                if ($ideaIndex -lt $State.Derived.VisibleIdeaIds.Count) {
-                    $ideaId = $State.Derived.VisibleIdeaIds[$ideaIndex]
-                    $idea = Get-IdeaById -Ideas $State.Data.AllIdeas -Id $ideaId
-                    if ($State.Cursor.IdeaIndex -eq $ideaIndex) {
-                        $ideaMarker = '>'
-                    } elseif ($null -ne $ideaThumb) {
-                        if ($ideaInnerRow -ge $ideaThumb.Start -and $ideaInnerRow -le $ideaThumb.End) {
-                            $ideaMarker = $SCROLLBAR_THUMB_GLYPH
+                $changeInnerRow = $globalRow - 1
+                $changeMarker = ' '
+                $changeListIndex = $State.Cursor.ChangeScrollTop + $changeInnerRow
+                $cl = $null
+                if ($changeListIndex -lt $State.Derived.VisibleChangeIds.Count) {
+                    $entryId = $State.Derived.VisibleChangeIds[$changeListIndex]
+                    $cl = Get-ChangeById -Changes $State.Data.AllChanges -Id $entryId
+                    if ($State.Cursor.ChangeIndex -eq $changeListIndex) {
+                        $changeMarker = '>'
+                    } elseif ($null -ne $changeThumb) {
+                        if ($changeInnerRow -ge $changeThumb.Start -and $changeInnerRow -le $changeThumb.End) {
+                            $changeMarker = $SCROLLBAR_THUMB_GLYPH
                         } else {
-                            $ideaMarker = $SCROLLBAR_TRACK_GLYPH
+                            $changeMarker = $SCROLLBAR_TRACK_GLYPH
                         }
                     }
-                } elseif ($null -ne $ideaThumb) {
-                    if ($ideaInnerRow -ge $ideaThumb.Start -and $ideaInnerRow -le $ideaThumb.End) {
-                        $ideaMarker = $SCROLLBAR_THUMB_GLYPH
+                } elseif ($null -ne $changeThumb) {
+                    if ($changeInnerRow -ge $changeThumb.Start -and $changeInnerRow -le $changeThumb.End) {
+                        $changeMarker = $SCROLLBAR_THUMB_GLYPH
                     } else {
-                        $ideaMarker = $SCROLLBAR_TRACK_GLYPH
+                        $changeMarker = $SCROLLBAR_TRACK_GLYPH
                     }
                 }
 
-                $isSelectedIdea = ($ideaIndex -lt $State.Derived.VisibleIdeaIds.Count -and $State.Cursor.IdeaIndex -eq $ideaIndex -and $null -ne $idea)
-                $ideaInnerSegments = Build-IdeaSegments -Marker $ideaMarker -Idea $idea -IsSelected $isSelectedIdea
-                $rightSegments = Build-BorderedRowSegments -InnerSegments $ideaInnerSegments -Width $layout.ListPane.W -BorderColor $ideaBorderColor
-                if ($isSelectedIdea) {
+                $isSelectedChange = ($changeListIndex -lt $State.Derived.VisibleChangeIds.Count -and $State.Cursor.ChangeIndex -eq $changeListIndex -and $null -ne $cl)
+                $changeInnerSegments = Build-ChangeSegments -Marker $changeMarker -Change $cl -IsSelected $isSelectedChange
+                $rightSegments = Build-BorderedRowSegments -InnerSegments $changeInnerSegments -Width $layout.ListPane.W -BorderColor $changeBorderColor
+                if ($isSelectedChange) {
                     $rightBackgroundColor = 'DarkCyan'
                 }
             }

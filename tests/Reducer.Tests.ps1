@@ -3,45 +3,45 @@ Import-Module $modulePath -Force
 
 Describe 'Browser reducer' {
     BeforeEach {
-        $ideas = @(
+        $changes = @(
             [pscustomobject]@{ Id = 'FI-1'; Title = 'One'; Tags = @('a'); Priority = 'P1'; Risk = 'M'; Captured = [datetime]'2026-02-10'; Summary='S1'; Rationale='R1'; Effort='M' },
             [pscustomobject]@{ Id = 'FI-2'; Title = 'Two'; Tags = @('a', 'b'); Priority = 'P2'; Risk = 'L'; Captured = [datetime]'2026-02-09'; Summary='S2'; Rationale='R2'; Effort='S' },
             [pscustomobject]@{ Id = 'FI-3'; Title = 'Three'; Tags = @('b', 'c'); Priority = 'P3'; Risk = 'H'; Captured = [datetime]'2026-02-08'; Summary='S3'; Rationale='R3'; Effort='L' }
         )
-        $state = New-BrowserState -Ideas $ideas -InitialWidth 120 -InitialHeight 40
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
     }
 
     It 'toggles active pane with SwitchPane' {
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
-        $next.Ui.ActivePane | Should -Be 'Ideas'
+        $next.Ui.ActivePane | Should -Be 'Changelists'
     }
 
-    It 'clamps idea index at max when moving down' {
+    It 'clamps change index at max when moving down' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
 
-        $state.Cursor.IdeaIndex | Should -Be 2
+        $state.Cursor.ChangeIndex | Should -Be 2
     }
 
-    It 'supports PageDown/PageUp in ideas pane' {
-        $state = New-BrowserState -Ideas $ideas -InitialWidth 120 -InitialHeight 16
+    It 'supports PageDown/PageUp in changelists pane' {
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 16
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'PageDown' })
-        $state.Cursor.IdeaIndex | Should -BeGreaterThan 0
+        $state.Cursor.ChangeIndex | Should -BeGreaterThan 0
 
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'PageUp' })
-        $state.Cursor.IdeaIndex | Should -Be 0
+        $state.Cursor.ChangeIndex | Should -Be 0
     }
 
-    It 'supports Home/End in ideas pane' {
+    It 'supports Home/End in changelists pane' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveEnd' })
-        $state.Cursor.IdeaIndex | Should -Be 2
+        $state.Cursor.ChangeIndex | Should -Be 2
 
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveHome' })
-        $state.Cursor.IdeaIndex | Should -Be 0
+        $state.Cursor.ChangeIndex | Should -Be 0
     }
 
     It 'supports Home/End in tags pane' {
@@ -53,9 +53,9 @@ Describe 'Browser reducer' {
     }
 
     It 'scrolls tags as soon as cursor moves past last visible tag row' {
-        $manyIdeas = @()
+        $manyChanges = @()
         for ($i = 0; $i -lt 20; $i++) {
-            $manyIdeas += [pscustomobject]@{
+            $manyChanges += [pscustomobject]@{
                 Id = "FI-T-$i"
                 Title = "Tag $i"
                 Tags = @("t$i")
@@ -68,7 +68,7 @@ Describe 'Browser reducer' {
             }
         }
 
-        $state = New-BrowserState -Ideas $manyIdeas -InitialWidth 120 -InitialHeight 16
+        $state = New-BrowserState -Changes $manyChanges -InitialWidth 120 -InitialHeight 16
         for ($n = 0; $n -lt 13; $n++) {
             $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
         }
@@ -77,14 +77,14 @@ Describe 'Browser reducer' {
         $state.Cursor.TagScrollTop | Should -Be 1
     }
 
-    It 'resets idea index after filter change' {
+    It 'resets change index after filter change' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
-        $state.Cursor.IdeaIndex | Should -Be 1
+        $state.Cursor.ChangeIndex | Should -Be 1
 
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleTag'; Tag = 'b' })
-        $state.Cursor.IdeaIndex | Should -Be 0
-        $state.Derived.VisibleIdeaIds | Should -Be @('FI-2', 'FI-3')
+        $state.Cursor.ChangeIndex | Should -Be 0
+        $state.Derived.VisibleChangeIds | Should -Be @('FI-2', 'FI-3')
     }
 
     It 'supports multi-action sequence with consistent state' {
@@ -93,8 +93,8 @@ Describe 'Browser reducer' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleTag'; Tag = 'b' })
 
-        $state.Derived.VisibleIdeaIds | Should -Be @('FI-2')
-        $state.Cursor.IdeaIndex | Should -Be 0
+        $state.Derived.VisibleChangeIds | Should -Be @('FI-2')
+        $state.Cursor.ChangeIndex | Should -Be 0
         $state.Query.SelectedTags.Contains('a') | Should -BeTrue
         $state.Query.SelectedTags.Contains('b') | Should -BeTrue
     }
@@ -121,13 +121,13 @@ Describe 'Browser reducer' {
     }
 
     It 'keeps cursor on same tag identity in hide mode when toggling twice' {
-        $ideas = @(
+        $changes = @(
             [pscustomobject]@{ Id = 'FI-1'; Title = 'One'; Tags = @('a', 'd'); Priority = 'P1'; Risk = 'M'; Captured = [datetime]'2026-02-10'; Summary='S1'; Rationale='R1'; Effort='M' },
             [pscustomobject]@{ Id = 'FI-2'; Title = 'Two'; Tags = @('b', 'd'); Priority = 'P2'; Risk = 'L'; Captured = [datetime]'2026-02-09'; Summary='S2'; Rationale='R2'; Effort='S' },
             [pscustomobject]@{ Id = 'FI-3'; Title = 'Three'; Tags = @('e', 'd'); Priority = 'P3'; Risk = 'H'; Captured = [datetime]'2026-02-08'; Summary='S3'; Rationale='R3'; Effort='L' },
             [pscustomobject]@{ Id = 'FI-4'; Title = 'Four'; Tags = @('c'); Priority = 'P3'; Risk = 'H'; Captured = [datetime]'2026-02-07'; Summary='S4'; Rationale='R4'; Effort='L' }
         )
-        $state = New-BrowserState -Ideas $ideas -InitialWidth 120 -InitialHeight 40
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleHideUnavailableTags' })
 
         $indexOfD = -1
@@ -148,15 +148,15 @@ Describe 'Browser reducer' {
         $next.Runtime.IsRunning | Should -BeFalse
     }
 
-    It 'Describe action sets LastSelectedId to the currently focused idea' {
+    It 'Describe action sets LastSelectedId to the currently focused changelist' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Describe' })
-        $next.Runtime.LastSelectedId | Should -Be $state.Derived.VisibleIdeaIds[$state.Cursor.IdeaIndex]
+        $next.Runtime.LastSelectedId | Should -Be $state.Derived.VisibleChangeIds[$state.Cursor.ChangeIndex]
     }
 
     It 'Describe action on empty list is a no-op' {
-        $emptyState = New-BrowserState -Ideas @() -InitialWidth 120 -InitialHeight 40
+        $emptyState = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
         $next = Invoke-BrowserReducer -State $emptyState -Action ([pscustomobject]@{ Type = 'Describe' })
         $next.Runtime.LastSelectedId | Should -BeNullOrEmpty
     }
@@ -173,7 +173,7 @@ Describe 'Browser reducer' {
     }
 
     It 'Reload clears DescribeCache and LastSelectedId' {
-        Mock Get-P4PendingChangelistIdeaLikeEntries -ModuleName Reducer { return @() }
+        Mock Get-P4ChangelistEntries -ModuleName Reducer { return @() }
         $state.Data.DescribeCache[1] = 'something'
         $state.Runtime.LastSelectedId = 'FI-1'
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Reload' })
@@ -182,20 +182,20 @@ Describe 'Browser reducer' {
     }
 }
 
-Describe 'ConvertTo-ChangeNumberFromIdeaId' {
+Describe 'ConvertTo-ChangeNumberFromId' {
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
     }
 
     It 'extracts change number from CL-prefixed id' {
-        ConvertTo-ChangeNumberFromIdeaId -Id 'CL-12345' | Should -Be 12345
+        ConvertTo-ChangeNumberFromId -Id 'CL-12345' | Should -Be 12345
     }
 
     It 'returns null for a non-CL id' {
-        ConvertTo-ChangeNumberFromIdeaId -Id 'FI-001' | Should -BeNullOrEmpty
+        ConvertTo-ChangeNumberFromId -Id 'FI-001' | Should -BeNullOrEmpty
     }
 
     It 'returns null for an empty string' {
-        ConvertTo-ChangeNumberFromIdeaId -Id '' | Should -BeNullOrEmpty
+        ConvertTo-ChangeNumberFromId -Id '' | Should -BeNullOrEmpty
     }
 }

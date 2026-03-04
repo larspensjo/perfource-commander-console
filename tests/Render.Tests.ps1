@@ -5,15 +5,15 @@ function New-RenderTestState {
     param(
         [int]$Width = 80,
         [int]$Height = 20,
-        [object[]]$VisibleIdeaIds = @('FI-1', 'FI-2'),
-        [int]$IdeaIndex = 0,
-        [int]$IdeaScrollTop = 0
+        [object[]]$VisibleChangeIds = @('FI-1', 'FI-2'),
+        [int]$ChangeIndex = 0,
+        [int]$ChangeScrollTop = 0
     )
 
     $selectedTags = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     [void]$selectedTags.Add('alpha')
 
-    $ideas = @(
+    $changes = @(
         [pscustomobject]@{
             Id = 'FI-1'
             Title = 'First idea'
@@ -61,11 +61,11 @@ function New-RenderTestState {
 
     return [pscustomobject]@{
         Data = [pscustomobject]@{
-            AllIdeas = $ideas
+            AllChanges = $changes
             AllTags = @('alpha', 'beta', 'gamma')
         }
         Ui = [pscustomobject]@{
-            ActivePane = 'Ideas'
+            ActivePane = 'Changelists'
             IsMaximized = $false
             HideUnavailableTags = $false
             Layout = $layout
@@ -77,7 +77,7 @@ function New-RenderTestState {
             SortMode = 'Default'
         }
         Derived = [pscustomobject]@{
-            VisibleIdeaIds = @($VisibleIdeaIds)
+            VisibleChangeIds = @($VisibleChangeIds)
             VisibleTags = @(
                 [pscustomobject]@{ Name = 'alpha'; MatchCount = 1; IsSelected = $true; IsSelectable = $true },
                 [pscustomobject]@{ Name = 'beta'; MatchCount = 1; IsSelected = $false; IsSelectable = $true },
@@ -87,8 +87,8 @@ function New-RenderTestState {
         Cursor = [pscustomobject]@{
             TagIndex = 0
             TagScrollTop = 0
-            IdeaIndex = $IdeaIndex
-            IdeaScrollTop = $IdeaScrollTop
+            ChangeIndex = $ChangeIndex
+            ChangeScrollTop = $ChangeScrollTop
         }
         Runtime = [pscustomobject]@{
             IsRunning = $true
@@ -130,15 +130,15 @@ Describe 'Frame helpers' {
                 param(
                     [int]$Width = 80,
                     [int]$Height = 20,
-                    [object[]]$VisibleIdeaIds = @('FI-1', 'FI-2'),
-                    [int]$IdeaIndex = 0,
-                    [int]$IdeaScrollTop = 0
+                    [object[]]$VisibleChangeIds = @('FI-1', 'FI-2'),
+                    [int]$ChangeIndex = 0,
+                    [int]$ChangeScrollTop = 0
                 )
 
                 $selectedTags = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
                 [void]$selectedTags.Add('alpha')
 
-                $ideas = @(
+                $changes = @(
                     [pscustomobject]@{
                         Id = 'FI-1'
                         Title = 'First idea'
@@ -186,11 +186,11 @@ Describe 'Frame helpers' {
 
                 return [pscustomobject]@{
                     Data = [pscustomobject]@{
-                        AllIdeas = $ideas
+                        AllChanges = $changes
                         AllTags = @('alpha', 'beta', 'gamma')
                     }
                     Ui = [pscustomobject]@{
-                        ActivePane = 'Ideas'
+                        ActivePane = 'Changelists'
                         IsMaximized = $false
                         HideUnavailableTags = $false
                         Layout = $layout
@@ -202,7 +202,7 @@ Describe 'Frame helpers' {
                         SortMode = 'Default'
                     }
                     Derived = [pscustomobject]@{
-                        VisibleIdeaIds = @($VisibleIdeaIds)
+                        VisibleChangeIds = @($VisibleChangeIds)
                         VisibleTags = @(
                             [pscustomobject]@{ Name = 'alpha'; MatchCount = 1; IsSelected = $true; IsSelectable = $true },
                             [pscustomobject]@{ Name = 'beta'; MatchCount = 1; IsSelected = $false; IsSelectable = $true },
@@ -212,8 +212,8 @@ Describe 'Frame helpers' {
                     Cursor = [pscustomobject]@{
                         TagIndex = 0
                         TagScrollTop = 0
-                        IdeaIndex = $IdeaIndex
-                        IdeaScrollTop = $IdeaScrollTop
+                        ChangeIndex = $ChangeIndex
+                        ChangeScrollTop = $ChangeScrollTop
                     }
                     Runtime = [pscustomobject]@{
                         IsRunning = $true
@@ -460,14 +460,14 @@ Describe 'Frame helpers' {
                 $frame.Rows[$frame.Rows.Count - 1].Y | Should -Be ($state.Ui.Layout.Height - 1)
             }
 
-            It 'renders no matching ideas message when there are zero visible ideas' {
-                $state = New-RenderStateFixture -VisibleIdeaIds @() -IdeaIndex 0
+            It 'renders no matching changelists message when there are zero visible changelists' {
+                $state = New-RenderStateFixture -VisibleChangeIds @() -ChangeIndex 0
                 $frame = Build-FrameFromState -State $state
-                (($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n") | Should -Match 'No matching ideas'
+                (($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n") | Should -Match 'No matching changelists'
             }
 
-            It 'applies selected row background in ideas pane' {
-                $state = New-RenderStateFixture -IdeaIndex 1
+            It 'applies selected row background in changelists pane' {
+                $state = New-RenderStateFixture -ChangeIndex 1
                 $frame = Build-FrameFromState -State $state
                 @($frame.Rows | Where-Object { @($_.Segments | Where-Object { $_.BackgroundColor -eq 'DarkCyan' }).Count -gt 0 }).Count | Should -BeGreaterThan 0
             }
@@ -475,8 +475,8 @@ Describe 'Frame helpers' {
 
         Context 'Frame integration intent' {
             It 'returns only changed rows between two identical frames with cursor move' {
-                $stateA = New-RenderStateFixture -IdeaIndex 0
-                $stateB = New-RenderStateFixture -IdeaIndex 1
+                $stateA = New-RenderStateFixture -ChangeIndex 0
+                $stateB = New-RenderStateFixture -ChangeIndex 1
                 $frameA = Build-FrameFromState -State $stateA
                 $frameB = Build-FrameFromState -State $stateB
                 $changed = Get-FrameDiff -PreviousFrame $frameA -NextFrame $frameB
@@ -485,7 +485,7 @@ Describe 'Frame helpers' {
             }
 
             It 'returns zero rows for identical rebuilt frames' {
-                $state = New-RenderStateFixture -IdeaIndex 1
+                $state = New-RenderStateFixture -ChangeIndex 1
                 $frameA = Build-FrameFromState -State $state
                 $frameB = Build-FrameFromState -State $state
                 (Get-FrameDiff -PreviousFrame $frameA -NextFrame $frameB).Count | Should -Be 0
@@ -564,25 +564,25 @@ Describe 'Write-ColorSegments' {
 
 Describe 'Segment builders' {
     InModuleScope 'Render' {
-        It 'builds unselected idea segments with semantic colors' {
-            $idea = [pscustomobject]@{ Id = 'FI-1'; Title = 'Title' }
-            $segments = Build-IdeaSegments -Marker '│' -Idea $idea -IsSelected $false
+        It 'builds unselected changelist segments with semantic colors' {
+            $cl = [pscustomobject]@{ Id = 'FI-1'; Title = 'Title' }
+            $segments = Build-ChangeSegments -Marker '│' -Change $cl -IsSelected $false
             $segments.Count | Should -Be 3
             $segments[0].Color | Should -Be 'DarkGray'
             $segments[1].Color | Should -Be 'DarkGray'
             $segments[2].Color | Should -Be 'Gray'
         }
 
-        It 'builds selected idea segments with focus colors' {
-            $idea = [pscustomobject]@{ Id = 'FI-2'; Title = 'Chosen' }
-            $segments = Build-IdeaSegments -Marker '>' -Idea $idea -IsSelected $true
+        It 'builds selected changelist segments with focus colors' {
+            $cl = [pscustomobject]@{ Id = 'FI-2'; Title = 'Chosen' }
+            $segments = Build-ChangeSegments -Marker '>' -Change $cl -IsSelected $true
             $segments[0].Color | Should -Be 'Cyan'
             $segments[1].Color | Should -Be 'DarkGray'
             $segments[2].Color | Should -Be 'White'
         }
 
         It 'builds scrollbar-only row as marker segment' {
-            $segments = Build-IdeaSegments -Marker '░' -Idea $null -IsSelected $false
+            $segments = Build-ChangeSegments -Marker '░' -Change $null -IsSelected $false
             $segments.Count | Should -Be 1
             $segments[0].Color | Should -Be 'Gray'
         }
@@ -598,7 +598,7 @@ Describe 'Segment builders' {
                 Rationale = 'Rationale text'
             }
 
-            $rows = Build-IdeaSummarySegments -Idea $idea
+            $rows = Build-ChangeSummarySegments -Change $idea
             $rows.Count | Should -Be 6
             $rows[0][0].Color | Should -Be 'DarkYellow'
             $rows[0][1].Color | Should -Be 'DarkGray'
@@ -608,7 +608,7 @@ Describe 'Segment builders' {
 
         It 'handles missing detail fields safely' {
             $idea = [pscustomobject]@{ Id = 'FI-empty' }
-            $rows = Build-IdeaSummarySegments -Idea $idea
+            $rows = Build-ChangeSummarySegments -Change $idea
             $rows.Count | Should -Be 6
             $rows[2][1].Text | Should -Be ''
             $rows[4][1].Text | Should -Be ''

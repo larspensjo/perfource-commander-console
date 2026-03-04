@@ -30,11 +30,11 @@ function Start-P4Browser {
         [int]$MaxChanges = 200
     )
 
-    $ideas = Get-P4PendingChangelistIdeaLikeEntries -Max $MaxChanges
+    $changes = Get-P4ChangelistEntries -Max $MaxChanges
 
     $width  = [Console]::WindowWidth
     $height = [Console]::WindowHeight
-    $state  = New-BrowserState -Ideas $ideas -InitialWidth $width -InitialHeight $height
+    $state  = New-BrowserState -Changes $changes -InitialWidth $width -InitialHeight $height
 
     $previousOutputEncoding = [Console]::OutputEncoding
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -62,7 +62,7 @@ function Start-P4Browser {
 
                 # Fetch describe on-demand (I/O lives outside the reducer to keep it pure)
                 if (-not [string]::IsNullOrWhiteSpace([string]$state.Runtime.LastSelectedId)) {
-                    $change = ConvertTo-ChangeNumberFromIdeaId -Id $state.Runtime.LastSelectedId
+                    $change = ConvertTo-ChangeNumberFromId -Id $state.Runtime.LastSelectedId
                     if ($null -ne $change -and -not $state.Data.DescribeCache.ContainsKey($change)) {
                         try {
                             $state.Data.DescribeCache[$change] = Get-P4Describe -Change $change

@@ -1,8 +1,8 @@
 Set-StrictMode -Version Latest
 
-function Get-VisibleIdeaIds {
+function Get-VisibleChangeIds {
     param(
-        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$AllIdeas,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$AllChanges,
         [Parameter(Mandatory = $false)][AllowNull()]$SelectedTags,
         [Parameter(Mandatory = $false)][AllowEmptyString()][string]$SearchText = '',
         [Parameter(Mandatory = $false)][ValidateSet('None', 'Regex', 'Text')][string]$SearchMode = 'None',
@@ -22,12 +22,12 @@ function Get-VisibleIdeaIds {
         }
     }
 
-    $filtered = @($AllIdeas | Where-Object {
-        $idea = $_
+    $filtered = @($AllChanges | Where-Object {
+        $entry = $_
 
         $matchesTags = $true
         foreach ($requiredTag in $requiredTags) {
-            if (-not (@($idea.Tags) -contains $requiredTag)) {
+            if (-not (@($entry.Tags) -contains $requiredTag)) {
                 $matchesTags = $false
                 break
             }
@@ -40,7 +40,7 @@ function Get-VisibleIdeaIds {
             return $true
         }
 
-        $title = [string]$idea.Title
+        $title = [string]$entry.Title
         switch ($SearchMode) {
             'Text' { return $title.IndexOf($SearchText, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 }
             'Regex' {
@@ -74,4 +74,4 @@ function Get-VisibleIdeaIds {
     return @($filtered | ForEach-Object { $_.Id })
 }
 
-Export-ModuleMember -Function Get-VisibleIdeaIds
+Export-ModuleMember -Function Get-VisibleChangeIds

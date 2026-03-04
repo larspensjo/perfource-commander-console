@@ -21,7 +21,7 @@ function New-P4Changelist {
     }
 }
 
-function ConvertTo-IdeaLikeEntryFromP4Changelist {
+function ConvertTo-ChangelistEntry {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][object]$Changelist
@@ -45,4 +45,4 @@ function ConvertTo-IdeaLikeEntryFromP4Changelist {
     }
 }
 
-Export-ModuleMember -Function *-P4Changelist, ConvertTo-IdeaLikeEntryFromP4Changelist
+Export-ModuleMember -Function *-P4Changelist, ConvertTo-ChangelistEntry

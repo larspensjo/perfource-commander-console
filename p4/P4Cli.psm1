@@ -127,14 +127,14 @@ function Get-P4PendingChangelists {
     return @($result | Sort-Object Time -Descending)
 }
 
-function Get-P4PendingChangelistIdeaLikeEntries {
+function Get-P4ChangelistEntries {
     [CmdletBinding()]
     param(
         [int]$Max = 200
     )
 
     Get-P4PendingChangelists -Max $Max |
-        ForEach-Object { ConvertTo-IdeaLikeEntryFromP4Changelist -Changelist $_ }
+        ForEach-Object { ConvertTo-ChangelistEntry -Changelist $_ }
 }
 
 function Get-P4Describe {
@@ -187,4 +187,4 @@ function Get-P4Describe {
     }
 }
 
-Export-ModuleMember -Function Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4PendingChangelistIdeaLikeEntries, Get-P4Describe
+Export-ModuleMember -Function Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe

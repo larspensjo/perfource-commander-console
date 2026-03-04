@@ -13,12 +13,10 @@ function New-BrowserState {
         [Parameter(Mandatory = $false)][int]$InitialHeight = 40
     )
 
-    $filters = @($Changes | ForEach-Object { @($_.Filters) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
-
     $state = [pscustomobject]@{
         Data = [pscustomobject]@{
             AllChanges    = @($Changes)
-            AllFilters       = @($filters)
+            AllFilters    = @(Get-AllFilterNames)
             DescribeCache = @{}
         }
         Ui = [pscustomobject]@{
@@ -131,7 +129,7 @@ function Update-BrowserDerivedState {
     foreach ($filter in $State.Data.AllFilters) {
         $matchCount = 0
         foreach ($cl in $visibleChanges) {
-            if (@($cl.Filters) -contains $filter) {
+            if (Test-EntryMatchesFilter -FilterName $filter -Entry $cl) {
                 $matchCount++
             }
         }
@@ -454,7 +452,7 @@ function Invoke-BrowserReducer {
 
 function ConvertTo-ChangeNumberFromId {
     param([string]$Id)
-    if ($Id -match '^CL-(\d+)$') { return [int]$Matches[1] }
+    if ($Id -match '^\d+$') { return [int]$Id }
     return $null
 }
 

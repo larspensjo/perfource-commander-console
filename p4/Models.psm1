@@ -25,29 +25,19 @@ function ConvertTo-ChangelistEntry {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][object]$Changelist,
-        [Parameter(Mandatory = $false)][bool]$IsEmpty = $false
+        [Parameter(Mandatory = $false)][bool]$HasShelvedFiles = $false,
+        [Parameter(Mandatory = $false)][bool]$HasOpenedFiles = $false
     )
 
     $title = [string]$Changelist.Description
     if ([string]::IsNullOrWhiteSpace($title)) { $title = '(no description)' }
 
-    $filters = @($Changelist.Status, $Changelist.Client, $Changelist.User) |
-                    Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
-                    Select-Object -Unique
-    if ($IsEmpty) {
-        $filters = @($filters) + @('Empty')
-    }
-
     [pscustomobject]@{
-        Id        = "CL-$($Changelist.Change)"
-        Title     = $title
-        Filters   = $filters
-        Priority  = 'P2'
-        Risk      = 'M'
-        Effort    = 'M'
-        Summary   = $title
-        Rationale = "User=$($Changelist.User)  Client=$($Changelist.Client)  Status=$($Changelist.Status)  Time=$($Changelist.Time.ToString('u'))"
-        Captured  = $Changelist.Time
+        Id              = "$($Changelist.Change)"
+        Title           = $title
+        HasShelvedFiles = $HasShelvedFiles
+        HasOpenedFiles  = $HasOpenedFiles
+        Captured        = $Changelist.Time
     }
 }
 

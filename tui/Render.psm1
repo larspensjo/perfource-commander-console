@@ -429,29 +429,6 @@ function Get-VisibleFilterByIndex {
     return $State.Derived.VisibleFilters[$FilterIndex]
 }
 
-function Get-PriorityColor {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Priority)
-
-    switch ($Priority) {
-        'P0' { return 'Red' }
-        'P1' { return 'Red' }
-        'P2' { return 'Yellow' }
-        'P3' { return 'DarkCyan' }
-        default { return 'Gray' }
-    }
-}
-
-function Get-RiskColor {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Risk)
-
-    switch ($Risk) {
-        'H' { return 'Red' }
-        'M' { return 'Yellow' }
-        'L' { return 'DarkGray' }
-        default { return 'Gray' }
-    }
-}
-
 function Get-MarkerColor {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Marker)
 
@@ -596,45 +573,23 @@ function Build-ChangeSummarySegments {
         return
     }
 
-    $changeId  = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Id'       -Default '')
-    $priority = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Priority' -Default '')
-    $effort   = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Effort'   -Default '')
-    $risk     = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Risk'     -Default '')
-    $summary  = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Summary'  -Default '')
-    $rationale = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Rationale' -Default '')
-    $filtersRaw  = Get-PropertyValueOrDefault -Object $Change -Name 'Filters' -Default @()
-    $filters     = @($filtersRaw | ForEach-Object { [string]$_ })
-    $filtersText = $filters -join ', '
+    $changeId = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Id'    -Default '')
+    $title    = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Title' -Default '')
 
-    Write-Output -NoEnumerate @(
-        @(
-            @{ Text = 'ID: '; Color = 'DarkYellow' },
-            @{ Text = $changeId; Color = 'DarkGray' }
-        ),
-        @(
-            @{ Text = 'Priority: '; Color = 'DarkYellow' },
-            @{ Text = $priority; Color = (Get-PriorityColor -Priority $priority) },
-            @{ Text = '  Effort: '; Color = 'DarkYellow' },
-            @{ Text = $effort; Color = 'Gray' },
-            @{ Text = '  Risk: '; Color = 'DarkYellow' },
-            @{ Text = $risk; Color = (Get-RiskColor -Risk $risk) }
-        ),
-        @(
-            @{ Text = 'Filters: '; Color = 'DarkYellow' },
-            @{ Text = $filtersText; Color = 'Gray' }
-        ),
-        @(
-            @{ Text = ''; Color = 'Gray' }
-        ),
-        @(
-            @{ Text = 'Summary: '; Color = 'DarkYellow' },
-            @{ Text = $summary; Color = 'Gray' }
-        ),
-        @(
-            @{ Text = 'Rationale: '; Color = 'DarkYellow' },
-            @{ Text = $rationale; Color = 'Gray' }
-        )
+    # Row 0: Id
+    $row0 = @(
+        @{ Text = 'Id: ';    Color = 'DarkYellow' },
+        @{ Text = $changeId; Color = 'DarkGray'   }
     )
+
+    # Row 1: Title
+    $row1 = @(
+        @{ Text = 'Title: '; Color = 'DarkYellow' },
+        @{ Text = $title;    Color = 'Gray'        }
+    )
+
+    Write-Output -NoEnumerate $row0
+    Write-Output -NoEnumerate $row1
 }
 
 function Build-DetailSegments {
@@ -670,7 +625,7 @@ function Build-DetailSegments {
     $describeCache  = Get-PropertyValueOrDefault -Object $State.Data   -Name 'DescribeCache'  -Default $null
     if (-not [string]::IsNullOrWhiteSpace([string]$lastSelectedId) -and $null -ne $describeCache) {
         $change = $null
-        if ([string]$lastSelectedId -match '^CL-(\d+)$') { $change = [int]$Matches[1] }
+        if ([string]$lastSelectedId -match '^\d+$') { $change = [int]$lastSelectedId }
         if ($null -ne $change -and $describeCache.ContainsKey($change)) {
             $desc = $describeCache[$change]
         }

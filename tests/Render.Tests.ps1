@@ -597,21 +597,6 @@ Describe 'Frame helpers' {
 
 Describe 'Color helpers' {
     InModuleScope 'Render' {
-        It 'maps priority values to semantic colors' {
-            Get-PriorityColor -Priority 'P0' | Should -Be 'Red'
-            Get-PriorityColor -Priority 'P1' | Should -Be 'Red'
-            Get-PriorityColor -Priority 'P2' | Should -Be 'Yellow'
-            Get-PriorityColor -Priority 'P3' | Should -Be 'DarkCyan'
-            Get-PriorityColor -Priority 'UNKNOWN' | Should -Be 'Gray'
-        }
-
-        It 'maps risk values to semantic colors' {
-            Get-RiskColor -Risk 'H' | Should -Be 'Red'
-            Get-RiskColor -Risk 'M' | Should -Be 'Yellow'
-            Get-RiskColor -Risk 'L' | Should -Be 'DarkGray'
-            Get-RiskColor -Risk 'UNKNOWN' | Should -Be 'Gray'
-        }
-
         It 'maps marker glyphs with cursor precedence' {
             Get-MarkerColor -Marker '>' | Should -Be 'Cyan'
             Get-MarkerColor -Marker '░' | Should -Be 'Gray'
@@ -688,32 +673,25 @@ Describe 'Segment builders' {
             $segments[0].Color | Should -Be 'Gray'
         }
 
-        It 'builds detail rows with semantic label and value colors' {
+        It 'builds detail rows with label and value colors' {
             $idea = [pscustomobject]@{
-                Id = 'FI-9'
-                Priority = 'P2'
-                Effort = 'M'
-                Risk = 'H'
-                Filters = @('alpha', 'beta')
-                Summary = 'Summary text'
-                Rationale = 'Rationale text'
+                Id    = '12345'
+                Title = 'A changelist title'
             }
 
             $rows = Build-ChangeSummarySegments -Change $idea
-            $rows.Count | Should -Be 6
+            $rows.Count | Should -Be 2
             $rows[0][0].Color | Should -Be 'DarkYellow'
             $rows[0][1].Color | Should -Be 'DarkGray'
-            $rows[1][1].Color | Should -Be 'Yellow'
-            $rows[1][5].Color | Should -Be 'Red'
+            $rows[1][0].Color | Should -Be 'DarkYellow'
+            $rows[1][1].Color | Should -Be 'Gray'
         }
 
         It 'handles missing detail fields safely' {
-            $idea = [pscustomobject]@{ Id = 'FI-empty' }
+            $idea = [pscustomobject]@{ Id = '0' }
             $rows = Build-ChangeSummarySegments -Change $idea
-            $rows.Count | Should -Be 6
-            $rows[2][1].Text | Should -Be ''
-            $rows[4][1].Text | Should -Be ''
-            $rows[5][1].Text | Should -Be ''
+            $rows.Count | Should -Be 2
+            $rows[1][1].Text | Should -Be ''
         }
     }
 }

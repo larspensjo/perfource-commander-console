@@ -149,8 +149,9 @@ function Get-P4ChangelistEntries {
     if ($null -eq $shelvedSet) { $shelvedSet = [System.Collections.Generic.HashSet[int]]::new() }
 
     $changelists | ForEach-Object {
-        $isEmpty = -not $openedSet.Contains([int]$_.Change) -and -not $shelvedSet.Contains([int]$_.Change)
-        ConvertTo-ChangelistEntry -Changelist $_ -IsEmpty $isEmpty
+        $hasShelved = $shelvedSet.Contains([int]$_.Change)
+        $hasOpened  = $openedSet.Contains([int]$_.Change)
+        ConvertTo-ChangelistEntry -Changelist $_ -HasShelvedFiles $hasShelved -HasOpenedFiles $hasOpened
     }
 }
 

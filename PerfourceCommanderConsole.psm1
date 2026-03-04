@@ -97,12 +97,6 @@ function Start-P4Browser {
             param($s)
             $fresh = Get-P4ChangelistEntries -Max $MaxChanges
             $s.Data.AllChanges = @($fresh)
-            $filterUniverse = @($s.Data.AllChanges | ForEach-Object { @($_.Filters) })
-            $s.Data.AllFilters = @(
-                $filterUniverse |
-                    Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
-                    Sort-Object -Unique
-            )
             $s.Runtime.LastError = $null
             return Update-BrowserDerivedState -State $s
         }
@@ -132,13 +126,6 @@ function Start-P4Browser {
                         param($s)
                         $fresh = Get-P4ChangelistEntries -Max 200
                         $s.Data.AllChanges = @($fresh)
-                        $filterUniverse = @($s.Data.AllChanges | ForEach-Object { @($_.Filters) })
-                        $filterUniverse += @($s.Query.SelectedFilters)
-                        $s.Data.AllFilters = @(
-                            $filterUniverse |
-                                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
-                                Sort-Object -Unique
-                        )
                         $s.Runtime.LastError = $null
                         return Update-BrowserDerivedState -State $s
                     }
@@ -168,17 +155,8 @@ function Start-P4Browser {
                         $state = Invoke-BrowserSideEffect -State $state -CommandLine $deleteCmdLine -WorkItem {
                             param($s)
                             Remove-P4Changelist -Change $change
-                            $deletedId = "CL-$change"
+                            $deletedId = "$change"
                             $s.Data.AllChanges = @($s.Data.AllChanges | Where-Object { $_.Id -ne $deletedId })
-                            $filterUniverse = @($s.Data.AllChanges | ForEach-Object { @($_.Filters) })
-                            if ($null -ne $s.Query -and $null -ne $s.Query.SelectedFilters) {
-                                $filterUniverse += @($s.Query.SelectedFilters)
-                            }
-                            $s.Data.AllFilters = @(
-                                $filterUniverse |
-                                    Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
-                                    Sort-Object -Unique
-                            )
                             $s.Data.DescribeCache.Remove($change) | Out-Null
                             $s.Runtime.LastError = $null
                             return Update-BrowserDerivedState -State $s

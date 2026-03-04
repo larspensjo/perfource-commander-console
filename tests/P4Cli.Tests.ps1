@@ -247,30 +247,8 @@ Describe 'Get-P4ChangelistEntries' {
 
         $result = @(Get-P4ChangelistEntries)
         $result.Count | Should -Be 1
-        $result[0].Filters | Should -Contain 'Empty'
-    }
-}
-
-Describe 'ConvertTo-ChangelistEntry with IsEmpty' {
-    BeforeAll {
-        Import-Module (Join-Path $PSScriptRoot '..\p4\Models.psm1') -Force
-    }
-
-    It 'adds Empty filter when IsEmpty is true' {
-        $cl = New-P4Changelist -Change 1 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'test'
-        $entry = ConvertTo-ChangelistEntry -Changelist $cl -IsEmpty $true
-        $entry.Filters | Should -Contain 'Empty'
-    }
-
-    It 'does not add Empty filter when IsEmpty is false' {
-        $cl = New-P4Changelist -Change 2 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'test'
-        $entry = ConvertTo-ChangelistEntry -Changelist $cl -IsEmpty $false
-        $entry.Filters | Should -Not -Contain 'Empty'
-    }
-
-    It 'does not add Empty filter by default' {
-        $cl = New-P4Changelist -Change 3 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'test'
-        $entry = ConvertTo-ChangelistEntry -Changelist $cl
-        $entry.Filters | Should -Not -Contain 'Empty'
+        $result[0].Id              | Should -Be '123'
+        $result[0].HasShelvedFiles | Should -BeFalse
+        $result[0].HasOpenedFiles  | Should -BeFalse
     }
 }

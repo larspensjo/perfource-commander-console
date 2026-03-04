@@ -1,12 +1,36 @@
 Set-StrictMode -Version Latest
 
+# Predicate registry: maps filter name → scriptblock($entry) → $true if entry passes the filter
+$script:FilterPredicates = [ordered]@{
+    'No shelved files' = { param($entry) -not [bool]$entry.HasShelvedFiles }
+    'No opened files'   = { param($entry) -not [bool]$entry.HasOpenedFiles  }
+}
+
+# Returns the ordered list of all static filter names
+function Get-AllFilterNames {
+    return @($script:FilterPredicates.Keys)
+}
+
+# Tests whether a single entry passes a named filter predicate.
+# Returns $false when the filter name is not in the registry.
+function Test-EntryMatchesFilter {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilterName,
+        [Parameter(Mandatory = $true)][AllowNull()]$Entry
+    )
+    if ($null -eq $Entry) { return $false }
+    $predicate = $script:FilterPredicates[$FilterName]
+    if ($null -eq $predicate) { return $false }
+    return [bool](& $predicate $Entry)
+}
+
 function Get-VisibleChangeIds {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$AllChanges,
         [Parameter(Mandatory = $false)][AllowNull()]$SelectedFilters,
         [Parameter(Mandatory = $false)][AllowEmptyString()][string]$SearchText = '',
         [Parameter(Mandatory = $false)][ValidateSet('None', 'Regex', 'Text')][string]$SearchMode = 'None',
-        [Parameter(Mandatory = $false)][ValidateSet('Default', 'Priority', 'Risk', 'CapturedDesc')][string]$SortMode = 'Default'
+        [Parameter(Mandatory = $false)][ValidateSet('Default', 'CapturedDesc')][string]$SortMode = 'Default'
     )
 
     $requiredFilters = @()
@@ -27,7 +51,9 @@ function Get-VisibleChangeIds {
 
         $matchesFilters = $true
         foreach ($requiredFilter in $requiredFilters) {
-            if (-not (@($entry.Filters) -contains $requiredFilter)) {
+            $predicate = $script:FilterPredicates[$requiredFilter]
+            if ($null -eq $predicate) { continue }   # unknown filter — skip
+            if (-not [bool](& $predicate $entry)) {
                 $matchesFilters = $false
                 break
             }
@@ -55,14 +81,6 @@ function Get-VisibleChangeIds {
     })
 
     switch ($SortMode) {
-        'Priority' {
-            $rank = @{ P0 = 0; P1 = 1; P2 = 2; P3 = 3 }
-            $filtered = @($filtered | Sort-Object @{ Expression = { if ($rank.ContainsKey($_.Priority)) { $rank[$_.Priority] } else { 99 } } }, @{ Expression = { $_.Id } })
-        }
-        'Risk' {
-            $rank = @{ H = 0; M = 1; L = 2 }
-            $filtered = @($filtered | Sort-Object @{ Expression = { if ($rank.ContainsKey($_.Risk)) { $rank[$_.Risk] } else { 99 } } }, @{ Expression = { $_.Id } })
-        }
         'CapturedDesc' {
             $filtered = @($filtered | Sort-Object @{ Expression = { if ($_.Captured -is [datetime]) { -$_.Captured.Ticks } else { [long]::MaxValue } } }, @{ Expression = { $_.Id } })
         }
@@ -74,4 +92,4 @@ function Get-VisibleChangeIds {
     return @($filtered | ForEach-Object { $_.Id })
 }
 
-Export-ModuleMember -Function Get-VisibleChangeIds
+Export-ModuleMember -Function Get-AllFilterNames, Test-EntryMatchesFilter, Get-VisibleChangeIds

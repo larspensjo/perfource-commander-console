@@ -367,7 +367,7 @@ function Flush-FrameDiff {
         return $true
     }
     catch {
-        try { [Console]::ResetColor() } catch { <# best-effort cleanup — swallow to avoid masking the original error #> }
+        try { [Console]::ResetColor() } catch { <# best-effort cleanup � swallow to avoid masking the original error #> }
         return $false
     }
 }
@@ -409,17 +409,17 @@ function Get-ChangeById {
     return $Changes | Where-Object { $_.Id -eq $Id } | Select-Object -First 1
 }
 
-function Get-VisibleTagByIndex {
+function Get-VisibleFilterByIndex {
     param(
         [Parameter(Mandatory = $true)]$State,
-        [Parameter(Mandatory = $true)][int]$TagIndex
+        [Parameter(Mandatory = $true)][int]$FilterIndex
     )
 
-    if ($TagIndex -lt 0 -or $TagIndex -ge $State.Derived.VisibleTags.Count) {
+    if ($FilterIndex -lt 0 -or $FilterIndex -ge $State.Derived.VisibleFilters.Count) {
         return $null
     }
 
-    return $State.Derived.VisibleTags[$TagIndex]
+    return $State.Derived.VisibleFilters[$FilterIndex]
 }
 
 function Get-PriorityColor {
@@ -456,86 +456,86 @@ function Get-MarkerColor {
     }
 }
 
-function Get-TagRowModel {
+function Get-FilterRowModel {
     param(
         [Parameter(Mandatory = $true)]$State,
-        [Parameter(Mandatory = $true)][int]$TagIndex,
-        [Parameter(Mandatory = $true)][int]$TagRowOffset,
-        [AllowNull()]$TagThumb
+        [Parameter(Mandatory = $true)][int]$FilterIndex,
+        [Parameter(Mandatory = $true)][int]$FilterRowOffset,
+        [AllowNull()]$FilterThumb
     )
 
-    $tagText = ''
-    $tagColor = 'Gray'
-    $tagMarker = ' '
-    $tagItem = Get-VisibleTagByIndex -State $State -TagIndex $TagIndex
+    $FilterText = ''
+    $FilterColor = 'Gray'
+    $FilterMarker = ' '
+    $filterItem = Get-VisibleFilterByIndex -State $State -FilterIndex $FilterIndex
 
-    if ($null -ne $tagItem) {
-        if ($State.Cursor.TagIndex -eq $TagIndex) {
-            $tagMarker = '>'
-        } elseif ($null -ne $TagThumb) {
-            if ($TagRowOffset -ge $TagThumb.Start -and $TagRowOffset -le $TagThumb.End) {
-                $tagMarker = $SCROLLBAR_THUMB_GLYPH
+    if ($null -ne $filterItem) {
+        if ($State.Cursor.FilterIndex -eq $FilterIndex) {
+            $FilterMarker = '>'
+        } elseif ($null -ne $FilterThumb) {
+            if ($FilterRowOffset -ge $FilterThumb.Start -and $FilterRowOffset -le $FilterThumb.End) {
+                $FilterMarker = $SCROLLBAR_THUMB_GLYPH
             } else {
-                $tagMarker = $SCROLLBAR_TRACK_GLYPH
+                $FilterMarker = $SCROLLBAR_TRACK_GLYPH
             }
         }
 
-        $isSelected = [bool](Get-PropertyValueOrDefault -Object $tagItem -Name 'IsSelected' -Default $false)
-        $isSelectable = [bool](Get-PropertyValueOrDefault -Object $tagItem -Name 'IsSelectable' -Default $true)
-        $tagName = [string](Get-PropertyValueOrDefault -Object $tagItem -Name 'Name' -Default '')
-        $tagMatchCount = [string](Get-PropertyValueOrDefault -Object $tagItem -Name 'MatchCount' -Default '')
+        $isSelected = [bool](Get-PropertyValueOrDefault -Object $filterItem -Name 'IsSelected' -Default $false)
+        $isSelectable = [bool](Get-PropertyValueOrDefault -Object $filterItem -Name 'IsSelectable' -Default $true)
+        $filterName = [string](Get-PropertyValueOrDefault -Object $filterItem -Name 'Name' -Default '')
+        $filterMatchCount = [string](Get-PropertyValueOrDefault -Object $filterItem -Name 'MatchCount' -Default '')
         $mark = if ($isSelected) { '[x]' } else { '[ ]' }
-        $tagText = "$tagMarker $mark $tagName ($tagMatchCount)"
+        $FilterText = "$FilterMarker $mark $filterName ($filterMatchCount)"
 
         if (-not $isSelectable -and -not $isSelected) {
-            $tagColor = 'DarkGray'
+            $FilterColor = 'DarkGray'
         } elseif ($isSelected) {
-            $tagColor = 'Green'
+            $FilterColor = 'Green'
         }
-    } elseif ($null -ne $TagThumb) {
-        if ($TagRowOffset -ge $TagThumb.Start -and $TagRowOffset -le $TagThumb.End) {
-            $tagMarker = $SCROLLBAR_THUMB_GLYPH
+    } elseif ($null -ne $FilterThumb) {
+        if ($FilterRowOffset -ge $FilterThumb.Start -and $FilterRowOffset -le $FilterThumb.End) {
+            $FilterMarker = $SCROLLBAR_THUMB_GLYPH
         } else {
-            $tagMarker = $SCROLLBAR_TRACK_GLYPH
+            $FilterMarker = $SCROLLBAR_TRACK_GLYPH
         }
-        $tagText = $tagMarker
-        $tagColor = 'DarkGray'
+        $FilterText = $FilterMarker
+        $FilterColor = 'DarkGray'
     }
 
     return [pscustomobject]@{
-        Text = $tagText
-        Color = $tagColor
-        Marker = $tagMarker
+        Text = $FilterText
+        Color = $FilterColor
+        Marker = $FilterMarker
     }
 }
 
-function Build-TagSegments {
+function Build-FilterSegments {
     param(
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$TagText,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$TagMarker,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$TagColor
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$FilterText,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$FilterMarker,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$FilterColor
     )
 
-    if ($TagText.Length -eq 0) {
+    if ($FilterText.Length -eq 0) {
         Write-Output -NoEnumerate @()
         return
     }
 
-    $markerLength = [Math]::Max(0, [Math]::Min($TagText.Length, $TagMarker.Length))
+    $markerLength = [Math]::Max(0, [Math]::Min($FilterText.Length, $FilterMarker.Length))
     if ($markerLength -le 0) {
         Write-Output -NoEnumerate @(
-            @{ Text = $TagText; Color = $TagColor }
+            @{ Text = $FilterText; Color = $FilterColor }
         )
         return
     }
 
-    $restText = $TagText.Substring($markerLength)
+    $restText = $FilterText.Substring($markerLength)
     $segments = @(
-        @{ Text = $TagText.Substring(0, $markerLength); Color = (Get-MarkerColor -Marker $TagMarker) }
+        @{ Text = $FilterText.Substring(0, $markerLength); Color = (Get-MarkerColor -Marker $FilterMarker) }
     )
 
     if ($restText.Length -gt 0) {
-        $segments += @{ Text = $restText; Color = $TagColor }
+        $segments += @{ Text = $restText; Color = $FilterColor }
     }
 
     Write-Output -NoEnumerate $segments
@@ -595,9 +595,9 @@ function Build-ChangeSummarySegments {
     $risk     = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Risk'     -Default '')
     $summary  = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Summary'  -Default '')
     $rationale = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Rationale' -Default '')
-    $tagsRaw  = Get-PropertyValueOrDefault -Object $Change -Name 'Tags' -Default @()
-    $tags     = @($tagsRaw | ForEach-Object { [string]$_ })
-    $tagsText = $tags -join ', '
+    $filtersRaw  = Get-PropertyValueOrDefault -Object $Change -Name 'Filters' -Default @()
+    $filters     = @($filtersRaw | ForEach-Object { [string]$_ })
+    $filtersText = $filters -join ', '
 
     Write-Output -NoEnumerate @(
         @(
@@ -613,8 +613,8 @@ function Build-ChangeSummarySegments {
             @{ Text = $risk; Color = (Get-RiskColor -Risk $risk) }
         ),
         @(
-            @{ Text = 'Tags: '; Color = 'DarkYellow' },
-            @{ Text = $tagsText; Color = 'Gray' }
+            @{ Text = 'Filters: '; Color = 'DarkYellow' },
+            @{ Text = $filtersText; Color = 'Gray' }
         ),
         @(
             @{ Text = ''; Color = 'Gray' }
@@ -713,8 +713,8 @@ function Build-StatusBarRow {
         [Parameter(Mandatory = $true)]$Layout
     )
 
-    $hideMode = if ($State.Ui.HideUnavailableTags) { 'On' } else { 'Off' }
-    $statusText = "Total: $($State.Data.AllChanges.Count) | Filtered: $($State.Derived.VisibleChangeIds.Count) | Selected Tags: $($State.Query.SelectedTags.Count) | HideUnavailable: $hideMode | [Tab] Switch [Space] Toggle [PgUp/PgDn] Page [Home/End] Jump [F5] Reload [H] Hide [Q] Quit"
+    $hideMode = if ($State.Ui.HideUnavailableFilters) { 'On' } else { 'Off' }
+    $statusText = "Total: $($State.Data.AllChanges.Count) | Filtered: $($State.Derived.VisibleChangeIds.Count) | Selected Filters: $($State.Query.SelectedFilters.Count) | HideUnavailable: $hideMode | [Tab] Switch [Space] Toggle [PgUp/PgDn] Page [Home/End] Jump [F5] Reload [H] Hide [Q] Quit"
     $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
 
     $segments = Write-ColorSegments -Segments @(@{
@@ -749,34 +749,34 @@ function Build-FrameFromState {
     $layout = $State.Ui.Layout
     $rows = [System.Collections.Generic.List[object]]::new($layout.Height)
 
-    $tagBorderColor = Get-PaneBorderColor -PaneName 'Tags' -State $State
+    $filterBorderColor = Get-PaneBorderColor -PaneName 'Filters' -State $State
     $changeBorderColor = Get-PaneBorderColor -PaneName 'Changelists' -State $State
     $detailBorderColor = 'DarkGray'
 
-    $tagTitleColor = $tagBorderColor
+    $filterTitleColor = $filterBorderColor
     $changeTitleColor = $changeBorderColor
     $detailTitleColor = 'DarkGray'
 
-    $tagViewRows = [Math]::Max(1, $layout.TagPane.H - 2)
+    $filterViewRows = [Math]::Max(1, $layout.FilterPane.H - 2)
     $changeViewRows = [Math]::Max(1, $layout.ListPane.H - 2)
     $detailRows = [Math]::Max(0, $layout.DetailPane.H - 2)
-    $tagThumb = Get-ScrollThumb -TotalItems $State.Derived.VisibleTags.Count -ViewRows $tagViewRows -ScrollTop $State.Cursor.TagScrollTop
+    $FilterThumb = Get-ScrollThumb -TotalItems $State.Derived.VisibleFilters.Count -ViewRows $filterViewRows -ScrollTop $State.Cursor.FilterScrollTop
     $changeThumb = Get-ScrollThumb -TotalItems $State.Derived.VisibleChangeIds.Count -ViewRows $changeViewRows -ScrollTop $State.Cursor.ChangeScrollTop
 
     $detailSegments = Build-DetailSegments -State $State
 
-    for ($globalRow = 0; $globalRow -lt $layout.TagPane.H; $globalRow++) {
+    for ($globalRow = 0; $globalRow -lt $layout.FilterPane.H; $globalRow++) {
         $leftSegments = @()
         if ($globalRow -eq 0) {
-            $leftSegments = Build-BoxTopSegments -Title '[Tags]' -Width $layout.TagPane.W -BorderColor $tagBorderColor -TitleColor $tagTitleColor
-        } elseif ($globalRow -eq ($layout.TagPane.H - 1)) {
-            $leftSegments = Build-BoxBottomSegments -Width $layout.TagPane.W -BorderColor $tagBorderColor
+            $leftSegments = Build-BoxTopSegments -Title '[Filters]' -Width $layout.FilterPane.W -BorderColor $filterBorderColor -TitleColor $filterTitleColor
+        } elseif ($globalRow -eq ($layout.FilterPane.H - 1)) {
+            $leftSegments = Build-BoxBottomSegments -Width $layout.FilterPane.W -BorderColor $filterBorderColor
         } else {
-            $tagInnerRow = $globalRow - 1
-            $tagIndex = $State.Cursor.TagScrollTop + $tagInnerRow
-            $tagRow = Get-TagRowModel -State $State -TagIndex $tagIndex -TagRowOffset $tagInnerRow -TagThumb $tagThumb
-            $tagInnerSegments = Build-TagSegments -TagText $tagRow.Text -TagMarker $tagRow.Marker -TagColor $tagRow.Color
-            $leftSegments = Build-BorderedRowSegments -InnerSegments $tagInnerSegments -Width $layout.TagPane.W -BorderColor $tagBorderColor
+            $filterInnerRow = $globalRow - 1
+            $FilterIndex = $State.Cursor.FilterScrollTop + $filterInnerRow
+            $filterRow = Get-FilterRowModel -State $State -FilterIndex $FilterIndex -FilterRowOffset $filterInnerRow -FilterThumb $FilterThumb
+            $filterInnerSegments = Build-FilterSegments -FilterText $filterRow.Text -FilterMarker $filterRow.Marker -FilterColor $filterRow.Color
+            $leftSegments = Build-BorderedRowSegments -InnerSegments $filterInnerSegments -Width $layout.FilterPane.W -BorderColor $filterBorderColor
         }
 
         $rightSegments = @()
@@ -840,7 +840,7 @@ function Build-FrameFromState {
             }
         }
 
-        $row = Compose-FrameRow -Y $globalRow -LeftSegments $leftSegments -LeftWidth $layout.TagPane.W -RightSegments $rightSegments -RightWidth $layout.ListPane.W -RightBackgroundColor $rightBackgroundColor -TotalWidth $layout.Width -IsLastRow $false
+        $row = Compose-FrameRow -Y $globalRow -LeftSegments $leftSegments -LeftWidth $layout.FilterPane.W -RightSegments $rightSegments -RightWidth $layout.ListPane.W -RightBackgroundColor $rightBackgroundColor -TotalWidth $layout.Width -IsLastRow $false
         $rows.Add($row)
     }
 

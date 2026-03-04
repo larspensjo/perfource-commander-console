@@ -36,7 +36,7 @@
 
     PrivateData = @{
         PSData = @{
-            Tags         = @('Perforce', 'p4', 'TUI', 'CLI', 'Changelist')
+            Filters = @('Perforce', 'p4', 'TUI', 'CLI', 'Changelist')
             ProjectUri   = ''
             LicenseUri   = ''
             ReleaseNotes = 'Initial release.'

@@ -7,7 +7,7 @@ function ConvertFrom-KeyInfoToAction {
 
     switch ($KeyInfo.Key) {
         'Q' { return [pscustomobject]@{ Type = 'Quit' } }
-        'H' { return [pscustomobject]@{ Type = 'ToggleHideUnavailableTags' } }
+        'H' { return [pscustomobject]@{ Type = 'ToggleHideUnavailableFilters' } }
         'Tab' { return [pscustomobject]@{ Type = 'SwitchPane' } }
         'UpArrow' { return [pscustomobject]@{ Type = 'MoveUp' } }
         'DownArrow' { return [pscustomobject]@{ Type = 'MoveDown' } }
@@ -15,7 +15,7 @@ function ConvertFrom-KeyInfoToAction {
         'PageDown' { return [pscustomobject]@{ Type = 'PageDown' } }
         'Home' { return [pscustomobject]@{ Type = 'MoveHome' } }
         'End' { return [pscustomobject]@{ Type = 'MoveEnd' } }
-        'Spacebar' { return [pscustomobject]@{ Type = 'ToggleTag' } }
+        'Spacebar' { return [pscustomobject]@{ Type = 'ToggleFilter' } }
         'Enter' { return [pscustomobject]@{ Type = 'Describe' } }
         'D' { return [pscustomobject]@{ Type = 'Describe' } }
         'F5' { return [pscustomobject]@{ Type = 'Reload' } }

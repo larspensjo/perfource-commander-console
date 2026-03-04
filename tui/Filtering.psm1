@@ -3,36 +3,36 @@ Set-StrictMode -Version Latest
 function Get-VisibleChangeIds {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$AllChanges,
-        [Parameter(Mandatory = $false)][AllowNull()]$SelectedTags,
+        [Parameter(Mandatory = $false)][AllowNull()]$SelectedFilters,
         [Parameter(Mandatory = $false)][AllowEmptyString()][string]$SearchText = '',
         [Parameter(Mandatory = $false)][ValidateSet('None', 'Regex', 'Text')][string]$SearchMode = 'None',
         [Parameter(Mandatory = $false)][ValidateSet('Default', 'Priority', 'Risk', 'CapturedDesc')][string]$SortMode = 'Default'
     )
 
-    $requiredTags = @()
-    if ($null -ne $SelectedTags) {
-        if ($SelectedTags -is [System.Collections.IEnumerable] -and -not ($SelectedTags -is [string])) {
-            foreach ($tag in $SelectedTags) {
-                if (-not [string]::IsNullOrWhiteSpace([string]$tag)) {
-                    $requiredTags += [string]$tag
+    $requiredFilters = @()
+    if ($null -ne $SelectedFilters) {
+        if ($SelectedFilters -is [System.Collections.IEnumerable] -and -not ($SelectedFilters -is [string])) {
+            foreach ($filter in $SelectedFilters) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$filter)) {
+                    $requiredFilters += [string]$filter
                 }
             }
-        } elseif (-not [string]::IsNullOrWhiteSpace([string]$SelectedTags)) {
-            $requiredTags = @([string]$SelectedTags)
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$SelectedFilters)) {
+            $requiredFilters = @([string]$SelectedFilters)
         }
     }
 
     $filtered = @($AllChanges | Where-Object {
         $entry = $_
 
-        $matchesTags = $true
-        foreach ($requiredTag in $requiredTags) {
-            if (-not (@($entry.Tags) -contains $requiredTag)) {
-                $matchesTags = $false
+        $matchesFilters = $true
+        foreach ($requiredFilter in $requiredFilters) {
+            if (-not (@($entry.Filters) -contains $requiredFilter)) {
+                $matchesFilters = $false
                 break
             }
         }
-        if (-not $matchesTags) {
+        if (-not $matchesFilters) {
             return $false
         }
 

@@ -33,7 +33,7 @@ function ConvertTo-ChangelistEntry {
     [pscustomobject]@{
         Id        = "CL-$($Changelist.Change)"
         Title     = $title
-        Tags      = @($Changelist.Status, $Changelist.Client, $Changelist.User) |
+        Filters = @($Changelist.Status, $Changelist.Client, $Changelist.User) |
                     Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
                     Select-Object -Unique
         Priority  = 'P2'

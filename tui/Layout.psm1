@@ -44,7 +44,7 @@ function Get-BrowserLayout {
         Mode = 'Normal'
         Width = $Width
         Height = $Height
-        TagPane = [pscustomobject]@{ X = 0; Y = 0; W = $leftW; H = $contentH }
+        FilterPane = [pscustomobject]@{ X = 0; Y = 0; W = $leftW; H = $contentH }
         ListPane = [pscustomobject]@{ X = $rightX; Y = 0; W = $rightW; H = $listH }
         DetailPane = [pscustomobject]@{ X = $rightX; Y = $detailY; W = $rightW; H = $detailH }
         StatusPane = [pscustomobject]@{ X = 0; Y = $contentH; W = $Width; H = 1 }

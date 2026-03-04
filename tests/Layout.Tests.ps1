@@ -12,7 +12,7 @@ Describe 'Get-BrowserLayout' {
     It 'returns valid panes for normal dimensions' {
         $layout = Get-BrowserLayout -Width 120 -Height 40
         $layout.Mode | Should -Be 'Normal'
-        $layout.TagPane.W | Should -BeGreaterThan 0
+        $layout.FilterPane.W | Should -BeGreaterThan 0
         $layout.ListPane.H | Should -BeGreaterThan 0
         $layout.DetailPane.H | Should -BeGreaterThan 0
     }

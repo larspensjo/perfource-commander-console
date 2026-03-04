@@ -10,8 +10,8 @@ function New-RenderTestState {
         [int]$ChangeScrollTop = 0
     )
 
-    $selectedTags = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    [void]$selectedTags.Add('alpha')
+    $SelectedFilters = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    [void]$SelectedFilters.Add('alpha')
 
     $changes = @(
         [pscustomobject]@{
@@ -20,7 +20,7 @@ function New-RenderTestState {
             Priority = 'P2'
             Effort = 'M'
             Risk = 'L'
-            Tags = @('alpha')
+            Filters = @('alpha')
             Summary = 'Summary one'
             Rationale = 'Rationale one'
         },
@@ -30,7 +30,7 @@ function New-RenderTestState {
             Priority = 'P0'
             Effort = 'H'
             Risk = 'H'
-            Tags = @('beta')
+            Filters = @('beta')
             Summary = 'Summary two'
             Rationale = 'Rationale two'
         },
@@ -40,7 +40,7 @@ function New-RenderTestState {
             Priority = 'P3'
             Effort = 'L'
             Risk = 'M'
-            Tags = @('gamma')
+            Filters = @('gamma')
             Summary = 'Summary three'
             Rationale = 'Rationale three'
         }
@@ -53,7 +53,7 @@ function New-RenderTestState {
         Mode = 'Normal'
         Width = $Width
         Height = $Height
-        TagPane = [pscustomobject]@{ X = 0; Y = 0; W = 24; H = $contentHeight }
+        FilterPane = [pscustomobject]@{ X = 0; Y = 0; W = 24; H = $contentHeight }
         ListPane = [pscustomobject]@{ X = 25; Y = 0; W = 55; H = $listHeight }
         DetailPane = [pscustomobject]@{ X = 25; Y = ($listHeight + 1); W = 55; H = $detailHeight }
         StatusPane = [pscustomobject]@{ X = 0; Y = $contentHeight; W = $Width; H = 1 }
@@ -62,31 +62,31 @@ function New-RenderTestState {
     return [pscustomobject]@{
         Data = [pscustomobject]@{
             AllChanges = $changes
-            AllTags = @('alpha', 'beta', 'gamma')
+            AllFilters = @('alpha', 'beta', 'gamma')
         }
         Ui = [pscustomobject]@{
             ActivePane = 'Changelists'
             IsMaximized = $false
-            HideUnavailableTags = $false
+            HideUnavailableFilters = $false
             Layout = $layout
         }
         Query = [pscustomobject]@{
-            SelectedTags = $selectedTags
+            SelectedFilters = $SelectedFilters
             SearchText = ''
             SearchMode = 'None'
             SortMode = 'Default'
         }
         Derived = [pscustomobject]@{
             VisibleChangeIds = @($VisibleChangeIds)
-            VisibleTags = @(
+            VisibleFilters = @(
                 [pscustomobject]@{ Name = 'alpha'; MatchCount = 1; IsSelected = $true; IsSelectable = $true },
                 [pscustomobject]@{ Name = 'beta'; MatchCount = 1; IsSelected = $false; IsSelectable = $true },
                 [pscustomobject]@{ Name = 'gamma'; MatchCount = 1; IsSelected = $false; IsSelectable = $true }
             )
         }
         Cursor = [pscustomobject]@{
-            TagIndex = 0
-            TagScrollTop = 0
+            FilterIndex = 0
+            FilterScrollTop = 0
             ChangeIndex = $ChangeIndex
             ChangeScrollTop = $ChangeScrollTop
         }
@@ -135,8 +135,8 @@ Describe 'Frame helpers' {
                     [int]$ChangeScrollTop = 0
                 )
 
-                $selectedTags = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-                [void]$selectedTags.Add('alpha')
+                $SelectedFilters = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                [void]$SelectedFilters.Add('alpha')
 
                 $changes = @(
                     [pscustomobject]@{
@@ -145,7 +145,7 @@ Describe 'Frame helpers' {
                         Priority = 'P2'
                         Effort = 'M'
                         Risk = 'L'
-                        Tags = @('alpha')
+                        Filters = @('alpha')
                         Summary = 'Summary one'
                         Rationale = 'Rationale one'
                     },
@@ -155,7 +155,7 @@ Describe 'Frame helpers' {
                         Priority = 'P0'
                         Effort = 'H'
                         Risk = 'H'
-                        Tags = @('beta')
+                        Filters = @('beta')
                         Summary = 'Summary two'
                         Rationale = 'Rationale two'
                     },
@@ -165,7 +165,7 @@ Describe 'Frame helpers' {
                         Priority = 'P3'
                         Effort = 'L'
                         Risk = 'M'
-                        Tags = @('gamma')
+                        Filters = @('gamma')
                         Summary = 'Summary three'
                         Rationale = 'Rationale three'
                     }
@@ -178,7 +178,7 @@ Describe 'Frame helpers' {
                     Mode = 'Normal'
                     Width = $Width
                     Height = $Height
-                    TagPane = [pscustomobject]@{ X = 0; Y = 0; W = 24; H = $contentHeight }
+                    FilterPane = [pscustomobject]@{ X = 0; Y = 0; W = 24; H = $contentHeight }
                     ListPane = [pscustomobject]@{ X = 25; Y = 0; W = 55; H = $listHeight }
                     DetailPane = [pscustomobject]@{ X = 25; Y = ($listHeight + 1); W = 55; H = $detailHeight }
                     StatusPane = [pscustomobject]@{ X = 0; Y = $contentHeight; W = $Width; H = 1 }
@@ -187,31 +187,31 @@ Describe 'Frame helpers' {
                 return [pscustomobject]@{
                     Data = [pscustomobject]@{
                         AllChanges = $changes
-                        AllTags = @('alpha', 'beta', 'gamma')
+                        AllFilters = @('alpha', 'beta', 'gamma')
                     }
                     Ui = [pscustomobject]@{
                         ActivePane = 'Changelists'
                         IsMaximized = $false
-                        HideUnavailableTags = $false
+                        HideUnavailableFilters = $false
                         Layout = $layout
                     }
                     Query = [pscustomobject]@{
-                        SelectedTags = $selectedTags
+                        SelectedFilters = $SelectedFilters
                         SearchText = ''
                         SearchMode = 'None'
                         SortMode = 'Default'
                     }
                     Derived = [pscustomobject]@{
                         VisibleChangeIds = @($VisibleChangeIds)
-                        VisibleTags = @(
+                        VisibleFilters = @(
                             [pscustomobject]@{ Name = 'alpha'; MatchCount = 1; IsSelected = $true; IsSelectable = $true },
                             [pscustomobject]@{ Name = 'beta'; MatchCount = 1; IsSelected = $false; IsSelectable = $true },
                             [pscustomobject]@{ Name = 'gamma'; MatchCount = 1; IsSelected = $false; IsSelectable = $true }
                         )
                     }
                     Cursor = [pscustomobject]@{
-                        TagIndex = 0
-                        TagScrollTop = 0
+                        FilterIndex = 0
+                        FilterScrollTop = 0
                         ChangeIndex = $ChangeIndex
                         ChangeScrollTop = $ChangeScrollTop
                     }
@@ -593,7 +593,7 @@ Describe 'Segment builders' {
                 Priority = 'P2'
                 Effort = 'M'
                 Risk = 'H'
-                Tags = @('alpha', 'beta')
+                Filters = @('alpha', 'beta')
                 Summary = 'Summary text'
                 Rationale = 'Rationale text'
             }
@@ -620,12 +620,12 @@ Describe 'Segment builders' {
 Describe 'Box helpers' {
     InModuleScope 'Render' {
         It 'builds a top border with rounded corners and centered title' {
-            $segments = Build-BoxTopSegments -Title '[Tags]' -Width 12 -BorderColor 'DarkGray' -TitleColor 'Cyan'
+            $segments = Build-BoxTopSegments -Title '[Filters]' -Width 12 -BorderColor 'DarkGray' -TitleColor 'Cyan'
             $text = ($segments | ForEach-Object { $_.Text }) -join ''
             $text.Length | Should -Be 12
             $text[0] | Should -Be '╭'
             $text[11] | Should -Be '╮'
-            $text | Should -Match '\[Tags\]'
+            $text | Should -Match '\[Filters\]'
         }
 
         It 'builds a bottom border with rounded corners' {

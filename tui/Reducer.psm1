@@ -11,33 +11,33 @@ function New-BrowserState {
         [Parameter(Mandatory = $false)][int]$InitialHeight = 40
     )
 
-    $tags = @($Changes | ForEach-Object { @($_.Tags) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    $filters = @($Changes | ForEach-Object { @($_.Filters) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
 
     $state = [pscustomobject]@{
         Data = [pscustomobject]@{
             AllChanges    = @($Changes)
-            AllTags       = @($tags)
+            AllFilters       = @($filters)
             DescribeCache = @{}
         }
         Ui = [pscustomobject]@{
-            ActivePane = 'Tags'
+            ActivePane = 'Filters'
             IsMaximized = $false
-            HideUnavailableTags = $false
+            HideUnavailableFilters = $false
             Layout = Get-BrowserLayout -Width $InitialWidth -Height $InitialHeight
         }
         Query = [pscustomobject]@{
-            SelectedTags = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            SelectedFilters = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
             SearchText = ''
             SearchMode = 'None'
             SortMode = 'Default'
         }
         Derived = [pscustomobject]@{
             VisibleChangeIds = @()
-            VisibleTags = @()
+            VisibleFilters = @()
         }
         Cursor = [pscustomobject]@{
-            TagIndex = 0
-            TagScrollTop = 0
+            FilterIndex = 0
+            FilterScrollTop = 0
             ChangeIndex = 0
             ChangeScrollTop = 0
         }
@@ -57,28 +57,28 @@ function Copy-BrowserState {
     $copy = [pscustomobject]@{
         Data = [pscustomobject]@{
             AllChanges    = @($State.Data.AllChanges)
-            AllTags       = @($State.Data.AllTags)
+            AllFilters       = @($State.Data.AllFilters)
             DescribeCache = $State.Data.DescribeCache          # shared reference (append-only)
         }
         Ui = [pscustomobject]@{
             ActivePane = $State.Ui.ActivePane
             IsMaximized = $State.Ui.IsMaximized
-            HideUnavailableTags = $State.Ui.HideUnavailableTags
+            HideUnavailableFilters = $State.Ui.HideUnavailableFilters
             Layout = $State.Ui.Layout
         }
         Query = [pscustomobject]@{
-            SelectedTags = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            SelectedFilters = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
             SearchText = $State.Query.SearchText
             SearchMode = $State.Query.SearchMode
             SortMode = $State.Query.SortMode
         }
         Derived = [pscustomobject]@{
             VisibleChangeIds = @($State.Derived.VisibleChangeIds)
-            VisibleTags = @($State.Derived.VisibleTags)
+            VisibleFilters = @($State.Derived.VisibleFilters)
         }
         Cursor = [pscustomobject]@{
-            TagIndex = $State.Cursor.TagIndex
-            TagScrollTop = $State.Cursor.TagScrollTop
+            FilterIndex = $State.Cursor.FilterIndex
+            FilterScrollTop = $State.Cursor.FilterScrollTop
             ChangeIndex = $State.Cursor.ChangeIndex
             ChangeScrollTop = $State.Cursor.ChangeScrollTop
         }
@@ -89,8 +89,8 @@ function Copy-BrowserState {
         }
     }
 
-    foreach ($tag in $State.Query.SelectedTags) {
-        [void]$copy.Query.SelectedTags.Add($tag)
+    foreach ($filter in $State.Query.SelectedFilters) {
+        [void]$copy.Query.SelectedFilters.Add($filter)
     }
 
     return $copy
@@ -99,7 +99,7 @@ function Copy-BrowserState {
 function Update-BrowserDerivedState {
     param([Parameter(Mandatory = $true)]$State)
 
-    $visibleChangeIds = Get-VisibleChangeIds -AllChanges $State.Data.AllChanges -SelectedTags $State.Query.SelectedTags -SearchText $State.Query.SearchText -SearchMode $State.Query.SearchMode -SortMode $State.Query.SortMode
+    $visibleChangeIds = Get-VisibleChangeIds -AllChanges $State.Data.AllChanges -SelectedFilters $State.Query.SelectedFilters -SearchText $State.Query.SearchText -SearchMode $State.Query.SearchMode -SortMode $State.Query.SortMode
     $State.Derived.VisibleChangeIds = @($visibleChangeIds)
 
     $visibleChangeIdSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -109,31 +109,31 @@ function Update-BrowserDerivedState {
 
     $visibleChanges = @($State.Data.AllChanges | Where-Object { $visibleChangeIdSet.Contains([string]$_.Id) })
 
-    $tagItems = New-Object System.Collections.Generic.List[object]
-    foreach ($tag in $State.Data.AllTags) {
+    $filterItems = New-Object System.Collections.Generic.List[object]
+    foreach ($filter in $State.Data.AllFilters) {
         $matchCount = 0
         foreach ($cl in $visibleChanges) {
-            if (@($cl.Tags) -contains $tag) {
+            if (@($cl.Filters) -contains $filter) {
                 $matchCount++
             }
         }
 
-        $isSelected = $State.Query.SelectedTags.Contains($tag)
+        $isSelected = $State.Query.SelectedFilters.Contains($filter)
         $isSelectable = $isSelected -or ($matchCount -gt 0)
 
-        $tagItems.Add([pscustomobject]@{
-            Name = $tag
+        $filterItems.Add([pscustomobject]@{
+            Name = $filter
             MatchCount = $matchCount
             IsSelected = $isSelected
             IsSelectable = $isSelectable
         }) | Out-Null
     }
 
-    $visibleTags = @($tagItems.ToArray())
-    if ($State.Ui.HideUnavailableTags) {
-        $visibleTags = @($visibleTags | Where-Object { $_.IsSelected -or $_.IsSelectable })
+    $VisibleFilters = @($filterItems.ToArray())
+    if ($State.Ui.HideUnavailableFilters) {
+        $VisibleFilters = @($VisibleFilters | Where-Object { $_.IsSelected -or $_.IsSelectable })
     }
-    $State.Derived.VisibleTags = @($visibleTags)
+    $State.Derived.VisibleFilters = @($VisibleFilters)
 
     $visibleCount = $State.Derived.VisibleChangeIds.Count
     if ($visibleCount -eq 0) {
@@ -166,35 +166,35 @@ function Update-BrowserDerivedState {
         }
     }
 
-    $tagViewport = 1
+    $filterViewport = 1
     if ($State.Ui.Layout -and $State.Ui.Layout.Mode -eq 'Normal') {
-        $tagViewport = [Math]::Max(1, $State.Ui.Layout.TagPane.H - 2)
+        $filterViewport = [Math]::Max(1, $State.Ui.Layout.FilterPane.H - 2)
     }
 
-    $tagCount = $State.Derived.VisibleTags.Count
-    if ($tagCount -eq 0) {
-        $State.Cursor.TagIndex = 0
-        $State.Cursor.TagScrollTop = 0
+    $filterCount = $State.Derived.VisibleFilters.Count
+    if ($filterCount -eq 0) {
+        $State.Cursor.FilterIndex = 0
+        $State.Cursor.FilterScrollTop = 0
     } else {
-        if ($State.Cursor.TagIndex -lt 0) {
-            $State.Cursor.TagIndex = 0
+        if ($State.Cursor.FilterIndex -lt 0) {
+            $State.Cursor.FilterIndex = 0
         }
-        if ($State.Cursor.TagIndex -ge $tagCount) {
-            $State.Cursor.TagIndex = $tagCount - 1
+        if ($State.Cursor.FilterIndex -ge $filterCount) {
+            $State.Cursor.FilterIndex = $filterCount - 1
         }
 
-        $maxTagScroll = [Math]::Max(0, $tagCount - $tagViewport)
-        if ($State.Cursor.TagScrollTop -gt $maxTagScroll) {
-            $State.Cursor.TagScrollTop = $maxTagScroll
+        $maxFilterScroll = [Math]::Max(0, $filterCount - $filterViewport)
+        if ($State.Cursor.FilterScrollTop -gt $maxFilterScroll) {
+            $State.Cursor.FilterScrollTop = $maxFilterScroll
         }
-        if ($State.Cursor.TagScrollTop -lt 0) {
-            $State.Cursor.TagScrollTop = 0
+        if ($State.Cursor.FilterScrollTop -lt 0) {
+            $State.Cursor.FilterScrollTop = 0
         }
-        if ($State.Cursor.TagIndex -lt $State.Cursor.TagScrollTop) {
-            $State.Cursor.TagScrollTop = $State.Cursor.TagIndex
+        if ($State.Cursor.FilterIndex -lt $State.Cursor.FilterScrollTop) {
+            $State.Cursor.FilterScrollTop = $State.Cursor.FilterIndex
         }
-        if ($State.Cursor.TagIndex -ge ($State.Cursor.TagScrollTop + $tagViewport)) {
-            $State.Cursor.TagScrollTop = [Math]::Max(0, $State.Cursor.TagIndex - $tagViewport + 1)
+        if ($State.Cursor.FilterIndex -ge ($State.Cursor.FilterScrollTop + $filterViewport)) {
+            $State.Cursor.FilterScrollTop = [Math]::Max(0, $State.Cursor.FilterIndex - $filterViewport + 1)
         }
     }
 
@@ -209,10 +209,10 @@ function Invoke-BrowserReducer {
 
     $next = Copy-BrowserState -State $State
 
-    function Get-TagViewportSize {
+    function Get-FilterViewportSize {
         param($CurrentState)
         if ($CurrentState.Ui.Layout -and $CurrentState.Ui.Layout.Mode -eq 'Normal') {
-            return [Math]::Max(1, $CurrentState.Ui.Layout.TagPane.H - 2)
+            return [Math]::Max(1, $CurrentState.Ui.Layout.FilterPane.H - 2)
         }
         return 1
     }
@@ -231,25 +231,25 @@ function Invoke-BrowserReducer {
             return $next
         }
         'SwitchPane' {
-            if ($next.Ui.ActivePane -eq 'Tags') {
+            if ($next.Ui.ActivePane -eq 'Filters') {
                 $next.Ui.ActivePane = 'Changelists'
             } else {
-                $next.Ui.ActivePane = 'Tags'
+                $next.Ui.ActivePane = 'Filters'
             }
             return $next
         }
         'MoveUp' {
-            if ($next.Ui.ActivePane -eq 'Tags') {
-                if ($next.Cursor.TagIndex -gt 0) { $next.Cursor.TagIndex-- }
+            if ($next.Ui.ActivePane -eq 'Filters') {
+                if ($next.Cursor.FilterIndex -gt 0) { $next.Cursor.FilterIndex-- }
             } else {
                 if ($next.Cursor.ChangeIndex -gt 0) { $next.Cursor.ChangeIndex-- }
             }
             return Update-BrowserDerivedState -State $next
         }
         'MoveDown' {
-            if ($next.Ui.ActivePane -eq 'Tags') {
-                $maxTagIndex = [Math]::Max(0, $next.Derived.VisibleTags.Count - 1)
-                if ($next.Cursor.TagIndex -lt $maxTagIndex) { $next.Cursor.TagIndex++ }
+            if ($next.Ui.ActivePane -eq 'Filters') {
+                $maxFilterIndex = [Math]::Max(0, $next.Derived.VisibleFilters.Count - 1)
+                if ($next.Cursor.FilterIndex -lt $maxFilterIndex) { $next.Cursor.FilterIndex++ }
             } else {
                 $maxChangeIndex = [Math]::Max(0, $next.Derived.VisibleChangeIds.Count - 1)
                 if ($next.Cursor.ChangeIndex -lt $maxChangeIndex) { $next.Cursor.ChangeIndex++ }
@@ -257,9 +257,9 @@ function Invoke-BrowserReducer {
             return Update-BrowserDerivedState -State $next
         }
         'PageUp' {
-            if ($next.Ui.ActivePane -eq 'Tags') {
-                $step = Get-TagViewportSize -CurrentState $next
-                $next.Cursor.TagIndex = [Math]::Max(0, $next.Cursor.TagIndex - $step)
+            if ($next.Ui.ActivePane -eq 'Filters') {
+                $step = Get-FilterViewportSize -CurrentState $next
+                $next.Cursor.FilterIndex = [Math]::Max(0, $next.Cursor.FilterIndex - $step)
             } else {
                 $step = Get-ChangeViewportSize -CurrentState $next
                 $next.Cursor.ChangeIndex = [Math]::Max(0, $next.Cursor.ChangeIndex - $step)
@@ -267,10 +267,10 @@ function Invoke-BrowserReducer {
             return Update-BrowserDerivedState -State $next
         }
         'PageDown' {
-            if ($next.Ui.ActivePane -eq 'Tags') {
-                $step = Get-TagViewportSize -CurrentState $next
-                $maxTagIndex = [Math]::Max(0, $next.Derived.VisibleTags.Count - 1)
-                $next.Cursor.TagIndex = [Math]::Min($maxTagIndex, $next.Cursor.TagIndex + $step)
+            if ($next.Ui.ActivePane -eq 'Filters') {
+                $step = Get-FilterViewportSize -CurrentState $next
+                $maxFilterIndex = [Math]::Max(0, $next.Derived.VisibleFilters.Count - 1)
+                $next.Cursor.FilterIndex = [Math]::Min($maxFilterIndex, $next.Cursor.FilterIndex + $step)
             } else {
                 $step = Get-ChangeViewportSize -CurrentState $next
                 $maxChangeIndex = [Math]::Max(0, $next.Derived.VisibleChangeIds.Count - 1)
@@ -279,9 +279,9 @@ function Invoke-BrowserReducer {
             return Update-BrowserDerivedState -State $next
         }
         'MoveHome' {
-            if ($next.Ui.ActivePane -eq 'Tags') {
-                $next.Cursor.TagIndex = 0
-                $next.Cursor.TagScrollTop = 0
+            if ($next.Ui.ActivePane -eq 'Filters') {
+                $next.Cursor.FilterIndex = 0
+                $next.Cursor.FilterScrollTop = 0
             } else {
                 $next.Cursor.ChangeIndex = 0
                 $next.Cursor.ChangeScrollTop = 0
@@ -289,64 +289,64 @@ function Invoke-BrowserReducer {
             return Update-BrowserDerivedState -State $next
         }
         'MoveEnd' {
-            if ($next.Ui.ActivePane -eq 'Tags') {
-                $next.Cursor.TagIndex = [Math]::Max(0, $next.Derived.VisibleTags.Count - 1)
+            if ($next.Ui.ActivePane -eq 'Filters') {
+                $next.Cursor.FilterIndex = [Math]::Max(0, $next.Derived.VisibleFilters.Count - 1)
             } else {
                 $next.Cursor.ChangeIndex = [Math]::Max(0, $next.Derived.VisibleChangeIds.Count - 1)
             }
             return Update-BrowserDerivedState -State $next
         }
-        'ToggleTag' {
-            $tag = $null
-            $tagProp = $Action.PSObject.Properties['Tag']
+        'ToggleFilter' {
+            $filter = $null
+            $tagProp = $Action.PSObject.Properties['Filter']
             if ($null -ne $tagProp) {
-                $tag = [string]$tagProp.Value
+                $filter = [string]$tagProp.Value
             }
-            if ([string]::IsNullOrWhiteSpace($tag)) {
-                if ($next.Derived.VisibleTags.Count -eq 0) {
+            if ([string]::IsNullOrWhiteSpace($filter)) {
+                if ($next.Derived.VisibleFilters.Count -eq 0) {
                     return $next
                 }
-                $tag = [string]$next.Derived.VisibleTags[$next.Cursor.TagIndex].Name
+                $filter = [string]$next.Derived.VisibleFilters[$next.Cursor.FilterIndex].Name
             }
 
-            if ($next.Query.SelectedTags.Contains($tag)) {
-                [void]$next.Query.SelectedTags.Remove($tag)
+            if ($next.Query.SelectedFilters.Contains($filter)) {
+                [void]$next.Query.SelectedFilters.Remove($filter)
             } else {
-                [void]$next.Query.SelectedTags.Add($tag)
+                [void]$next.Query.SelectedFilters.Add($filter)
             }
 
             $next.Cursor.ChangeIndex = 0
             $next.Cursor.ChangeScrollTop = 0
             $next = Update-BrowserDerivedState -State $next
 
-            $targetTagIndex = -1
-            for ($i = 0; $i -lt $next.Derived.VisibleTags.Count; $i++) {
-                if ($next.Derived.VisibleTags[$i].Name -eq $tag) {
-                    $targetTagIndex = $i
+            $targetFilterIndex = -1
+            for ($i = 0; $i -lt $next.Derived.VisibleFilters.Count; $i++) {
+                if ($next.Derived.VisibleFilters[$i].Name -eq $filter) {
+                    $targetFilterIndex = $i
                     break
                 }
             }
-            if ($targetTagIndex -ge 0) {
-                $next.Cursor.TagIndex = $targetTagIndex
+            if ($targetFilterIndex -ge 0) {
+                $next.Cursor.FilterIndex = $targetFilterIndex
             }
 
             return Update-BrowserDerivedState -State $next
         }
-        'ToggleHideUnavailableTags' {
-            $currentTagName = $null
-            if ($next.Cursor.TagIndex -ge 0 -and $next.Cursor.TagIndex -lt $next.Derived.VisibleTags.Count) {
-                $currentTagName = [string]$next.Derived.VisibleTags[$next.Cursor.TagIndex].Name
+        'ToggleHideUnavailableFilters' {
+            $currentFilterName = $null
+            if ($next.Cursor.FilterIndex -ge 0 -and $next.Cursor.FilterIndex -lt $next.Derived.VisibleFilters.Count) {
+                $currentFilterName = [string]$next.Derived.VisibleFilters[$next.Cursor.FilterIndex].Name
             }
 
-            $next.Ui.HideUnavailableTags = -not $next.Ui.HideUnavailableTags
-            $next.Cursor.TagIndex = 0
-            $next.Cursor.TagScrollTop = 0
+            $next.Ui.HideUnavailableFilters = -not $next.Ui.HideUnavailableFilters
+            $next.Cursor.FilterIndex = 0
+            $next.Cursor.FilterScrollTop = 0
             $next = Update-BrowserDerivedState -State $next
 
-            if (-not [string]::IsNullOrWhiteSpace($currentTagName)) {
-                for ($i = 0; $i -lt $next.Derived.VisibleTags.Count; $i++) {
-                    if ($next.Derived.VisibleTags[$i].Name -eq $currentTagName) {
-                        $next.Cursor.TagIndex = $i
+            if (-not [string]::IsNullOrWhiteSpace($currentFilterName)) {
+                for ($i = 0; $i -lt $next.Derived.VisibleFilters.Count; $i++) {
+                    if ($next.Derived.VisibleFilters[$i].Name -eq $currentFilterName) {
+                        $next.Cursor.FilterIndex = $i
                         break
                     }
                 }
@@ -367,9 +367,9 @@ function Invoke-BrowserReducer {
             try {
                 $fresh = Get-P4ChangelistEntries -Max 200
                 $next.Data.AllChanges = @($fresh)
-                $next.Data.AllTags = @(
+                $next.Data.AllFilters = @(
                     $next.Data.AllChanges |
-                        ForEach-Object { @($_.Tags) } |
+                        ForEach-Object { @($_.Filters) } |
                         Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
                         Sort-Object -Unique
                 )

@@ -11,6 +11,10 @@
   "chat.tools.terminal.autoApprove": {
     "Test-Path": true,
     "Test-ModuleManifest": true,
+    "/Get-Content.*perfource-commander-console/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
     "/^pwsh -NoProfile -Command \"Test-ModuleManifest 'c:\\\\Users\\\\lpensjo\\\\src\\\\perfource-commander-console\\\\PerfourceCommanderConsole\\.psd1' \\| Select-Object Name, Version, ExportedFunctions\"$/": {
       "approve": true,
       "matchCommandLine": true

@@ -147,6 +147,7 @@ function Start-P4Browser {
                 # Fetch describe on-demand (I/O lives outside the reducer to keep it pure)
                 if (-not [string]::IsNullOrWhiteSpace([string]$state.Runtime.LastSelectedId)) {
                     $change = ConvertTo-ChangeNumberFromId -Id $state.Runtime.LastSelectedId
+                    $state.Runtime.LastSelectedId = $null   # consume immediately; prevents retry on every keypress
                     if ($null -ne $change -and -not $state.Data.DescribeCache.ContainsKey($change)) {
                         $describeCmdLine = Format-P4CommandLine -P4Args @('describe', '-s', "$change")
                         $state = Invoke-BrowserSideEffect -State $state -CommandLine $describeCmdLine -WorkItem {

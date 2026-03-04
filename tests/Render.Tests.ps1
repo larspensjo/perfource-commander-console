@@ -561,6 +561,36 @@ Describe 'Frame helpers' {
                 $idleText | Should -Match 'Dismiss'
                 $idleText | Should -Match 'Toggle'
             }
+
+            It 'renders error detail row for failed history entries' {
+                $state = New-RenderStateFixture
+                $start = [datetime]'2026-01-01 09:00:00'
+                $end   = [datetime]'2026-01-01 09:00:01'
+                $state.Runtime.CommandModal.IsOpen  = $true
+                $state.Runtime.CommandModal.IsBusy  = $false
+                $state.Runtime.CommandModal.History = @(
+                    [pscustomobject]@{
+                        StartedAt  = $start; EndedAt = $end; CommandLine = 'p4 change -d 12345'
+                        ExitCode   = 1; Succeeded = $false; DurationMs = 500
+                        ErrorText  = "p4 failed (exit 1).`nArgs: change -d 12345`nSTDERR: Change 12345 has shelved files associated with it and can't be deleted."
+                    }
+                )
+                $frame    = Build-FrameFromState -State $state
+                $overlaid = Apply-ModalOverlay -Frame $frame -CommandModal $state.Runtime.CommandModal
+                $allText  = ($overlaid.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+                $allText | Should -Match '\[ERR\]'
+                $allText | Should -Match "shelved files associated with it and can't be deleted"
+                $allText | Should -Not -Match 'STDERR:'  # raw prefix must be stripped
+            }
+
+            It 'sanitizes multi-line LastError in the status bar' {
+                $state = New-RenderStateFixture
+                $state.Runtime.LastError = "p4 failed (exit 1).`nArgs: change -d 99`nSTDERR: Change 99 has shelved files."
+                $frame   = Build-FrameFromState -State $state
+                $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+                $allText | Should -Match 'Change 99 has shelved files'
+                $allText | Should -Not -Match 'STDERR:'  # raw prefix must be stripped
+            }
         }
     }
 }

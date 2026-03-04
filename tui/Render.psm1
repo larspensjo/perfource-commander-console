@@ -645,7 +645,16 @@ function Build-DetailSegments {
     # Show last error if present
     $lastError = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'LastError' -Default $null
     if (-not [string]::IsNullOrWhiteSpace([string]$lastError)) {
-        $rows.Add(@(@{ Text = "Error: $lastError"; Color = 'Red' }))
+        # Normalize: extract the STDERR message if present, otherwise take the first non-empty line
+        # (Invoke-P4 throws a multi-line string; embedding raw newlines breaks the terminal layout)
+        $errorDisplay  = [string]$lastError
+        $stderrLine    = ($errorDisplay -split '\r?\n' | Where-Object { $_ -match '^STDERR:' } | Select-Object -First 1)
+        if ($stderrLine) {
+            $errorDisplay = $stderrLine -replace '^STDERR:\s*', ''
+        } else {
+            $errorDisplay = ($errorDisplay -split '\r?\n' | Where-Object { $_ -ne '' } | Select-Object -First 1)
+        }
+        $rows.Add(@(@{ Text = "Error: $errorDisplay"; Color = 'Red' }))
     }
 
     # Resolve selected changelist entry
@@ -785,6 +794,19 @@ function Build-CommandModalRows {
             @{ Text = $tag;   Color = $tagColor },
             @{ Text = " ${durationMs}ms  $cmdLine"; Color = 'Gray' }
         ))
+        # For failed entries, append a detail row with the extracted error reason
+        if (-not [bool]$entry.Succeeded -and $contentRows.Count -lt ($innerRows - 1)) {
+            $errMsg     = [string]$entry.ErrorText
+            $stderrLine = ($errMsg -split '\r?\n' | Where-Object { $_ -match '^STDERR:' } | Select-Object -First 1)
+            if ($stderrLine) {
+                $errMsg = $stderrLine -replace '^STDERR:\s*', ''
+            } else {
+                $errMsg = ($errMsg -split '\r?\n' | Where-Object { $_ -ne '' } | Select-Object -Last 1)
+            }
+            if (-not [string]::IsNullOrWhiteSpace($errMsg)) {
+                $contentRows.Add(@(@{ Text = "  $errMsg"; Color = 'DarkRed' }))
+            }
+        }
     }
 
     # Pad remaining inner rows with blank lines

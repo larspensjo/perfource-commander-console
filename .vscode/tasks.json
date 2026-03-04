@@ -1,0 +1,34 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "PSScriptAnalyzer: Analyze code",
+            "type": "shell",
+            "command": "pwsh",
+            "args": [
+                "-NoProfile",
+                "-File",
+                "${workspaceFolder}/.vscode/Invoke-Linter.ps1"
+            ],
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": {
+                "owner": "psscriptanalyzer",
+                "fileLocation": "absolute",
+                "pattern": {
+                    "regexp": "^(.+)\\((\\d+),(\\d+)\\):\\s+(error|warning|information)\\s+(\\S+):\\s+(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "severity": 4,
+                    "code": 5,
+                    "message": 6
+                }
+            }
+        }
+    ]
+}

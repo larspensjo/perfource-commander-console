@@ -525,28 +525,28 @@ Describe 'Write-ColorSegments' {
         It 'pads content to requested width' {
             $result = Write-ColorSegments -Segments @(
                 @{ Text = 'Hi'; Color = 'Red' }
-            ) -Width 5 -NoEmit
+            ) -Width 5
             ($result | ForEach-Object { $_.Text.Length } | Measure-Object -Sum).Sum | Should -Be 5
         }
 
         It 'truncates content using ellipsis policy' {
             $result = Write-ColorSegments -Segments @(
                 @{ Text = 'ABCDEFGHIJ'; Color = 'Red' }
-            ) -Width 7 -NoEmit
+            ) -Width 7
             $result.Count | Should -Be 1
             $result[0].Text | Should -Be 'ABCD...'
             ($result | ForEach-Object { $_.Text.Length } | Measure-Object -Sum).Sum | Should -Be 7
         }
 
         It 'returns blank segment when no content exists' {
-            $result = Write-ColorSegments -Segments @() -Width 4 -NoEmit
+            $result = Write-ColorSegments -Segments @() -Width 4
             $result.Count | Should -Be 1
             $result[0].Text | Should -Be '    '
             $result[0].Color | Should -Be 'Gray'
         }
 
         It 'returns empty output when width is non-positive' {
-            (Write-ColorSegments -Segments @(@{ Text = 'a'; Color = 'Red' }) -Width 0 -NoEmit).Count | Should -Be 0
+            (Write-ColorSegments -Segments @(@{ Text = 'a'; Color = 'Red' }) -Width 0).Count | Should -Be 0
         }
 
         It 'flattens nested segment arrays' {
@@ -556,7 +556,7 @@ Describe 'Write-ColorSegments' {
                     @{ Text = 'B'; Color = 'Gray' }
                 )
             )
-            $result = Write-ColorSegments -Segments $segments -Width 4 -NoEmit
+            $result = Write-ColorSegments -Segments $segments -Width 4
             (($result | ForEach-Object { $_.Text }) -join '') | Should -Be 'AB  '
         }
     }

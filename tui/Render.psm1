@@ -80,8 +80,7 @@ function Merge-AdjacentSegments {
 function Write-ColorSegments {
     param(
         [Parameter(Mandatory = $true)]$Segments,
-        [Parameter(Mandatory = $true)][int]$Width,
-        [switch]$NoEmit
+        [Parameter(Mandatory = $true)][int]$Width
     )
 
     if ($Width -le 0) {
@@ -93,7 +92,7 @@ function Write-ColorSegments {
     foreach ($segment in @($Segments)) {
         if ($null -eq $segment) { continue }
         if ($segment -is [System.Collections.IEnumerable] -and -not ($segment -is [string]) -and -not (Test-IsSegmentLike -Value $segment)) {
-            $flat += @(Write-ColorSegments -Segments $segment -Width 2147483647 -NoEmit)
+            $flat += @(Write-ColorSegments -Segments $segment -Width 2147483647)
             continue
         }
 
@@ -202,7 +201,7 @@ function Build-BorderedRowSegments {
     }
 
     $innerWidth = [Math]::Max(0, $Width - 2)
-    $inner = Write-ColorSegments -Segments $InnerSegments -Width $innerWidth -NoEmit
+    $inner = Write-ColorSegments -Segments $InnerSegments -Width $innerWidth
     Write-Output -NoEnumerate @(
         @{ Text = '│'; Color = $BorderColor },
         @($inner),
@@ -264,8 +263,8 @@ function Compose-FrameRow {
         [Parameter(Mandatory = $true)][bool]$IsLastRow
     )
 
-    $left = Write-ColorSegments -Segments $LeftSegments -Width ([Math]::Max(0, $LeftWidth)) -NoEmit
-    $right = Write-ColorSegments -Segments $RightSegments -Width ([Math]::Max(0, $RightWidth)) -NoEmit
+    $left = Write-ColorSegments -Segments $LeftSegments -Width ([Math]::Max(0, $LeftWidth))
+    $right = Write-ColorSegments -Segments $RightSegments -Width ([Math]::Max(0, $RightWidth))
 
     if (-not [string]::IsNullOrEmpty($RightBackgroundColor)) {
         $right = @($right | ForEach-Object {
@@ -343,6 +342,8 @@ function Flush-FrameDiff {
         [Parameter(Mandatory = $true)]$Frame
     )
 
+    $null = $Frame  # reserved: passed for API symmetry; not yet used in body
+
     try {
         foreach ($row in @($ChangedRows)) {
             [Console]::SetCursorPosition(0, [int]$row.Y)
@@ -366,7 +367,7 @@ function Flush-FrameDiff {
         return $true
     }
     catch {
-        try { [Console]::ResetColor() } catch {}
+        try { [Console]::ResetColor() } catch { <# best-effort cleanup — swallow to avoid masking the original error #> }
         return $false
     }
 }
@@ -656,7 +657,7 @@ function Build-StatusBarRow {
         Text = $statusText
         Color = 'DarkGray'
         BackgroundColor = ''
-    }) -Width $statusWidth -NoEmit
+    }) -Width $statusWidth
 
     $statusSegments = foreach ($segment in $segments) {
         @{

@@ -36,6 +36,9 @@ function Start-P4Browser {
     $height = [Console]::WindowHeight
     $state  = New-BrowserState -Ideas $ideas -InitialWidth $width -InitialHeight $height
 
+    $previousOutputEncoding = [Console]::OutputEncoding
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
     $previousCursorVisible = [Console]::CursorVisible
     [Console]::CursorVisible = $false
 
@@ -61,6 +64,7 @@ function Start-P4Browser {
     }
     finally {
         [Console]::CursorVisible = $previousCursorVisible
+        [Console]::OutputEncoding = $previousOutputEncoding
         Clear-Host
     }
 }

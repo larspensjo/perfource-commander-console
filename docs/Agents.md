@@ -2,7 +2,7 @@
 
 ## Architecture
 
-* Use the Unid Directional Data flow design pattern.
+* Use the Unidirectional Data flow design pattern (UDF).
 * Prioritize elegance, robustness and flexibility.
 * Use unit tests to lock-in functionality.
 * Use the principle Correctness by Construction.

@@ -336,3 +336,100 @@ Describe 'CommandModal reducer actions' {
         $copy.Runtime.CommandModal.History[0].CommandLine | Should -Be 'p4 info'
     }
 }
+
+Describe 'ToggleChangelistView' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+    }
+
+    BeforeEach {
+        $changes = @(
+            [pscustomobject]@{ Id = '101'; Title = 'One';   HasShelvedFiles = $false; HasOpenedFiles = $true;  Captured = [datetime]'2026-02-10' },
+            [pscustomobject]@{ Id = '102'; Title = 'Two';   HasShelvedFiles = $true;  HasOpenedFiles = $true;  Captured = [datetime]'2026-02-09' },
+            [pscustomobject]@{ Id = '103'; Title = 'Three'; HasShelvedFiles = $false; HasOpenedFiles = $false; Captured = [datetime]'2026-02-08' }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+    }
+
+    It 'ExpandedChangelists defaults to false in new state' {
+        $state.Ui.ExpandedChangelists | Should -BeFalse
+    }
+
+    It 'ToggleChangelistView flips the flag to true then back to false' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleChangelistView' })
+        $next.Ui.ExpandedChangelists | Should -BeTrue
+
+        $next2 = Invoke-BrowserReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleChangelistView' })
+        $next2.Ui.ExpandedChangelists | Should -BeFalse
+    }
+
+    It 'Copy-BrowserState preserves ExpandedChangelists flag' {
+        $expanded = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleChangelistView' })
+        $copy = Copy-BrowserState -State $expanded
+        $copy.Ui.ExpandedChangelists | Should -BeTrue
+    }
+
+    It 'ToggleChangelistView re-clamps cursor into valid range' {
+        # Move cursor to last item
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveEnd' })
+        $state.Cursor.ChangeIndex | Should -Be 2
+
+        # Toggle expand — cursor should still be valid
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleChangelistView' })
+        $next.Cursor.ChangeIndex | Should -BeGreaterOrEqual 0
+        $next.Cursor.ChangeIndex | Should -BeLessOrEqual 2
+    }
+}
+
+Describe 'Changelist geometry helpers' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+    }
+
+    It 'Get-ChangeInnerViewRows returns ListPane.H minus 2 in Normal mode' {
+        $changes = @(
+            [pscustomobject]@{ Id = '1'; Title = 'X'; HasShelvedFiles = $false; HasOpenedFiles = $false; Captured = (Get-Date) }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+        $innerRows = Get-ChangeInnerViewRows -State $state
+        $innerRows | Should -Be ($state.Ui.Layout.ListPane.H - 2)
+    }
+
+    It 'Get-ChangeRowsPerItem returns 1 when ExpandedChangelists is false' {
+        $changes = @(
+            [pscustomobject]@{ Id = '1'; Title = 'X'; HasShelvedFiles = $false; HasOpenedFiles = $false; Captured = (Get-Date) }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+        Get-ChangeRowsPerItem -State $state | Should -Be 1
+    }
+
+    It 'Get-ChangeRowsPerItem returns 2 when ExpandedChangelists is true and height is sufficient' {
+        $changes = @(
+            [pscustomobject]@{ Id = '1'; Title = 'X'; HasShelvedFiles = $false; HasOpenedFiles = $false; Captured = (Get-Date) }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleChangelistView' })
+        Get-ChangeRowsPerItem -State $state | Should -Be 2
+    }
+
+    It 'Get-ChangeViewCapacity equals inner rows in compressed mode' {
+        $changes = @(
+            [pscustomobject]@{ Id = '1'; Title = 'X'; HasShelvedFiles = $false; HasOpenedFiles = $false; Captured = (Get-Date) }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+        $innerRows = Get-ChangeInnerViewRows -State $state
+        Get-ChangeViewCapacity -State $state | Should -Be $innerRows
+    }
+
+    It 'Get-ChangeViewCapacity halves in expanded mode' {
+        $changes = @(
+            [pscustomobject]@{ Id = '1'; Title = 'X'; HasShelvedFiles = $false; HasOpenedFiles = $false; Captured = (Get-Date) }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleChangelistView' })
+        $innerRows = Get-ChangeInnerViewRows -State $state
+        $capacity  = Get-ChangeViewCapacity  -State $state
+        $capacity  | Should -Be ([Math]::Floor($innerRows / 2))
+    }
+}

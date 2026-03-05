@@ -143,16 +143,16 @@ function Get-P4ChangelistEntries {
         [int]$Max = 200
     )
 
-    $changelists = Get-P4PendingChangelists -Max $Max
-    $openedSet = Get-P4OpenedChangeNumbers
-    $shelvedSet = Get-P4ShelvedChangeNumbers
-    if ($null -eq $openedSet) { $openedSet = [System.Collections.Generic.HashSet[int]]::new() }
-    if ($null -eq $shelvedSet) { $shelvedSet = [System.Collections.Generic.HashSet[int]]::new() }
+    $changelists  = Get-P4PendingChangelists -Max $Max
+    $openedCounts = Get-P4OpenedFileCounts
+    $changeNumbers = @($changelists | ForEach-Object { [int]$_.Change })
+    $shelvedCounts = Get-P4ShelvedFileCounts -ChangeNumbers $changeNumbers
 
     $changelists | ForEach-Object {
-        $hasShelved = $shelvedSet.Contains([int]$_.Change)
-        $hasOpened  = $openedSet.Contains([int]$_.Change)
-        ConvertTo-ChangelistEntry -Changelist $_ -HasShelvedFiles $hasShelved -HasOpenedFiles $hasOpened
+        $changeNum    = [int]$_.Change
+        $openedCount  = if ($openedCounts.ContainsKey($changeNum))  { $openedCounts[$changeNum]  } else { 0 }
+        $shelvedCount = if ($shelvedCounts.ContainsKey($changeNum)) { $shelvedCounts[$changeNum] } else { 0 }
+        ConvertTo-ChangelistEntry -Changelist $_ -OpenedFileCount $openedCount -ShelvedFileCount $shelvedCount
     }
 }
 
@@ -224,13 +224,55 @@ function Test-IsP4NoShelvedChangesError {
     return ($Message -match '(?i)no\s+matching\s+changelists')
 }
 
-function Get-P4OpenedChangeNumbers {
+# Pure helper: count opened files per changelist from 'p4 -ztag opened' output lines.
+# Each '... change N' line corresponds to one opened file in that changelist.
+function ConvertFrom-P4OpenedLinesToFileCounts {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Lines
+    )
+
+    $result = [System.Collections.Generic.Dictionary[int,int]]::new()
+    foreach ($line in $Lines) {
+        if ($line -match '^\.\.\.\s+change\s+(\d+)') {
+            $change = [int]$Matches[1]
+            if ($result.ContainsKey($change)) {
+                $result[$change]++
+            } else {
+                $result[$change] = 1
+            }
+        }
+    }
+    return $result
+}
+
+# Pure helper: count shelved files per changelist from 'p4 -ztag describe -S -s' output lines.
+# Tracks the current change from '... change N' lines and increments on 'depotFileN' keys.
+function ConvertFrom-P4DescribeShelvedLinesToFileCounts {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Lines
+    )
+
+    $result = [System.Collections.Generic.Dictionary[int,int]]::new()
+    $currentChange = -1
+    foreach ($line in $Lines) {
+        if ($line -match '^\.\.\.\s+change\s+(\d+)') {
+            $currentChange = [int]$Matches[1]
+            if (-not $result.ContainsKey($currentChange)) {
+                $result[$currentChange] = 0
+            }
+        } elseif ($line -match '^\.\.\.\s+depotFile\d+\s+' -and $currentChange -ge 0) {
+            $result[$currentChange]++
+        }
+    }
+    return $result
+}
+
+function Get-P4OpenedFileCounts {
     <#
     .SYNOPSIS
-        Returns the set of changelist numbers that have at least one opened file.
-    .DESCRIPTION
-        Runs 'p4 -ztag opened -u <user> -c <client>' once to get all open files,
-        then extracts the distinct changelist numbers.
+        Returns a dictionary mapping changelist number to the count of opened files in that CL.
     #>
     [CmdletBinding()]
     param()
@@ -244,16 +286,28 @@ function Get-P4OpenedChangeNumbers {
             throw
         }
         # No files opened is not an error
-        return ,([System.Collections.Generic.HashSet[int]]::new())
+        return [System.Collections.Generic.Dictionary[int,int]]::new()
     }
 
+    if ($null -eq $lines) { $lines = @() }
+    return ConvertFrom-P4OpenedLinesToFileCounts -Lines $lines
+}
+
+function Get-P4OpenedChangeNumbers {
+    <#
+    .SYNOPSIS
+        Returns the set of changelist numbers that have at least one opened file.
+    .DESCRIPTION
+        Adapter around Get-P4OpenedFileCounts. Returns only the keys (CL numbers).
+    #>
+    [CmdletBinding()]
+    param()
+
+    $counts = Get-P4OpenedFileCounts
     $result = [System.Collections.Generic.HashSet[int]]::new()
-    foreach ($line in $lines) {
-        if ($line -match '^\.\.\.\s+change\s+(\d+)') {
-            [void]$result.Add([int]$Matches[1])
-        }
+    foreach ($key in $counts.Keys) {
+        [void]$result.Add($key)
     }
-
     return ,$result
 }
 
@@ -290,6 +344,46 @@ function Get-P4ShelvedChangeNumbers {
     return ,$result
 }
 
+function Get-P4ShelvedFileCounts {
+    <#
+    .SYNOPSIS
+        Returns a dictionary mapping changelist number to the count of shelved files.
+    .DESCRIPTION
+        Uses batched 'p4 -ztag describe -S -s' calls to count shelved files per CL.
+        Change numbers are submitted in chunks to stay within command-line length limits.
+        On describe failure, degrades gracefully and returns empty counts for that chunk.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][int[]]$ChangeNumbers
+    )
+
+    $result = [System.Collections.Generic.Dictionary[int,int]]::new()
+    if ($null -eq $ChangeNumbers -or $ChangeNumbers.Count -eq 0) {
+        return $result
+    }
+
+    $chunkSize = 50
+    for ($i = 0; $i -lt $ChangeNumbers.Count; $i += $chunkSize) {
+        $end   = [Math]::Min($i + $chunkSize - 1, $ChangeNumbers.Count - 1)
+        $chunk = $ChangeNumbers[$i..$end]
+        $p4Args = @('-ztag', 'describe', '-S', '-s') + @($chunk | ForEach-Object { "$_" })
+        try {
+            $lines = Invoke-P4 -P4Args $p4Args
+            if ($null -eq $lines) { $lines = @() }
+            $chunkCounts = ConvertFrom-P4DescribeShelvedLinesToFileCounts -Lines $lines
+            foreach ($kvp in $chunkCounts.GetEnumerator()) {
+                $result[$kvp.Key] = $kvp.Value
+            }
+        }
+        catch {
+            # Degrade gracefully: skip shelved counts for this chunk rather than failing the load
+        }
+    }
+
+    return $result
+}
+
 function Remove-P4Changelist {
     <#
     .SYNOPSIS
@@ -306,4 +400,4 @@ function Remove-P4Changelist {
     Invoke-P4 -P4Args @('change', '-d', "$Change") | Out-Null
 }
 
-Export-ModuleMember -Function Format-P4CommandLine, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4ShelvedChangeNumbers, Remove-P4Changelist
+Export-ModuleMember -Function Format-P4CommandLine, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Remove-P4Changelist

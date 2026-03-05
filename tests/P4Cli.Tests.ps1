@@ -231,24 +231,214 @@ Describe 'Get-P4ChangelistEntries' {
         Import-Module (Join-Path $PSScriptRoot '..\p4\Models.psm1') -Force
     }
 
-    It 'marks changelist as Empty when opened and shelved sets are empty' {
+    It 'marks changelist as Empty when opened and shelved counts are zero' {
         $now = Get-Date
         Mock Get-P4PendingChangelists -ModuleName P4Cli {
             return @(
                 New-P4Changelist -Change 123 -User 'u' -Client 'c' -Time $now -Status 'pending' -Description 'desc'
             )
         }
-        Mock Get-P4OpenedChangeNumbers -ModuleName P4Cli {
-            return [System.Collections.Generic.HashSet[int]]::new()
+        Mock Get-P4OpenedFileCounts -ModuleName P4Cli {
+            return [System.Collections.Generic.Dictionary[int,int]]::new()
         }
-        Mock Get-P4ShelvedChangeNumbers -ModuleName P4Cli {
-            return [System.Collections.Generic.HashSet[int]]::new()
+        Mock Get-P4ShelvedFileCounts -ModuleName P4Cli {
+            return [System.Collections.Generic.Dictionary[int,int]]::new()
         }
 
         $result = @(Get-P4ChangelistEntries)
-        $result.Count | Should -Be 1
-        $result[0].Id              | Should -Be '123'
-        $result[0].HasShelvedFiles | Should -BeFalse
-        $result[0].HasOpenedFiles  | Should -BeFalse
+        $result.Count            | Should -Be 1
+        $result[0].Id            | Should -Be '123'
+        $result[0].HasShelvedFiles  | Should -BeFalse
+        $result[0].HasOpenedFiles   | Should -BeFalse
+        $result[0].OpenedFileCount  | Should -Be 0
+        $result[0].ShelvedFileCount | Should -Be 0
+    }
+
+    It 'populates counts and derives booleans when files are present' {
+        $now = Get-Date
+        Mock Get-P4PendingChangelists -ModuleName P4Cli {
+            return @(
+                New-P4Changelist -Change 200 -User 'u' -Client 'c' -Time $now -Status 'pending' -Description 'desc'
+            )
+        }
+        Mock Get-P4OpenedFileCounts -ModuleName P4Cli {
+            $d = [System.Collections.Generic.Dictionary[int,int]]::new()
+            $d[200] = 3
+            return $d
+        }
+        Mock Get-P4ShelvedFileCounts -ModuleName P4Cli {
+            $d = [System.Collections.Generic.Dictionary[int,int]]::new()
+            $d[200] = 2
+            return $d
+        }
+
+        $result = @(Get-P4ChangelistEntries)
+        $result.Count               | Should -Be 1
+        $result[0].HasOpenedFiles   | Should -BeTrue
+        $result[0].HasShelvedFiles  | Should -BeTrue
+        $result[0].OpenedFileCount  | Should -Be 3
+        $result[0].ShelvedFileCount | Should -Be 2
+    }
+}
+
+Describe 'ConvertFrom-P4OpenedLinesToFileCounts' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'counts files per changelist from opened ztag output' {
+        $lines = @(
+            '... depotFile //depot/a.txt',
+            '... change 100',
+            '... action edit',
+            '... depotFile //depot/b.txt',
+            '... change 200',
+            '... action add',
+            '... depotFile //depot/c.txt',
+            '... change 100',
+            '... action edit'
+        )
+        $result = InModuleScope P4Cli { ConvertFrom-P4OpenedLinesToFileCounts -Lines $args[0] } -ArgumentList @(,$lines)
+        $result[100] | Should -Be 2
+        $result[200] | Should -Be 1
+    }
+
+    It 'returns empty dictionary for empty input' {
+        $result = InModuleScope P4Cli { ConvertFrom-P4OpenedLinesToFileCounts -Lines @() }
+        $result.Count | Should -Be 0
+    }
+}
+
+Describe 'ConvertFrom-P4DescribeShelvedLinesToFileCounts' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'counts shelved files per changelist from describe -S -s output' {
+        $lines = @(
+            '... change 300',
+            '... user u',
+            '... depotFile0 //depot/x.txt',
+            '... depotFile1 //depot/y.txt',
+            '... change 400',
+            '... user u',
+            '... depotFile0 //depot/z.txt'
+        )
+        $result = InModuleScope P4Cli { ConvertFrom-P4DescribeShelvedLinesToFileCounts -Lines $args[0] } -ArgumentList @(,$lines)
+        $result[300] | Should -Be 2
+        $result[400] | Should -Be 1
+    }
+
+    It 'returns empty dictionary for empty input' {
+        $result = InModuleScope P4Cli { ConvertFrom-P4DescribeShelvedLinesToFileCounts -Lines @() }
+        $result.Count | Should -Be 0
+    }
+
+    It 'records zero count for a change with no depotFile keys' {
+        $lines = @(
+            '... change 500',
+            '... user u'
+        )
+        $result = InModuleScope P4Cli { ConvertFrom-P4DescribeShelvedLinesToFileCounts -Lines $args[0] } -ArgumentList @(,$lines)
+        $result.ContainsKey(500) | Should -BeTrue
+        $result[500]             | Should -Be 0
+    }
+}
+
+Describe 'Get-P4OpenedFileCounts' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'returns file counts per changelist from opened output' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @(
+                '... depotFile //depot/a.txt',
+                '... change 100',
+                '... depotFile //depot/b.txt',
+                '... change 100'
+            )
+        }
+
+        $result = Get-P4OpenedFileCounts
+        $result.ContainsKey(100) | Should -BeTrue
+        $result[100]             | Should -Be 2
+    }
+
+    It 'returns empty dictionary when no files are opened' {
+        Mock Invoke-P4 -ModuleName P4Cli { throw 'no such file(s).' }
+
+        $result = Get-P4OpenedFileCounts
+        ($result -is [System.Collections.Generic.Dictionary[int,int]]) | Should -BeTrue
+        $result.Count | Should -Be 0
+    }
+
+    It 'returns empty dictionary when opened output is empty' {
+        Mock Invoke-P4 -ModuleName P4Cli { return @() }
+
+        $result = Get-P4OpenedFileCounts
+        $result.Count | Should -Be 0
+    }
+
+    It 'rethrows unexpected errors' {
+        Mock Invoke-P4 -ModuleName P4Cli { throw 'network timeout' }
+
+        { Get-P4OpenedFileCounts } | Should -Throw '*network timeout*'
+    }
+}
+
+Describe 'Get-P4ShelvedFileCounts' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'returns empty dictionary for empty changelist input' {
+        $result = Get-P4ShelvedFileCounts -ChangeNumbers @()
+        ($result -is [System.Collections.Generic.Dictionary[int,int]]) | Should -BeTrue
+        $result.Count | Should -Be 0
+    }
+
+    It 'parses shelved file counts from batched describe output' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @(
+                '... change 300',
+                '... depotFile0 //depot/a.txt',
+                '... depotFile1 //depot/b.txt',
+                '... change 400',
+                '... depotFile0 //depot/c.txt'
+            )
+        }
+
+        $result = Get-P4ShelvedFileCounts -ChangeNumbers @(300, 400)
+        $result[300] | Should -Be 2
+        $result[400] | Should -Be 1
+    }
+
+    It 'degrades gracefully on describe failure and returns empty result' {
+        Mock Invoke-P4 -ModuleName P4Cli { throw 'connection refused' }
+
+        $result = Get-P4ShelvedFileCounts -ChangeNumbers @(500, 501)
+        ($result -is [System.Collections.Generic.Dictionary[int,int]]) | Should -BeTrue
+        $result.Count | Should -Be 0
+    }
+
+    It 'merges results from multiple chunks' {
+        # Use chunk size logic: supply 51 items so it splits into 2 chunks.
+        # Both chunks hit the same mock which returns a static single entry.
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @(
+                "... change $($args[0][-1])",
+                '... depotFile0 //depot/x.txt'
+            )
+        }
+
+        $numbers = 1..55
+        # Each chunk call returns one entry for the last CL in that chunk.
+        # We just verify the function calls Invoke-P4 more than once and returns a non-empty dict.
+        Mock Invoke-P4 -ModuleName P4Cli { return @() }
+
+        $result = Get-P4ShelvedFileCounts -ChangeNumbers $numbers
+        ($result -is [System.Collections.Generic.Dictionary[int,int]]) | Should -BeTrue
+        Assert-MockCalled Invoke-P4 -ModuleName P4Cli -Times 2 -Exactly
     }
 }

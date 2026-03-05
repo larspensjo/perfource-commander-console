@@ -561,6 +561,33 @@ function Build-ChangeSegments {
     Write-Output -NoEnumerate $segments
 }
 
+function Build-ChangeDetailSegments {
+    param(
+        [AllowNull()]$Change
+    )
+
+    if ($null -eq $Change) {
+        Write-Output -NoEnumerate @()
+        return
+    }
+
+    $openedCount  = [int](Get-PropertyValueOrDefault -Object $Change -Name 'OpenedFileCount'  -Default 0)
+    $shelvedCount = [int](Get-PropertyValueOrDefault -Object $Change -Name 'ShelvedFileCount' -Default 0)
+    $capturedRaw  =     Get-PropertyValueOrDefault  -Object $Change -Name 'Captured'         -Default $null
+    $dateStr = ''
+    if ($null -ne $capturedRaw) {
+        try { $dateStr = ([datetime]$capturedRaw).ToString('yyyy-MM-dd') } catch { $dateStr = '' }
+    }
+
+    Write-Output -NoEnumerate @(
+        @{ Text = [char]::ConvertFromUtf32(0x1F4C1); Color = 'DarkCyan' },
+        @{ Text = " $openedCount  ";                  Color = 'Gray'     },
+        @{ Text = [char]::ConvertFromUtf32(0x1F4E6); Color = 'DarkCyan' },
+        @{ Text = " $shelvedCount  ";                 Color = 'Gray'     },
+        @{ Text = $dateStr;                           Color = 'DarkGray' }
+    )
+}
+
 function Build-ChangeSummarySegments {
     param([AllowNull()]$Change)
 
@@ -685,7 +712,8 @@ function Build-StatusBarRow {
     )
 
     $hideMode = if ($State.Ui.HideUnavailableFilters) { 'On' } else { 'Off' }
-    $statusText = "Total: $($State.Data.AllChanges.Count) | Filtered: $($State.Derived.VisibleChangeIds.Count) | Selected Filters: $($State.Query.SelectedFilters.Count) | HideUnavailable: $hideMode | [Tab] Switch [Space] Toggle [PgUp/PgDn] Page [Home/End] [F5] Reload [X/Del] Delete [H] Hide [F12] CmdLog [Q] Quit"
+    $expandHint = if ((Get-PropertyValueOrDefault -Object $State.Ui -Name 'ExpandedChangelists' -Default $false)) { '[E] Collapse' } else { '[E] Expand' }
+    $statusText = "Total: $($State.Data.AllChanges.Count) | Filtered: $($State.Derived.VisibleChangeIds.Count) | Selected Filters: $($State.Query.SelectedFilters.Count) | HideUnavailable: $hideMode | [Tab] Switch [Space] Toggle [PgUp/PgDn] Page [Home/End] [F5] Reload [X/Del] Delete [H] Hide $expandHint [F12] CmdLog [Q] Quit"
     $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
 
     $segments = Write-ColorSegments -Segments @(@{
@@ -860,8 +888,15 @@ function Build-FrameFromState {
     $filterViewRows = [Math]::Max(1, $layout.FilterPane.H - 2)
     $changeViewRows = [Math]::Max(1, $layout.ListPane.H - 2)
     $detailRows = [Math]::Max(0, $layout.DetailPane.H - 2)
+
+    $expandedChangelists = $false
+    if ($null -ne $State.Ui -and ($State.Ui.PSObject.Properties.Match('ExpandedChangelists')).Count -gt 0) {
+        $expandedChangelists = [bool]$State.Ui.ExpandedChangelists
+    }
+    $rowsPerCl = if ($expandedChangelists -and $changeViewRows -ge 2) { 2 } else { 1 }
+
     $FilterThumb = Get-ScrollThumb -TotalItems $State.Derived.VisibleFilters.Count -ViewRows $filterViewRows -ScrollTop $State.Cursor.FilterScrollTop
-    $changeThumb = Get-ScrollThumb -TotalItems $State.Derived.VisibleChangeIds.Count -ViewRows $changeViewRows -ScrollTop $State.Cursor.ChangeScrollTop
+    $changeThumb = Get-ScrollThumb -TotalItems ($State.Derived.VisibleChangeIds.Count * $rowsPerCl) -ViewRows $changeViewRows -ScrollTop ($State.Cursor.ChangeScrollTop * $rowsPerCl)
 
     $detailSegments = Build-DetailSegments -State $State
 
@@ -889,12 +924,13 @@ function Build-FrameFromState {
             } else {
                 $changeInnerRow = $globalRow - 1
                 $changeMarker = ' '
-                $changeListIndex = $State.Cursor.ChangeScrollTop + $changeInnerRow
+                $changeClIdx  = $State.Cursor.ChangeScrollTop + [Math]::Floor($changeInnerRow / $rowsPerCl)
+                $changeRowType = $changeInnerRow % $rowsPerCl   # 0 = title row, 1 = detail row
                 $cl = $null
-                if ($changeListIndex -lt $State.Derived.VisibleChangeIds.Count) {
-                    $entryId = $State.Derived.VisibleChangeIds[$changeListIndex]
+                if ($changeClIdx -lt $State.Derived.VisibleChangeIds.Count) {
+                    $entryId = $State.Derived.VisibleChangeIds[$changeClIdx]
                     $cl = Get-ChangeById -Changes $State.Data.AllChanges -Id $entryId
-                    if ($State.Cursor.ChangeIndex -eq $changeListIndex) {
+                    if ($State.Cursor.ChangeIndex -eq $changeClIdx) {
                         $changeMarker = '>'
                     } elseif ($null -ne $changeThumb) {
                         if ($changeInnerRow -ge $changeThumb.Start -and $changeInnerRow -le $changeThumb.End) {
@@ -911,8 +947,14 @@ function Build-FrameFromState {
                     }
                 }
 
-                $isSelectedChange = ($changeListIndex -lt $State.Derived.VisibleChangeIds.Count -and $State.Cursor.ChangeIndex -eq $changeListIndex -and $null -ne $cl)
-                $changeInnerSegments = Build-ChangeSegments -Marker $changeMarker -Change $cl -IsSelected $isSelectedChange
+                $isSelectedChange = ($changeClIdx -lt $State.Derived.VisibleChangeIds.Count -and $State.Cursor.ChangeIndex -eq $changeClIdx -and $null -ne $cl)
+                if ($changeRowType -eq 1) {
+                    # Detail row (expanded mode): marker + file counts + date
+                    $markerSeg = @{ Text = $changeMarker; Color = (Get-MarkerColor -Marker $changeMarker) }
+                    $changeInnerSegments = @($markerSeg) + @(Build-ChangeDetailSegments -Change $cl)
+                } else {
+                    $changeInnerSegments = Build-ChangeSegments -Marker $changeMarker -Change $cl -IsSelected $isSelectedChange
+                }
                 $rightSegments = Build-BorderedRowSegments -InnerSegments $changeInnerSegments -Width $layout.ListPane.W -BorderColor $changeBorderColor
                 if ($isSelectedChange) {
                     $rightBackgroundColor = 'DarkCyan'
@@ -980,4 +1022,4 @@ function Render-BrowserState {
     }
 }
 
-Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb
+Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb, Build-ChangeDetailSegments

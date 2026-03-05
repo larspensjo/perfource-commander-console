@@ -68,6 +68,7 @@ function New-RenderTestState {
             ActivePane = 'Changelists'
             IsMaximized = $false
             HideUnavailableFilters = $false
+            ExpandedChangelists = $false
             Layout = $layout
         }
         Query = [pscustomobject]@{
@@ -200,6 +201,7 @@ Describe 'Frame helpers' {
                         ActivePane = 'Changelists'
                         IsMaximized = $false
                         HideUnavailableFilters = $false
+                        ExpandedChangelists = $false
                         Layout = $layout
                     }
                     Query = [pscustomobject]@{
@@ -719,6 +721,163 @@ Describe 'Box helpers' {
             $text.Length | Should -Be 8
             $text[0] | Should -Be '│'
             $text[7] | Should -Be '│'
+        }
+    }
+}
+Describe 'Build-ChangeDetailSegments' {
+    InModuleScope 'Render' {
+        It 'renders opened count, shelved count and date from change fields' {
+            $cl = [pscustomobject]@{
+                Id               = '999'
+                Title            = 'My CL'
+                OpenedFileCount  = 5
+                ShelvedFileCount = 3
+                Captured         = [datetime]'2025-03-01'
+            }
+            $segments = Build-ChangeDetailSegments -Change $cl
+            $allText = ($segments | ForEach-Object { $_.Text }) -join ''
+            $allText | Should -Match '5'
+            $allText | Should -Match '3'
+            $allText | Should -Match '2025-03-01'
+        }
+
+        It 'renders zero counts when count fields are absent' {
+            $cl = [pscustomobject]@{ Id = '1'; Title = 'Only Title'; Captured = [datetime]'2025-01-01' }
+            $segments = Build-ChangeDetailSegments -Change $cl
+            $allText = ($segments | ForEach-Object { $_.Text }) -join ''
+            $allText | Should -Match '0'
+        }
+
+        It 'uses DarkCyan for icon segments and Gray for count segments' {
+            $cl = [pscustomobject]@{
+                Id               = '1'
+                Title            = 'T'
+                OpenedFileCount  = 2
+                ShelvedFileCount = 1
+                Captured         = [datetime]'2025-06-01'
+            }
+            $segments = Build-ChangeDetailSegments -Change $cl
+            ($segments | Where-Object { $_.Color -eq 'DarkCyan' }).Count | Should -BeGreaterThan 0
+            ($segments | Where-Object { $_.Color -eq 'Gray' }).Count     | Should -BeGreaterThan 0
+        }
+
+        It 'returns empty array for null change' {
+            $result = Build-ChangeDetailSegments -Change $null
+            @($result).Count | Should -Be 0
+        }
+    }
+}
+
+Describe 'Expanded changelist frame rendering' {
+    InModuleScope 'Render' {
+        BeforeAll {
+            function New-ExpandedStateFixture {
+                param([bool]$Expanded = $true)
+
+                $SelectedFilters = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                $changes = @(
+                    [pscustomobject]@{
+                        Id = 'CL-1'; Title = 'First'; OpenedFileCount = 2; ShelvedFileCount = 1
+                        HasOpenedFiles = $true; HasShelvedFiles = $true; Captured = [datetime]'2025-01-10'
+                    },
+                    [pscustomobject]@{
+                        Id = 'CL-2'; Title = 'Second'; OpenedFileCount = 0; ShelvedFileCount = 0
+                        HasOpenedFiles = $false; HasShelvedFiles = $false; Captured = [datetime]'2025-01-09'
+                    }
+                )
+
+                $contentHeight = 19
+                $listHeight = 9
+                $detailHeight = $contentHeight - $listHeight - 1
+                $layout = [pscustomobject]@{
+                    Mode       = 'Normal'
+                    Width      = 200
+                    Height     = 20
+                    FilterPane = [pscustomobject]@{ X = 0; Y = 0; W = 24; H = $contentHeight }
+                    ListPane   = [pscustomobject]@{ X = 25; Y = 0; W = 55; H = $listHeight }
+                    DetailPane = [pscustomobject]@{ X = 25; Y = ($listHeight + 1); W = 55; H = $detailHeight }
+                    StatusPane = [pscustomobject]@{ X = 0; Y = $contentHeight; W = 200; H = 1 }
+                }
+
+                return [pscustomobject]@{
+                    Data    = [pscustomobject]@{ AllChanges = $changes; AllFilters = @() }
+                    Ui      = [pscustomobject]@{
+                        ActivePane             = 'Changelists'
+                        IsMaximized            = $false
+                        HideUnavailableFilters = $false
+                        ExpandedChangelists    = $Expanded
+                        Layout                 = $layout
+                    }
+                    Query   = [pscustomobject]@{
+                        SelectedFilters = $SelectedFilters
+                        SearchText      = ''
+                        SearchMode      = 'None'
+                        SortMode        = 'Default'
+                    }
+                    Derived = [pscustomobject]@{
+                        VisibleChangeIds = @('CL-1', 'CL-2')
+                        VisibleFilters   = @()
+                    }
+                    Cursor  = [pscustomobject]@{
+                        FilterIndex     = 0
+                        FilterScrollTop = 0
+                        ChangeIndex     = 0
+                        ChangeScrollTop = 0
+                    }
+                    Runtime = [pscustomobject]@{
+                        IsRunning  = $true
+                        LastError  = $null
+                        DeleteChangeId = $null
+                        CommandModal   = [pscustomobject]@{
+                            IsOpen = $false; IsBusy = $false; CurrentCommand = ''; History = @()
+                        }
+                    }
+                }
+            }
+        }
+
+        It 'expanded frame contains date text in detail rows' {
+            $state = New-ExpandedStateFixture -Expanded $true
+            $frame = Build-FrameFromState -State $state
+            $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+            $allText | Should -Match '2025-01-10'
+        }
+
+        It 'compressed frame does not contain date text' {
+            $state = New-ExpandedStateFixture -Expanded $false
+            $frame = Build-FrameFromState -State $state
+            $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+            $allText | Should -Not -Match '2025-01-10'
+        }
+
+        It 'selected CL has DarkCyan background on its title row in expanded mode' {
+            $state = New-ExpandedStateFixture -Expanded $true
+            $frame = Build-FrameFromState -State $state
+            # Row 1 (inner row 0) is the title row for CL-1 (selected)
+            $row1 = $frame.Rows[1]
+            ($row1.Segments | Where-Object { $_.BackgroundColor -eq 'DarkCyan' }).Count | Should -BeGreaterThan 0
+        }
+
+        It 'selected CL detail row also has DarkCyan background in expanded mode' {
+            $state = New-ExpandedStateFixture -Expanded $true
+            $frame = Build-FrameFromState -State $state
+            # Row 2 (inner row 1) is the detail row for CL-1 (selected)
+            $row2 = $frame.Rows[2]
+            ($row2.Segments | Where-Object { $_.BackgroundColor -eq 'DarkCyan' }).Count | Should -BeGreaterThan 0
+        }
+
+        It 'status bar shows [E] Expand when compressed' {
+            $state = New-ExpandedStateFixture -Expanded $false
+            $frame = Build-FrameFromState -State $state
+            $statusText = ($frame.Rows[-1].Segments | ForEach-Object { $_.Text }) -join ''
+            $statusText | Should -Match '\[E\] Expand'
+        }
+
+        It 'status bar shows [E] Collapse when expanded' {
+            $state = New-ExpandedStateFixture -Expanded $true
+            $frame = Build-FrameFromState -State $state
+            $statusText = ($frame.Rows[-1].Segments | ForEach-Object { $_.Text }) -join ''
+            $statusText | Should -Match '\[E\] Collapse'
         }
     }
 }

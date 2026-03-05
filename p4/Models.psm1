@@ -25,19 +25,21 @@ function ConvertTo-ChangelistEntry {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][object]$Changelist,
-        [Parameter(Mandatory = $false)][bool]$HasShelvedFiles = $false,
-        [Parameter(Mandatory = $false)][bool]$HasOpenedFiles = $false
+        [Parameter(Mandatory = $false)][int]$OpenedFileCount = 0,
+        [Parameter(Mandatory = $false)][int]$ShelvedFileCount = 0
     )
 
     $title = [string]$Changelist.Description
     if ([string]::IsNullOrWhiteSpace($title)) { $title = '(no description)' }
 
     [pscustomobject]@{
-        Id              = "$($Changelist.Change)"
-        Title           = $title
-        HasShelvedFiles = $HasShelvedFiles
-        HasOpenedFiles  = $HasOpenedFiles
-        Captured        = $Changelist.Time
+        Id               = "$($Changelist.Change)"
+        Title            = $title
+        HasShelvedFiles  = ($ShelvedFileCount -gt 0)
+        HasOpenedFiles   = ($OpenedFileCount -gt 0)
+        OpenedFileCount  = $OpenedFileCount
+        ShelvedFileCount = $ShelvedFileCount
+        Captured         = $Changelist.Time
     }
 }
 

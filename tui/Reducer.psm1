@@ -6,6 +6,38 @@ Import-Module (Join-Path $PSScriptRoot 'Filtering.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Layout.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
 
+# ── Changelist viewport geometry helpers ──────────────────────────────────────
+# These must stay in sync with the render logic in Render.psm1 (which uses H-2).
+
+function Get-ChangeInnerViewRows {
+    param($State)
+    if ($null -ne $State.Ui.Layout -and $State.Ui.Layout.Mode -eq 'Normal') {
+        return [Math]::Max(1, $State.Ui.Layout.ListPane.H - 2)
+    }
+    return 1
+}
+
+function Get-ChangeRowsPerItem {
+    param($State)
+    $expanded = $false
+    if ($null -ne $State.Ui -and ($State.Ui.PSObject.Properties.Match('ExpandedChangelists')).Count -gt 0) {
+        $expanded = [bool]$State.Ui.ExpandedChangelists
+    }
+    if ($expanded) {
+        $innerRows = Get-ChangeInnerViewRows -State $State
+        if ($innerRows -ge 2) { return 2 }
+    }
+    return 1
+}
+
+function Get-ChangeViewCapacity {
+    param($State)
+    $innerRows   = Get-ChangeInnerViewRows -State $State
+    $rowsPerItem = Get-ChangeRowsPerItem   -State $State
+    return [Math]::Max(1, [Math]::Floor($innerRows / $rowsPerItem))
+}
+# ──────────────────────────────────────────────────────────────────────────────
+
 function New-BrowserState {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Changes,
@@ -23,6 +55,7 @@ function New-BrowserState {
             ActivePane = 'Filters'
             IsMaximized = $false
             HideUnavailableFilters = $false
+            ExpandedChangelists = $false
             Layout = Get-BrowserLayout -Width $InitialWidth -Height $InitialHeight
         }
         Query = [pscustomobject]@{
@@ -72,6 +105,7 @@ function Copy-BrowserState {
             ActivePane = $State.Ui.ActivePane
             IsMaximized = $State.Ui.IsMaximized
             HideUnavailableFilters = $State.Ui.HideUnavailableFilters
+            ExpandedChangelists = if (($State.Ui.PSObject.Properties.Match('ExpandedChangelists')).Count -gt 0) { [bool]$State.Ui.ExpandedChangelists } else { $false }
             Layout = $State.Ui.Layout
         }
         Query = [pscustomobject]@{
@@ -166,10 +200,7 @@ function Update-BrowserDerivedState {
             $State.Cursor.ChangeScrollTop = 0
         }
 
-        $changeViewport = 1
-        if ($State.Ui.Layout -and $State.Ui.Layout.Mode -eq 'Normal') {
-            $changeViewport = [Math]::Max(1, $State.Ui.Layout.ListPane.H - 1)
-        }
+        $changeViewport = Get-ChangeViewCapacity -State $State
         $maxChangeScroll = [Math]::Max(0, $visibleCount - $changeViewport)
         if ($State.Cursor.ChangeScrollTop -gt $maxChangeScroll) {
             $State.Cursor.ChangeScrollTop = $maxChangeScroll
@@ -235,10 +266,7 @@ function Invoke-BrowserReducer {
 
     function Get-ChangeViewportSize {
         param($CurrentState)
-        if ($CurrentState.Ui.Layout -and $CurrentState.Ui.Layout.Mode -eq 'Normal') {
-            return [Math]::Max(1, $CurrentState.Ui.Layout.ListPane.H - 1)
-        }
-        return 1
+        return Get-ChangeViewCapacity -State $CurrentState
     }
 
     switch ($Action.Type) {
@@ -416,6 +444,10 @@ function Invoke-BrowserReducer {
 
             return Update-BrowserDerivedState -State $next
         }
+        'ToggleChangelistView' {
+            $next.Ui.ExpandedChangelists = -not [bool]$next.Ui.ExpandedChangelists
+            return Update-BrowserDerivedState -State $next
+        }
         'Describe' {
             if ($next.Derived.VisibleChangeIds.Count -eq 0) { return $next }
             $idx = [Math]::Max(0, [Math]::Min($next.Cursor.ChangeIndex,
@@ -456,4 +488,4 @@ function ConvertTo-ChangeNumberFromId {
     return $null
 }
 
-Export-ModuleMember -Function New-BrowserState, Copy-BrowserState, Invoke-BrowserReducer, Update-BrowserDerivedState, ConvertTo-ChangeNumberFromId
+Export-ModuleMember -Function New-BrowserState, Copy-BrowserState, Invoke-BrowserReducer, Update-BrowserDerivedState, ConvertTo-ChangeNumberFromId, Get-ChangeInnerViewRows, Get-ChangeRowsPerItem, Get-ChangeViewCapacity

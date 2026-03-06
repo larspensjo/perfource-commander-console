@@ -1022,6 +1022,165 @@ function Apply-ModalOverlay {
     }
 }
 
+function Build-FilesStatusBarRow {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]$Layout
+    )
+
+    $sourceChange = Get-PropertyValueOrDefault -Object $State.Data  -Name 'FilesSourceChange' -Default ''
+    $sourceKind   = Get-PropertyValueOrDefault -Object $State.Data  -Name 'FilesSourceKind'   -Default ''
+    $fileCount    = if (($State.Derived.PSObject.Properties.Match('VisibleFileIndices')).Count -gt 0) { $State.Derived.VisibleFileIndices.Count } else { 0 }
+    $filePos      = if ($fileCount -gt 0) { $State.Cursor.FileIndex + 1 } else { 0 }
+    $filterText   = Get-PropertyValueOrDefault -Object $State.Query -Name 'FileFilterText' -Default ''
+    $filterHint   = if (-not [string]::IsNullOrWhiteSpace($filterText)) { "  Filter: $filterText" } else { '' }
+
+    $statusText  = "[Files] CL $sourceChange ($sourceKind)  $filePos/$fileCount$filterHint | [/] Filter  [Esc/←] Back  [Tab] Pane  [F1] Help  [F5] Reload  [Q] Quit"
+    $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
+
+    $seg  = @{ Text = $statusText; Color = 'DarkGray'; BackgroundColor = '' }
+    $segs = Write-ColorSegments -Segments @($seg) -Width $statusWidth
+    $segs = foreach ($s in @($segs)) {
+        @{ Text            = [string](Get-PropertyValueOrDefault -Object $s -Name 'Text'            -Default '')
+           Color           = [string](Get-PropertyValueOrDefault -Object $s -Name 'Color'           -Default 'Gray')
+           BackgroundColor = '' }
+    }
+    $mergedSegs = Merge-AdjacentSegments -Segments $segs
+    $signature  = Get-FrameRowSignature   -Segments $mergedSegs
+
+    return [pscustomobject]@{
+        Y         = $Layout.StatusPane.Y
+        Segments  = $mergedSegs
+        Signature = $signature
+    }
+}
+
+function Build-FilesScreenFrame {
+    <#
+    .SYNOPSIS
+        Builds the terminal frame for the Files screen.
+    .DESCRIPTION
+        Step 1 skeleton: left pane shows filter summary; top-right pane shows
+        file list placeholder; bottom-right pane shows a file inspector
+        placeholder. File rows are rendered in Step 2 once loading is wired up.
+    #>
+    param([Parameter(Mandatory = $true)]$State)
+
+    $layout        = $State.Ui.Layout
+    $filterBorder  = Get-PaneBorderColor -PaneName 'Filters'    -State $State
+    $listBorder    = Get-PaneBorderColor -PaneName 'Changelists' -State $State
+    $detailBorder  = 'DarkGray'
+
+    $sourceChange  = Get-PropertyValueOrDefault -Object $State.Data  -Name 'FilesSourceChange' -Default ''
+    $sourceKind    = Get-PropertyValueOrDefault -Object $State.Data  -Name 'FilesSourceKind'   -Default ''
+    $filterText    = Get-PropertyValueOrDefault -Object $State.Query -Name 'FileFilterText'    -Default ''
+    $fileCount     = if (($State.Derived.PSObject.Properties.Match('VisibleFileIndices')).Count -gt 0) { $State.Derived.VisibleFileIndices.Count } else { 0 }
+    $isLoading     = [bool](Get-PropertyValueOrDefault -Object $State.Runtime -Name 'LoadFilesRequested' -Default $false)
+
+    $listPaneTitle = "[Files — CL $sourceChange ($sourceKind)]"
+    $rows          = [System.Collections.Generic.List[object]]::new($layout.Height)
+
+    for ($globalRow = 0; $globalRow -lt $layout.FilterPane.H; $globalRow++) {
+        # ── Left pane (filter) ───────────────────────────────────────────────
+        $leftSegs = @()
+        if ($globalRow -eq 0) {
+            $leftSegs = Build-BoxTopSegments -Title '[Filter]' -Width $layout.FilterPane.W `
+                            -BorderColor $filterBorder -TitleColor $filterBorder
+        } elseif ($globalRow -eq ($layout.FilterPane.H - 1)) {
+            $leftSegs = Build-BoxBottomSegments -Width $layout.FilterPane.W -BorderColor $filterBorder
+        } else {
+            $filterInnerRow = $globalRow - 1
+            $inner = if ($filterInnerRow -eq 0) {
+                if (-not [string]::IsNullOrWhiteSpace($filterText)) {
+                    @(@{ Text = "🔍 $filterText"; Color = 'Cyan' })
+                } else {
+                    @(@{ Text = '(no filter)'; Color = 'DarkGray' })
+                }
+            } elseif ($filterInnerRow -eq 1) {
+                @(@{ Text = ''; Color = 'Gray' })
+            } elseif ($filterInnerRow -eq 2) {
+                @(@{ Text = '[/] Set filter'; Color = 'DarkGray' })
+            } elseif ($filterInnerRow -eq 3) {
+                @(@{ Text = '[Esc] Clear'; Color = 'DarkGray' })
+            } else {
+                @(@{ Text = ''; Color = 'Gray' })
+            }
+            $leftSegs = Build-BorderedRowSegments -InnerSegments $inner -Width $layout.FilterPane.W -BorderColor $filterBorder
+        }
+
+        # ── Right pane ───────────────────────────────────────────────────────
+        $rightSegs            = @()
+        $rightBackgroundColor = ''
+
+        if ($globalRow -lt $layout.ListPane.H) {
+            if ($globalRow -eq 0) {
+                $rightSegs = Build-BoxTopSegments -Title $listPaneTitle -Width $layout.ListPane.W `
+                                 -BorderColor $listBorder -TitleColor $listBorder
+            } elseif ($globalRow -eq ($layout.ListPane.H - 1)) {
+                $rightSegs = Build-BoxBottomSegments -Width $layout.ListPane.W -BorderColor $listBorder
+            } else {
+                $fileInnerRow = $globalRow - 1
+                $fileIdx      = $State.Cursor.FileScrollTop + $fileInnerRow
+
+                if ($fileCount -eq 0 -and $fileInnerRow -eq 0) {
+                    $msg   = if ($isLoading) { 'Loading…' } else { '(no files loaded)' }
+                    $inner = @(@{ Text = $msg; Color = 'DarkGray' })
+                } elseif ($fileIdx -lt $fileCount) {
+                    # Placeholder until Step 2 supplies actual FileEntry rendering.
+                    $isSelected = ($fileIdx -eq $State.Cursor.FileIndex)
+                    $marker     = if ($isSelected) { '>' } else { ' ' }
+                    $mColor     = if ($isSelected) { 'Cyan' } else { 'DarkGray' }
+                    $tColor     = if ($isSelected) { 'White' } else { 'Gray' }
+                    $inner      = @(
+                        @{ Text = $marker;           Color = $mColor },
+                        @{ Text = " (file $fileIdx)"; Color = $tColor }
+                    )
+                    if ($isSelected) { $rightBackgroundColor = 'DarkCyan' }
+                } else {
+                    $inner = @(@{ Text = ''; Color = 'Gray' })
+                }
+                $rightSegs = Build-BorderedRowSegments -InnerSegments $inner -Width $layout.ListPane.W -BorderColor $listBorder
+            }
+        } elseif ($globalRow -eq $layout.ListPane.H) {
+            # Gap row between list pane and detail pane
+            $rightSegs = @(@{ Text = (' ' * $layout.DetailPane.W); Color = 'DarkGray' })
+        } else {
+            # Detail pane rows — file inspector placeholder
+            $detailLocalRow = $globalRow - $layout.ListPane.H - 1
+            if ($detailLocalRow -eq 0) {
+                $rightSegs = Build-BoxTopSegments -Title '[Inspector]' -Width $layout.DetailPane.W `
+                                 -BorderColor $detailBorder -TitleColor $detailBorder
+            } elseif ($detailLocalRow -eq ($layout.DetailPane.H - 1)) {
+                $rightSegs = Build-BoxBottomSegments -Width $layout.DetailPane.W -BorderColor $detailBorder
+            } else {
+                $detailContentRow = $detailLocalRow - 1
+                $inner = if ($detailContentRow -eq 0 -and $fileCount -gt 0) {
+                    $visIdx = $State.Derived.VisibleFileIndices[$State.Cursor.FileIndex]
+                    @(@{ Text = "Index: $visIdx"; Color = 'DarkGray' })
+                } else {
+                    @(@{ Text = ''; Color = 'Gray' })
+                }
+                $rightSegs = Build-BorderedRowSegments -InnerSegments $inner -Width $layout.DetailPane.W -BorderColor $detailBorder
+            }
+        }
+
+        $row = Compose-FrameRow -Y $globalRow `
+                   -LeftSegments $leftSegs   -LeftWidth  $layout.FilterPane.W `
+                   -RightSegments $rightSegs -RightWidth $layout.ListPane.W `
+                   -RightBackgroundColor $rightBackgroundColor `
+                   -TotalWidth $layout.Width -IsLastRow $false
+        $rows.Add($row)
+    }
+
+    $rows.Add((Build-FilesStatusBarRow -State $State -Layout $layout))
+
+    return [pscustomobject]@{
+        Width  = $layout.Width
+        Height = $layout.Height
+        Rows   = $rows.ToArray()
+    }
+}
+
 function Build-FrameFromState {
     param(
         [Parameter(Mandatory = $true)]$State
@@ -1201,7 +1360,14 @@ function Render-BrowserState {
         return
     }
 
-    $nextFrame    = Build-FrameFromState -State $State
+    $screenStackProp = $State.Ui.PSObject.Properties['ScreenStack']
+    $activeScreen    = if ($null -ne $screenStackProp -and $screenStackProp.Value.Count -gt 0) { $screenStackProp.Value[-1] } else { 'Changelists' }
+
+    $nextFrame = if ($activeScreen -eq 'Files') {
+        Build-FilesScreenFrame -State $State
+    } else {
+        Build-FrameFromState -State $State
+    }
     $helpOverlayOpen = [bool](Get-PropertyValueOrDefault -Object $State.Runtime -Name 'HelpOverlayOpen' -Default $false)
     $commandModal = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'ModalPrompt' -Default $null
     # Apply help overlay first, then modal prompt on top (modal prompt takes precedence)
@@ -1218,4 +1384,4 @@ function Render-BrowserState {
     }
 }
 
-Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Get-ActiveChangesList
+Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Get-ActiveChangesList, Build-FilesScreenFrame, Build-FilesStatusBarRow

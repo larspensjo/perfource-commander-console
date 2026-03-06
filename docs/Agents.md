@@ -57,16 +57,23 @@ This analyses all `.ps1`, `.psm1`, and `.psd1` files in the workspace using the 
 
 ### Pester Tests
 
+**Important:** Always run Pester tests from a **terminal** (`run_in_terminal` or a
+manual shell), **never** via VSCode's built-in test runner (`runTests`). The test
+runner executes inside the PowerShell Extension Host's Integrated Console. That
+console shares a single thread with the Language Server, so a long-running test
+suite blocks IntelliSense, diagnostics, and all other LS features — and can make
+VSCode appear completely frozen (triggering the "reload the window" prompt).
+
 Run the full test suite from the workspace root:
 
 ```powershell
-Invoke-Pester tests/
+pwsh -NoProfile -Command "Import-Module Pester -Force; Invoke-Pester -Path tests\"
 ```
 
 To run a single test file:
 
 ```powershell
-Invoke-Pester tests/Filtering.Tests.ps1
+pwsh -NoProfile -Command "Import-Module Pester -Force; Invoke-Pester -Path tests/Filtering.Tests.ps1"
 ```
 
 All tests must pass after making changes. Add new tests to the appropriate file under `tests/` to lock in any new functionality.

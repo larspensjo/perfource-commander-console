@@ -93,8 +93,15 @@ function Copy-StateObject {
         $copy = [pscustomobject]@{}
         foreach ($prop in $Obj.PSObject.Properties) {
             if ($prop.MemberType -eq 'NoteProperty') {
+                $propCopy = Copy-StateObject -Obj $prop.Value
+                # PowerShell scalar-izes single-item pipeline output; re-wrap arrays that
+                # were collapsed to a scalar so state arrays such as ScreenStack survive
+                # the copy without losing their [array] type.
+                if ($prop.Value -is [array] -and $propCopy -isnot [array]) {
+                    $propCopy = [object[]] @($propCopy)
+                }
                 $copy | Add-Member -NotePropertyName $prop.Name `
-                                   -NotePropertyValue (Copy-StateObject -Obj $prop.Value)
+                                   -NotePropertyValue $propCopy
             }
         }
         return $copy
@@ -116,6 +123,10 @@ function New-BrowserState {
             AllChanges        = @($Changes)
             AllFilters        = @(Get-AllFilterNames -ViewMode 'Pending')
             DescribeCache     = @{}
+            # FileCache: keyed by "<Change>:<SourceKind>"; append-only, shared across copies.
+            FileCache         = @{}
+            FilesSourceChange = $null
+            FilesSourceKind   = ''
             CurrentUser       = ''
             SubmittedChanges  = @()
             SubmittedHasMore  = $true
@@ -123,6 +134,8 @@ function New-BrowserState {
         }
         Ui = [pscustomobject]@{
             ActivePane             = 'Filters'
+            # ScreenStack: active screen is always ScreenStack[-1].
+            ScreenStack            = @('Changelists')
             IsMaximized            = $false
             HideUnavailableFilters = $false
             ExpandedChangelists    = $false
@@ -130,20 +143,25 @@ function New-BrowserState {
             Layout                 = Get-BrowserLayout -Width $InitialWidth -Height $InitialHeight
         }
         Query = [pscustomobject]@{
-            SelectedFilters = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-            SearchText = ''
-            SearchMode = 'None'
-            SortMode = 'Default'
+            SelectedFilters  = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            SearchText       = ''
+            SearchMode       = 'None'
+            SortMode         = 'Default'
+            FileFilterTokens = @()   # parsed token list; see Step 4
+            FileFilterText   = ''    # raw text for display
         }
         Derived = [pscustomobject]@{
-            VisibleChangeIds = @()
-            VisibleFilters = @()
+            VisibleChangeIds   = @()
+            VisibleFilters     = @()
+            VisibleFileIndices = @()  # int[] indices into FileCache entry
         }
         Cursor = [pscustomobject]@{
             FilterIndex     = 0
             FilterScrollTop = 0
             ChangeIndex     = 0
             ChangeScrollTop = 0
+            FileIndex       = 0   # mirrors ChangeIndex for the files list
+            FileScrollTop   = 0   # mirrors ChangeScrollTop for the files list
             ViewSnapshots   = [pscustomobject]@{
                 Pending   = [pscustomobject]@{ ChangeIndex = 0; ChangeScrollTop = 0 }
                 Submitted = [pscustomobject]@{ ChangeIndex = 0; ChangeScrollTop = 0 }
@@ -158,6 +176,7 @@ function New-BrowserState {
             ReloadRequested          = $false
             SubmittedReloadRequested = $false
             LoadMoreRequested        = $false
+            LoadFilesRequested       = $false  # set by OpenFilesScreen; consumed by main loop
             ConfiguredMax            = 200
             HelpOverlayOpen          = $false
             ModalPrompt              = [pscustomobject]@{
@@ -307,6 +326,59 @@ function Update-BrowserDerivedState {
         }
         if ($State.Cursor.FilterIndex -ge ($State.Cursor.FilterScrollTop + $filterViewport)) {
             $State.Cursor.FilterScrollTop = [Math]::Max(0, $State.Cursor.FilterIndex - $filterViewport + 1)
+        }
+    }
+
+    # ── Files screen derived state ────────────────────────────────────────────
+    # Compute VisibleFileIndices from the cached file list.
+    # Filter token application is deferred to Step 4; for now all loaded entries
+    # are visible.
+    $fileCache      = $State.Data.PSObject.Properties['FileCache']?.Value
+    $sourceChangeProp = $State.Data.PSObject.Properties['FilesSourceChange']
+    $sourceKindProp   = $State.Data.PSObject.Properties['FilesSourceKind']
+    if ($null -ne $fileCache -and $null -ne $sourceChangeProp -and $null -ne $sourceKindProp) {
+        $cacheKey = "$($sourceChangeProp.Value)`:$($sourceKindProp.Value)"
+        if ($null -ne $sourceChangeProp.Value -and
+            -not [string]::IsNullOrEmpty([string]$sourceKindProp.Value) -and
+            $fileCache.ContainsKey($cacheKey)) {
+            $allFiles = @($fileCache[$cacheKey])
+            if ($allFiles.Count -gt 0) {
+                $State.Derived.VisibleFileIndices = @(0..($allFiles.Count - 1))
+            } else {
+                $State.Derived.VisibleFileIndices = @()
+            }
+        } else {
+            $State.Derived.VisibleFileIndices = @()
+        }
+    } elseif (($State.Derived.PSObject.Properties.Match('VisibleFileIndices')).Count -gt 0) {
+        $State.Derived.VisibleFileIndices = @()
+    }
+
+    # Clamp FileIndex and FileScrollTop within the visible file list.
+    if (($State.Cursor.PSObject.Properties.Match('FileIndex')).Count -gt 0) {
+        $fileCount = if (($State.Derived.PSObject.Properties.Match('VisibleFileIndices')).Count -gt 0) {
+            $State.Derived.VisibleFileIndices.Count
+        } else { 0 }
+
+        if ($fileCount -eq 0) {
+            $State.Cursor.FileIndex     = 0
+            $State.Cursor.FileScrollTop = 0
+        } else {
+            if ($State.Cursor.FileIndex -lt 0) { $State.Cursor.FileIndex = 0 }
+            if ($State.Cursor.FileIndex -ge $fileCount) { $State.Cursor.FileIndex = $fileCount - 1 }
+
+            $fileViewport  = if ($null -ne $State.Ui.Layout -and $State.Ui.Layout.Mode -eq 'Normal') {
+                [Math]::Max(1, $State.Ui.Layout.ListPane.H - 2)
+            } else { 1 }
+            $maxFileScroll = [Math]::Max(0, $fileCount - $fileViewport)
+            if ($State.Cursor.FileScrollTop -lt 0) { $State.Cursor.FileScrollTop = 0 }
+            if ($State.Cursor.FileScrollTop -gt $maxFileScroll) { $State.Cursor.FileScrollTop = $maxFileScroll }
+            if ($State.Cursor.FileIndex -lt $State.Cursor.FileScrollTop) {
+                $State.Cursor.FileScrollTop = $State.Cursor.FileIndex
+            }
+            if ($State.Cursor.FileIndex -ge ($State.Cursor.FileScrollTop + $fileViewport)) {
+                $State.Cursor.FileScrollTop = [Math]::Max(0, $State.Cursor.FileIndex - $fileViewport + 1)
+            }
         }
     }
 
@@ -619,6 +691,34 @@ function Invoke-ChangelistReducer {
             }
             return $next
         }
+        'OpenFilesScreen' {
+            if ($next.Derived.VisibleChangeIds.Count -eq 0) { return $next }
+            $idx         = [Math]::Max(0, [Math]::Min($next.Cursor.ChangeIndex, $next.Derived.VisibleChangeIds.Count - 1))
+            $changeIdStr = $next.Derived.VisibleChangeIds[$idx]
+            $change      = if ($changeIdStr -match '^\d+$') { [int]$changeIdStr } else { 0 }
+            $viewMode    = if (($next.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$next.Ui.ViewMode } else { 'Pending' }
+            $sourceKind  = if ($viewMode -eq 'Submitted') { 'Submitted' } else { 'Opened' }
+
+            # Push Files onto the screen stack.
+            # Use [object[]] to prevent PowerShell from scalar-izing a 1-element if-expression result.
+            [object[]]$currentStack = if (($next.Ui.PSObject.Properties.Match('ScreenStack')).Count -gt 0 -and $null -ne $next.Ui.ScreenStack) { @($next.Ui.ScreenStack) } else { @('Changelists') }
+            $next.Ui.ScreenStack    = $currentStack + @('Files')
+
+            # Record which CL and source kind to load (I/O side effect in Step 2).
+            $next.Data.FilesSourceChange = $change
+            $next.Data.FilesSourceKind   = $sourceKind
+
+            # Clear stale file filter state and reset file cursor.
+            $next.Query.FileFilterText   = ''
+            $next.Query.FileFilterTokens = @()
+            $next.Cursor.FileIndex       = 0
+            $next.Cursor.FileScrollTop   = 0
+
+            # Signal main loop to trigger the I/O side effect (implemented in Step 2).
+            $next.Runtime.LoadFilesRequested = $true
+
+            return Update-BrowserDerivedState -State $next
+        }
         default {
             return Update-BrowserDerivedState -State $next
         }
@@ -628,15 +728,130 @@ function Invoke-ChangelistReducer {
 function Invoke-FilesReducer {
     <#
     .SYNOPSIS
-        Reducer for the Files screen actions. Stub — implemented in Step 1.
+        Reducer for the Files screen.  Handles files-screen-specific actions
+        (navigation, CloseFilesScreen, SetFileFilter, Reload) and delegates
+        cross-screen lifecycle actions (Quit, Resize, modal lifecycle) to
+        Invoke-ChangelistReducer so the logic is not duplicated.
     #>
     param(
         [Parameter(Mandatory = $true)]$State,
         [Parameter(Mandatory = $true)]$Action
     )
-    $null = $Action  # stub — $Action will be dispatched in Step 1
+
+    # Delegate actions whose logic is identical on every screen.
+    $globalActions = @(
+        'CommandStart', 'CommandFinish',
+        'ToggleCommandModal', 'ShowCommandModal',
+        'Quit', 'Resize',
+        'ToggleHelpOverlay', 'HideHelpOverlay'
+    )
+    if ($Action.Type -in $globalActions) {
+        return Invoke-ChangelistReducer -State $State -Action $Action
+    }
+
     $next = Copy-BrowserState -State $State
-    return Update-BrowserDerivedState -State $next
+
+    switch ($Action.Type) {
+        'HideCommandModal' {
+            # Esc priority: help overlay → command modal → close files screen.
+            if ($next.Runtime.HelpOverlayOpen) {
+                $next.Runtime.HelpOverlayOpen = $false
+                return $next
+            }
+            if ($next.Runtime.ModalPrompt.IsOpen -and -not $next.Runtime.ModalPrompt.IsBusy) {
+                $next.Runtime.ModalPrompt.IsOpen = $false
+                return $next
+            }
+            # Fall through: Esc with no overlay open → close the files screen.
+            $stack = [System.Collections.Generic.List[string]]::new()
+            foreach ($s in @($next.Ui.ScreenStack)) { $stack.Add([string]$s) }
+            if ($stack.Count -gt 1) { $stack.RemoveAt($stack.Count - 1) }
+            $next.Ui.ScreenStack = $stack.ToArray()
+            return Update-BrowserDerivedState -State $next
+        }
+        'CloseFilesScreen' {
+            $stack = [System.Collections.Generic.List[string]]::new()
+            foreach ($s in @($next.Ui.ScreenStack)) { $stack.Add([string]$s) }
+            if ($stack.Count -gt 1) { $stack.RemoveAt($stack.Count - 1) }
+            $next.Ui.ScreenStack = $stack.ToArray()
+            return Update-BrowserDerivedState -State $next
+        }
+        'SwitchPane' {
+            # Cycle between left (filter) and right (list) panes on the files screen.
+            # Re-use 'Filters'/'Changelists' as stand-in values until the render layer
+            # assigns file-specific pane names in a later step.
+            if ($next.Ui.ActivePane -eq 'Filters') {
+                $next.Ui.ActivePane = 'Changelists'
+            } else {
+                $next.Ui.ActivePane = 'Filters'
+            }
+            return $next
+        }
+        'MoveUp' {
+            if ($next.Cursor.FileIndex -gt 0) { $next.Cursor.FileIndex-- }
+            return Update-BrowserDerivedState -State $next
+        }
+        'MoveDown' {
+            $maxIdx = [Math]::Max(0, $next.Derived.VisibleFileIndices.Count - 1)
+            if ($next.Cursor.FileIndex -lt $maxIdx) { $next.Cursor.FileIndex++ }
+            return Update-BrowserDerivedState -State $next
+        }
+        'PageUp' {
+            $step = if ($null -ne $next.Ui.Layout -and $next.Ui.Layout.Mode -eq 'Normal') {
+                [Math]::Max(1, $next.Ui.Layout.ListPane.H - 2)
+            } else { 10 }
+            $next.Cursor.FileIndex = [Math]::Max(0, $next.Cursor.FileIndex - $step)
+            return Update-BrowserDerivedState -State $next
+        }
+        'PageDown' {
+            $step   = if ($null -ne $next.Ui.Layout -and $next.Ui.Layout.Mode -eq 'Normal') {
+                [Math]::Max(1, $next.Ui.Layout.ListPane.H - 2)
+            } else { 10 }
+            $maxIdx = [Math]::Max(0, $next.Derived.VisibleFileIndices.Count - 1)
+            $next.Cursor.FileIndex = [Math]::Min($maxIdx, $next.Cursor.FileIndex + $step)
+            return Update-BrowserDerivedState -State $next
+        }
+        'MoveHome' {
+            $next.Cursor.FileIndex     = 0
+            $next.Cursor.FileScrollTop = 0
+            return Update-BrowserDerivedState -State $next
+        }
+        'MoveEnd' {
+            $next.Cursor.FileIndex = [Math]::Max(0, $next.Derived.VisibleFileIndices.Count - 1)
+            return Update-BrowserDerivedState -State $next
+        }
+        'SetFileFilter' {
+            # Stub — full parsing and filtering implemented in Step 4.
+            $textProp = $Action.PSObject.Properties['FilterText']
+            $text     = if ($null -ne $textProp) { [string]$textProp.Value } else { '' }
+            $next.Query.FileFilterText   = $text
+            $next.Query.FileFilterTokens = @()  # Step 4 will parse this
+            $next.Cursor.FileIndex       = 0
+            $next.Cursor.FileScrollTop   = 0
+            return Update-BrowserDerivedState -State $next
+        }
+        'OpenFilterPrompt' {
+            # Stub — full implementation in Step 4.
+            return $next
+        }
+        'Reload' {
+            # Evict the cache entry for the current file source so a fresh load is triggered.
+            $cacheKey = "$($next.Data.FilesSourceChange)`:$($next.Data.FilesSourceKind)"
+            $fileCache = $next.Data.PSObject.Properties['FileCache']?.Value
+            if ($null -ne $fileCache -and $fileCache.ContainsKey($cacheKey)) {
+                $fileCache.Remove($cacheKey) | Out-Null
+            }
+            $next.Runtime.LoadFilesRequested = $true
+            return Update-BrowserDerivedState -State $next
+        }
+        'OpenFilesScreen' {
+            # No-op: already on Files screen; cannot nest.
+            return $next
+        }
+        default {
+            return Update-BrowserDerivedState -State $next
+        }
+    }
 }
 
 function Invoke-BrowserReducer {

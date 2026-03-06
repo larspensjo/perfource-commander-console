@@ -28,6 +28,12 @@ function ConvertFrom-KeyInfoToAction {
         'D1' { return [pscustomobject]@{ Type = 'SwitchView'; View = 'Pending' } }
         'D2' { return [pscustomobject]@{ Type = 'SwitchView'; View = 'Submitted' } }
         'L' { return [pscustomobject]@{ Type = 'LoadMore' } }
+        # Files screen navigation
+        'RightArrow' { return [pscustomobject]@{ Type = 'OpenFilesScreen' } }
+        'O' { return [pscustomobject]@{ Type = 'OpenFilesScreen' } }
+        'LeftArrow' { return [pscustomobject]@{ Type = 'CloseFilesScreen' } }
+        # '/' key (OemQuestion on US keyboard) — opens filter prompt on files screen
+        'OemQuestion' { return [pscustomobject]@{ Type = 'OpenFilterPrompt' } }
         default { return $null }
     }
 }

@@ -196,6 +196,13 @@ function Start-P4Browser {
                     }
                 }
 
+                # Handle file-list load request (side effect; implemented in Step 2).
+                # Step 1 just clears the flag so the screen can open without hanging.
+                if ($state.Runtime.LoadFilesRequested) {
+                    $state.Runtime.LoadFilesRequested = $false
+                    # Step 2: invoke p4 opened / p4 describe here and populate Data.FileCache.
+                }
+
                 # Fetch describe on-demand (I/O lives outside the reducer to keep it pure)
                 if (-not [string]::IsNullOrWhiteSpace([string]$state.Runtime.LastSelectedId)) {
                     $change = ConvertTo-ChangeNumberFromId -Id $state.Runtime.LastSelectedId

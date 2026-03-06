@@ -48,16 +48,26 @@ function Invoke-P4 {
     $exited = $process.WaitForExit($TimeoutMs)
 
     if (-not $exited) {
-        try { $process.Kill() } catch { <# best-effort #> }
+        # Kill the entire process tree (not just the root) so child processes
+        # such as p4d helpers don't keep stdout/stderr pipe handles open.
+        # Process.Kill() alone only terminates the direct process; on Windows
+        # this leaves children alive and leaks pipe handles / async tasks.
+        try { $null = & taskkill /F /T /PID $process.Id 2>&1 } catch { <# best-effort #> }
+        try { if (-not $process.HasExited) { $process.Kill() } } catch { <# fallback #> }
+        # Dispose closes the redirected stream handles so ReadToEndAsync tasks
+        # complete promptly instead of dangling until GC finalizes them.
+        try { $process.Dispose() } catch { <# best-effort #> }
         throw "p4 timed out after ${TimeoutMs} ms. Args: $($psi.Arguments)"
     }
 
     $stdout = $stdoutTask.GetAwaiter().GetResult()
     $stderr = $stderrTask.GetAwaiter().GetResult()
+    $exitCode = $process.ExitCode
+    $process.Dispose()
 
-    if ($process.ExitCode -ne 0) {
+    if ($exitCode -ne 0) {
         $messageParts = @(
-            "p4 failed (exit $($process.ExitCode)).",
+            "p4 failed (exit $exitCode).",
             "Args: $($psi.Arguments)"
         )
         if ($stderr) { $messageParts += "STDERR: $stderr" }

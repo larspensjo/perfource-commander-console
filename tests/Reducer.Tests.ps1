@@ -433,3 +433,254 @@ Describe 'Changelist geometry helpers' {
         $capacity  | Should -Be ([Math]::Floor($innerRows / 2))
     }
 }
+Describe 'Files screen reducer — Step 1' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+    }
+
+    BeforeEach {
+        $changes = @(
+            [pscustomobject]@{ Id = '101'; Title = 'One';   HasShelvedFiles = $false; HasOpenedFiles = $true;  Captured = [datetime]'2026-02-10' },
+            [pscustomobject]@{ Id = '102'; Title = 'Two';   HasShelvedFiles = $true;  HasOpenedFiles = $true;  Captured = [datetime]'2026-02-09' }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+    }
+
+    # ── New-BrowserState defaults ─────────────────────────────────────────────
+
+    It 'New-BrowserState includes ScreenStack defaulting to @(Changelists)' {
+        $state.Ui.ScreenStack | Should -Be @('Changelists')
+    }
+
+    It 'New-BrowserState includes FileCache as an empty hashtable' {
+        $state.Data.FileCache | Should -BeOfType [hashtable]
+        $state.Data.FileCache.Count | Should -Be 0
+    }
+
+    It 'New-BrowserState includes FilesSourceChange and FilesSourceKind' {
+        $state.Data.FilesSourceChange | Should -BeNullOrEmpty
+        $state.Data.FilesSourceKind   | Should -BeNullOrEmpty
+    }
+
+    It 'New-BrowserState includes FileFilterTokens and FileFilterText' {
+        $state.Query.FileFilterTokens.Count | Should -Be 0
+        $state.Query.FileFilterText         | Should -BeNullOrEmpty
+    }
+
+    It 'New-BrowserState includes VisibleFileIndices as empty array' {
+        $state.Derived.VisibleFileIndices.Count | Should -Be 0
+    }
+
+    It 'New-BrowserState includes FileIndex and FileScrollTop defaulting to 0' {
+        $state.Cursor.FileIndex     | Should -Be 0
+        $state.Cursor.FileScrollTop | Should -Be 0
+    }
+
+    It 'New-BrowserState includes LoadFilesRequested defaulting to false' {
+        $state.Runtime.LoadFilesRequested | Should -BeFalse
+    }
+
+    # ── OpenFilesScreen (Changelists → Files) ─────────────────────────────────
+
+    It 'OpenFilesScreen pushes Files onto ScreenStack' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $next.Ui.ScreenStack | Should -Be @('Changelists', 'Files')
+    }
+
+    It 'OpenFilesScreen stores FilesSourceChange for the focused CL' {
+        # Focus CL 102 (index 1)
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $next.Data.FilesSourceChange | Should -Be 102
+    }
+
+    It 'OpenFilesScreen stores FilesSourceKind Opened for pending view' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $next.Data.FilesSourceKind | Should -Be 'Opened'
+    }
+
+    It 'OpenFilesScreen sets LoadFilesRequested flag' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $next.Runtime.LoadFilesRequested | Should -BeTrue
+    }
+
+    It 'OpenFilesScreen clears FileFilterText and resets file cursor' {
+        # Prime some stale file filter state
+        $state.Query.FileFilterText = 'old filter'
+        $state.Cursor.FileIndex     = 5
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $next.Query.FileFilterText | Should -BeNullOrEmpty
+        $next.Cursor.FileIndex     | Should -Be 0
+    }
+
+    It 'OpenFilesScreen is a no-op when visible change list is empty' {
+        $emptyState = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
+        $next = Invoke-BrowserReducer -State $emptyState -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $next.Runtime.LoadFilesRequested | Should -BeFalse
+    }
+
+    # ── CloseFilesScreen (Files → Changelists) ────────────────────────────────
+
+    It 'CloseFilesScreen pops Files from ScreenStack' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        # Now on Files screen; dispatch CloseFilesScreen
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'CloseFilesScreen' })
+        $next.Ui.ScreenStack | Should -Be @('Changelists')
+    }
+
+    It 'HideCommandModal (Esc) on Files screen closes the screen when no overlay is open' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.LoadFilesRequested = $false   # consume flag so screen stays on Files
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'HideCommandModal' })
+        $next.Ui.ScreenStack | Should -Be @('Changelists')
+    }
+
+    It 'HideCommandModal closes help overlay first when overlay is open on Files screen' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.LoadFilesRequested = $false
+        $state.Runtime.HelpOverlayOpen   = $true
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'HideCommandModal' })
+        $next.Runtime.HelpOverlayOpen | Should -BeFalse
+        $next.Ui.ScreenStack          | Should -Be @('Changelists', 'Files')  # screen NOT closed
+    }
+
+    It 'LeftArrow action (CloseFilesScreen) on Files screen pops to Changelists' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.LoadFilesRequested = $false
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'CloseFilesScreen' })
+        $next.Ui.ScreenStack | Should -Be @('Changelists')
+    }
+
+    # ── Navigation on Files screen ────────────────────────────────────────────
+
+    It 'MoveDown/MoveUp navigate FileIndex when files are loaded' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.LoadFilesRequested = $false
+        # Inject 5 fake file entries into the cache
+        $cacheKey = "$($state.Data.FilesSourceChange)`:$($state.Data.FilesSourceKind)"
+        $state.Data.FileCache[$cacheKey] = @(0..4 | ForEach-Object { [pscustomobject]@{ DepotPath = "//depot/file$_.txt" } })
+        $state = Update-BrowserDerivedState -State $state
+
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state.Cursor.FileIndex | Should -Be 2
+
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveUp' })
+        $state.Cursor.FileIndex | Should -Be 1
+    }
+
+    It 'MoveDown clamps FileIndex at last entry' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.LoadFilesRequested = $false
+        $cacheKey = "$($state.Data.FilesSourceChange)`:$($state.Data.FilesSourceKind)"
+        $state.Data.FileCache[$cacheKey] = @(0..2 | ForEach-Object { [pscustomobject]@{ DepotPath = "//depot/f$_.txt" } })
+        $state = Update-BrowserDerivedState -State $state
+
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state.Cursor.FileIndex | Should -Be 2
+    }
+
+    It 'MoveHome and MoveEnd work on Files screen' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.LoadFilesRequested = $false
+        $cacheKey = "$($state.Data.FilesSourceChange)`:$($state.Data.FilesSourceKind)"
+        $state.Data.FileCache[$cacheKey] = @(0..9 | ForEach-Object { [pscustomobject]@{ DepotPath = "//depot/f$_.txt" } })
+        $state = Update-BrowserDerivedState -State $state
+
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveEnd' })
+        $state.Cursor.FileIndex | Should -Be 9
+
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveHome' })
+        $state.Cursor.FileIndex     | Should -Be 0
+        $state.Cursor.FileScrollTop | Should -Be 0
+    }
+
+    # ── VisibleFileIndices derived state ──────────────────────────────────────
+
+    It 'VisibleFileIndices is empty when no files are in FileCache' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.LoadFilesRequested = $false
+        $state = Update-BrowserDerivedState -State $state
+        $state.Derived.VisibleFileIndices.Count | Should -Be 0
+    }
+
+    It 'VisibleFileIndices contains 0..N-1 after files are loaded into cache' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.LoadFilesRequested = $false
+        $cacheKey = "$($state.Data.FilesSourceChange)`:$($state.Data.FilesSourceKind)"
+        $state.Data.FileCache[$cacheKey] = @(0..4 | ForEach-Object { [pscustomobject]@{ DepotPath = "//depot/f$_.txt" } })
+        $state = Update-BrowserDerivedState -State $state
+        $state.Derived.VisibleFileIndices | Should -Be @(0, 1, 2, 3, 4)
+    }
+
+    It 'VisibleFileIndices with a single file returns @(0) not $null' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.LoadFilesRequested = $false
+        $cacheKey = "$($state.Data.FilesSourceChange)`:$($state.Data.FilesSourceKind)"
+        $state.Data.FileCache[$cacheKey] = @([pscustomobject]@{ DepotPath = '//depot/solo.txt' })
+        $state = Update-BrowserDerivedState -State $state
+        $state.Derived.VisibleFileIndices.Count | Should -Be 1
+        $state.Derived.VisibleFileIndices[0]    | Should -Be 0
+    }
+
+    # ── Copy-BrowserState preserves file fields ───────────────────────────────
+
+    It 'Copy-BrowserState preserves ScreenStack array' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $copy  = Copy-BrowserState -State $state
+        $copy.Ui.ScreenStack | Should -Be @('Changelists', 'Files')
+    }
+
+    It 'Copy-BrowserState preserves FileCache as shared reference' {
+        $state.Data.FileCache['101:Opened'] = @([pscustomobject]@{ DepotPath = '//depot/a.txt' })
+        $copy = Copy-BrowserState -State $state
+        # FileCache is append-only and shared across copies (by design)
+        $copy.Data.FileCache.ContainsKey('101:Opened') | Should -BeTrue
+        # Mutation visible in both
+        $state.Data.FileCache['102:Submitted'] = @()
+        $copy.Data.FileCache.ContainsKey('102:Submitted') | Should -BeTrue
+    }
+
+    It 'Copy-BrowserState copies FileFilterText and FileIndex independently' {
+        $state.Query.FileFilterText = 'test filter'
+        $state.Cursor.FileIndex     = 3
+        $copy = Copy-BrowserState -State $state
+        $copy.Query.FileFilterText | Should -Be 'test filter'
+        $copy.Cursor.FileIndex     | Should -Be 3
+        # Mutating original does not affect copy
+        $state.Query.FileFilterText = 'changed'
+        $copy.Query.FileFilterText  | Should -Be 'test filter'
+    }
+
+    # ── Global actions forwarded through FilesReducer ─────────────────────────
+
+    It 'Quit action on Files screen stops the runtime' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.LoadFilesRequested = $false
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Quit' })
+        $next.Runtime.IsRunning | Should -BeFalse
+    }
+
+    It 'Resize on Files screen updates Layout and keeps ScreenStack' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.LoadFilesRequested = $false
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'Resize'; Width = 160; Height = 50
+        })
+        $next.Ui.Layout.Width    | Should -Be 160
+        $next.Ui.Layout.Height   | Should -Be 50
+        $next.Ui.ScreenStack[-1] | Should -Be 'Files'
+    }
+
+    It 'ToggleHelpOverlay is forwarded on Files screen' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.LoadFilesRequested = $false
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleHelpOverlay' })
+        $next.Runtime.HelpOverlayOpen    | Should -BeTrue
+        $next.Ui.ScreenStack[-1]         | Should -Be 'Files'
+    }
+}

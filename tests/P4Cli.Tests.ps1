@@ -206,7 +206,7 @@ Describe 'Get-P4OpenedChangeNumbers' {
         Get-P4OpenedChangeNumbers | Out-Null
 
         Assert-MockCalled Invoke-P4 -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
-            $P4Args.Count -eq 2 -and $P4Args[0] -eq '-ztag' -and $P4Args[1] -eq 'opened'
+            $P4Args.Count -eq 1 -and $P4Args[0] -eq 'opened'
         }
     }
 }

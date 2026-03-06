@@ -207,7 +207,7 @@ function Start-P4Browser {
                         # Cache hit — recompute derived state (cursor/scroll already reset by reducer)
                         $state = Update-BrowserDerivedState -State $state
                     } elseif ($sourceKind -eq 'Opened') {
-                        $loadFilesCmdLine = "p4 opened -c $change -ztag"
+                        $loadFilesCmdLine = Format-P4CommandLine -P4Args @('opened', '-c', "$change")
                         $state = Invoke-BrowserSideEffect -State $state -CommandLine $loadFilesCmdLine -WorkItem {
                             param($s)
                             $files = Get-P4OpenedFiles -Change $change

@@ -22,9 +22,12 @@ function Invoke-P4 {
         [int]$TimeoutMs = 30000
     )
 
+    $globalArgs = @('-ztag')
+    $fullArgs = $globalArgs + $P4Args
+
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $script:P4Executable
-    $psi.Arguments = (Format-P4CommandLine -P4Args $P4Args).Substring(3)  # strip leading 'p4 '
+    $psi.Arguments = (Format-P4CommandLine -P4Args $fullArgs).Substring(3)  # strip leading 'p4 '
     $psi.WorkingDirectory = (Get-Location).Path
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
@@ -83,7 +86,7 @@ function Get-P4Info {
     [CmdletBinding()]
     param()
 
-    $lines = Invoke-P4 -P4Args @('-ztag', 'info')
+    $lines = Invoke-P4 -P4Args @('info')
 
     $kv = @{}
     foreach ($line in $lines) {
@@ -137,7 +140,7 @@ function Get-P4PendingChangelists {
 
     $info = Get-P4Info
     $lines = Invoke-P4 -P4Args @(
-        '-ztag', 'changes',
+        'changes',
         '-l',
         '-s', 'pending',
         '-u', $info.User,
@@ -190,7 +193,7 @@ function Get-P4Describe {
         [Parameter(Mandatory)][int]$Change
     )
 
-    $lines = Invoke-P4 -P4Args @('-ztag', 'describe', '-s', "$Change")
+    $lines = Invoke-P4 -P4Args @('describe', '-s', "$Change")
 
     # Parse ztag key-value pairs.  The 'desc' field may span multiple lines:
     # the first line carries the '... desc <text>' tag; subsequent continuation
@@ -317,7 +320,7 @@ function Get-P4OpenedFileCounts {
     param()
 
     try {
-        $lines = Invoke-P4 -P4Args @('-ztag', 'opened')
+        $lines = Invoke-P4 -P4Args @('opened')
     }
     catch {
         $errorMessage = [string]$_.Exception.Message
@@ -363,7 +366,7 @@ function Get-P4ShelvedChangeNumbers {
 
     $info = Get-P4Info
     try {
-        $lines = Invoke-P4 -P4Args @('-ztag', 'changes', '-s', 'shelved', '-u', $info.User, '-c', $info.Client)
+        $lines = Invoke-P4 -P4Args @('changes', '-s', 'shelved', '-u', $info.User, '-c', $info.Client)
     }
     catch {
         $errorMessage = [string]$_.Exception.Message
@@ -406,7 +409,7 @@ function Get-P4ShelvedFileCounts {
     for ($i = 0; $i -lt $ChangeNumbers.Count; $i += $chunkSize) {
         $end   = [Math]::Min($i + $chunkSize - 1, $ChangeNumbers.Count - 1)
         $chunk = $ChangeNumbers[$i..$end]
-        $p4Args = @('-ztag', 'describe', '-S', '-s') + @($chunk | ForEach-Object { "$_" })
+        $p4Args = @('describe', '-S', '-s') + @($chunk | ForEach-Object { "$_" })
         try {
             $lines = Invoke-P4 -P4Args $p4Args
             if ($null -eq $lines) { $lines = @() }
@@ -428,7 +431,7 @@ function Get-P4OpenedFiles {
     .SYNOPSIS
         Returns FileEntry objects for all files opened in the given pending changelist.
     .DESCRIPTION
-        Calls 'p4 opened -c <cl> -ztag' and parses each ztag record into a FileEntry.
+        Calls 'p4 -ztag opened -c <cl>' (global flag added by Invoke-P4) and parses each ztag record into a FileEntry.
         An empty changelist (no opened files) returns an empty array without throwing.
     .PARAMETER Change
         The changelist number whose opened files to retrieve.
@@ -440,7 +443,7 @@ function Get-P4OpenedFiles {
 
     $lines = @()
     try {
-        $lines = @(Invoke-P4 -P4Args @('opened', '-c', "$Change", '-ztag'))
+        $lines = @(Invoke-P4 -P4Args @('opened', '-c', "$Change"))
     }
     catch {
         $errorMessage = [string]$_.Exception.Message
@@ -501,7 +504,7 @@ function Get-P4SubmittedChangelists {
         [int]$BeforeChange = 0
     )
 
-    $p4Args = @('-ztag', 'changes', '-l', '-s', 'submitted', '-m', "$Max")
+    $p4Args = @('changes', '-l', '-s', 'submitted', '-m', "$Max")
     if ($BeforeChange -gt 0) {
         $p4Args += "//...@<$BeforeChange"
     }

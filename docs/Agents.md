@@ -8,6 +8,8 @@
 * Use the principle Correctness by Construction.
 * Avoid repetition.
 * Use Dependency Injection to make testing easier.
+* Don't repeat yourself.
+* Avoid "naked constants".
 
 ## Workflows
 

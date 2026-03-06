@@ -73,8 +73,9 @@ Describe 'Get-P4Describe' {
         }
 
         $result = Get-P4Describe -Change 99
-        $result.Description.Count | Should -BeGreaterOrEqual 1
+        $result.Description.Count | Should -Be 2
         $result.Description[0]    | Should -Be 'First line'
+        $result.Description[1]    | Should -Be 'Second line'
     }
 
     It 'returns an empty file list when no depotFile keys are present' {

@@ -31,10 +31,9 @@
      Unless you actually have `tui\p4\...` and `tests\p4\...`, these imports will fail (or at least emit errors) when running tests or importing submodules directly.
      **Fix direction**: prefer `Join-Path $PSScriptRoot '..\p4\P4Cli.psm1'` (and similarly for `Models.psm1`) or remove the reducer’s dependency on P4 modules entirely (it shouldn’t need them).
 
-4. **`Get-P4Describe` likely loses multi-line descriptions**
+4. ~~**`Get-P4Describe` loses multi-line descriptions**~~ ✅ **Fixed**
 
-   * The function parses `-ztag` output line-by-line into a flat hashtable and uses `kv.desc`. Your test for “multi-line” only asserts the first line and the second line is not tagged, so it’s effectively dropped.
-     **Fix direction**: parse `describe` as a structured stream (capture lines after `... desc` until the next `... depotFile0`/etc), or capture raw stdout as a single string and extract the desc block more carefully.
+   * Parser now tracks an `$inDesc` flag and accumulates bare continuation lines until the next `...` tag. Test tightened to assert both lines are present.
 
 ## Medium-impact robustness issues
 

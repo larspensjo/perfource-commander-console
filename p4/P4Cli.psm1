@@ -164,11 +164,25 @@ function Get-P4Describe {
 
     $lines = Invoke-P4 -P4Args @('-ztag', 'describe', '-s', "$Change")
 
-    # Parse all ztag key-value pairs into a single flat hashtable.
+    # Parse ztag key-value pairs.  The 'desc' field may span multiple lines:
+    # the first line carries the '... desc <text>' tag; subsequent continuation
+    # lines have no '...' prefix and are collected until the next tagged field.
     $kv = @{}
+    $descLines = [System.Collections.Generic.List[string]]::new()
+    $inDesc = $false
     foreach ($line in $lines) {
-        if ($line -match '^\.\.\.\s+(?<k>\S+)\s+(?<v>.*)$') {
-            $kv[$Matches.k] = $Matches.v
+        if ($line -match '^\.\.\.\.?\s+(?<k>\S+)\s*(?<v>.*)$') {
+            $inDesc = $false
+            $k = $Matches.k
+            $v = $Matches.v
+            $kv[$k] = $v
+            if ($k -eq 'desc') {
+                if ($v -ne '') { $descLines.Add($v) }
+                $inDesc = $true
+            }
+        } elseif ($inDesc) {
+            # Continuation line belonging to the multi-line description.
+            $descLines.Add($line)
         }
     }
 
@@ -179,9 +193,6 @@ function Get-P4Describe {
     $time = if ($kv.ContainsKey('time')) {
         ([datetime]'1970-01-01T00:00:00Z').AddSeconds([double]$kv.time).ToLocalTime()
     } else { Get-Date }
-
-    $descText  = if ($kv.ContainsKey('desc')) { $kv.desc } else { '' }
-    $descLines = if ($descText) { $descText -split "`r?`n" } else { @() }
 
     # Extract indexed file entries: depotFile0/action0/type0, depotFile1/action1/type1, ...
     $files = @()
@@ -201,7 +212,7 @@ function Get-P4Describe {
         Client      = [string]$kv.client
         Status      = [string]$kv.status
         Time        = $time
-        Description = @($descLines | Where-Object { $_ -ne '' })
+        Description = @($descLines.GetEnumerator() | Where-Object { $_ -ne '' })
         Files       = @($files)
     }
 }

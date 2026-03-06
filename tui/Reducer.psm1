@@ -38,6 +38,72 @@ function Get-ChangeViewCapacity {
 }
 # ──────────────────────────────────────────────────────────────────────────────
 
+function Copy-StateObject {
+    <#
+    .SYNOPSIS
+        Generic deep copy for PSCustomObject state trees.
+    .DESCRIPTION
+        Recursively copies PSCustomObject properties.
+        HashSet<string> values are copied into a new set with the same comparer.
+        IDictionary values (hashtables / dictionaries) are kept as shared
+        references — append-only caches such as DescribeCache and FileCache are
+        large and safe to share across reducer calls.
+        Arrays are copied into new arrays with each element recursively copied.
+        Primitives are returned by value.
+    #>
+    param([AllowNull()]$Obj)
+
+    if ($null -eq $Obj) { return $null }
+
+    # Primitive scalars — returned by value
+    if ($Obj -is [string] -or $Obj -is [int] -or $Obj -is [bool] -or
+        $Obj -is [long]   -or $Obj -is [double] -or $Obj -is [datetime] -or
+        $Obj -is [System.Enum]) {
+        return $Obj
+    }
+
+    # HashSet<string> — copy into a new set preserving the comparer.
+    # Use Write-Output -NoEnumerate to prevent PowerShell from unrolling an empty set to $null.
+    if ($Obj -is [System.Collections.Generic.HashSet[string]]) {
+        $newSet = [System.Collections.Generic.HashSet[string]]::new($Obj.Comparer)
+        foreach ($item in $Obj) { [void]$newSet.Add($item) }
+        Write-Output -NoEnumerate $newSet
+        return
+    }
+
+    # IDictionary (Hashtable / Dictionary) — keep as shared reference.
+    # Caches such as DescribeCache and FileCache are append-only, so sharing is safe.
+    if ($Obj -is [System.Collections.IDictionary]) {
+        return $Obj
+    }
+
+    # Array — new array, each element recursively copied.
+    # Use Write-Output -NoEnumerate to prevent an empty array from being unrolled to $null.
+    if ($Obj -is [array]) {
+        $result = [object[]]::new($Obj.Length)
+        for ($i = 0; $i -lt $Obj.Length; $i++) {
+            $result[$i] = Copy-StateObject -Obj $Obj[$i]
+        }
+        Write-Output -NoEnumerate $result
+        return
+    }
+
+    # PSCustomObject — new object with all NoteProperty values recursively copied
+    if ($Obj -is [pscustomobject]) {
+        $copy = [pscustomobject]@{}
+        foreach ($prop in $Obj.PSObject.Properties) {
+            if ($prop.MemberType -eq 'NoteProperty') {
+                $copy | Add-Member -NotePropertyName $prop.Name `
+                                   -NotePropertyValue (Copy-StateObject -Obj $prop.Value)
+            }
+        }
+        return $copy
+    }
+
+    # Fallback — return as-is for unknown reference types
+    return $Obj
+}
+
 function New-BrowserState {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Changes,
@@ -78,9 +144,9 @@ function New-BrowserState {
             FilterScrollTop = 0
             ChangeIndex     = 0
             ChangeScrollTop = 0
-            ViewSnapshots   = @{
-                Pending   = @{ ChangeIndex = 0; ChangeScrollTop = 0 }
-                Submitted = @{ ChangeIndex = 0; ChangeScrollTop = 0 }
+            ViewSnapshots   = [pscustomobject]@{
+                Pending   = [pscustomobject]@{ ChangeIndex = 0; ChangeScrollTop = 0 }
+                Submitted = [pscustomobject]@{ ChangeIndex = 0; ChangeScrollTop = 0 }
             }
         }
         Runtime = [pscustomobject]@{
@@ -94,9 +160,10 @@ function New-BrowserState {
             LoadMoreRequested        = $false
             ConfiguredMax            = 200
             HelpOverlayOpen          = $false
-            CommandModal             = [pscustomobject]@{
+            ModalPrompt              = [pscustomobject]@{
                 IsOpen         = $false
                 IsBusy         = $false
+                Purpose        = 'Command'
                 CurrentCommand = ''
                 History        = @()
             }
@@ -107,80 +174,16 @@ function New-BrowserState {
 }
 
 function Copy-BrowserState {
+    <#
+    .SYNOPSIS
+        Deep-copies the browser state.
+    .DESCRIPTION
+        Delegates to Copy-StateObject for a generic recursive copy.
+        IDictionary values (DescribeCache, FileCache, etc.) are kept as shared
+        references because they are append-only and potentially large.
+    #>
     param([Parameter(Mandatory = $true)]$State)
-
-    # Deep-copy ViewSnapshots
-    $viewSnapshotsCopy = @{}
-    if (($State.Cursor.PSObject.Properties.Match('ViewSnapshots')).Count -gt 0 -and $null -ne $State.Cursor.ViewSnapshots) {
-        foreach ($key in $State.Cursor.ViewSnapshots.Keys) {
-            $snap = $State.Cursor.ViewSnapshots[$key]
-            $viewSnapshotsCopy[$key] = @{
-                ChangeIndex     = [int]$snap.ChangeIndex
-                ChangeScrollTop = [int]$snap.ChangeScrollTop
-            }
-        }
-    }
-
-    $copy = [pscustomobject]@{
-        Data = [pscustomobject]@{
-            AllChanges        = @($State.Data.AllChanges)
-            AllFilters        = @($State.Data.AllFilters)
-            DescribeCache     = $State.Data.DescribeCache          # shared reference (append-only)
-            CurrentUser       = if (($State.Data.PSObject.Properties.Match('CurrentUser')).Count -gt 0) { [string]$State.Data.CurrentUser } else { '' }
-            SubmittedChanges  = if (($State.Data.PSObject.Properties.Match('SubmittedChanges')).Count -gt 0) { @($State.Data.SubmittedChanges) } else { @() }
-            SubmittedHasMore  = if (($State.Data.PSObject.Properties.Match('SubmittedHasMore')).Count -gt 0) { [bool]$State.Data.SubmittedHasMore } else { $true }
-            SubmittedOldestId = if (($State.Data.PSObject.Properties.Match('SubmittedOldestId')).Count -gt 0) { $State.Data.SubmittedOldestId } else { $null }
-        }
-        Ui = [pscustomobject]@{
-            ActivePane             = $State.Ui.ActivePane
-            IsMaximized            = $State.Ui.IsMaximized
-            HideUnavailableFilters = $State.Ui.HideUnavailableFilters
-            ExpandedChangelists    = if (($State.Ui.PSObject.Properties.Match('ExpandedChangelists')).Count -gt 0) { [bool]$State.Ui.ExpandedChangelists } else { $false }
-            ViewMode               = if (($State.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$State.Ui.ViewMode } else { 'Pending' }
-            Layout                 = $State.Ui.Layout
-        }
-        Query = [pscustomobject]@{
-            SelectedFilters = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-            SearchText = $State.Query.SearchText
-            SearchMode = $State.Query.SearchMode
-            SortMode = $State.Query.SortMode
-        }
-        Derived = [pscustomobject]@{
-            VisibleChangeIds = @($State.Derived.VisibleChangeIds)
-            VisibleFilters = @($State.Derived.VisibleFilters)
-        }
-        Cursor = [pscustomobject]@{
-            FilterIndex     = $State.Cursor.FilterIndex
-            FilterScrollTop = $State.Cursor.FilterScrollTop
-            ChangeIndex     = $State.Cursor.ChangeIndex
-            ChangeScrollTop = $State.Cursor.ChangeScrollTop
-            ViewSnapshots   = $viewSnapshotsCopy
-        }
-        Runtime = [pscustomobject]@{
-            IsRunning                = $State.Runtime.IsRunning
-            LastError                = $State.Runtime.LastError
-            LastSelectedId           = $State.Runtime.LastSelectedId
-            DetailChangeId           = if (($State.Runtime.PSObject.Properties.Match('DetailChangeId')).Count -gt 0) { $State.Runtime.DetailChangeId } else { $null }
-            DeleteChangeId           = $State.Runtime.DeleteChangeId
-            ReloadRequested          = $State.Runtime.ReloadRequested
-            SubmittedReloadRequested = if (($State.Runtime.PSObject.Properties.Match('SubmittedReloadRequested')).Count -gt 0) { [bool]$State.Runtime.SubmittedReloadRequested } else { $false }
-            LoadMoreRequested        = if (($State.Runtime.PSObject.Properties.Match('LoadMoreRequested')).Count -gt 0) { [bool]$State.Runtime.LoadMoreRequested } else { $false }
-            ConfiguredMax            = if (($State.Runtime.PSObject.Properties.Match('ConfiguredMax')).Count -gt 0) { [int]$State.Runtime.ConfiguredMax } else { 200 }
-            HelpOverlayOpen          = if (($State.Runtime.PSObject.Properties.Match('HelpOverlayOpen')).Count -gt 0) { [bool]$State.Runtime.HelpOverlayOpen } else { $false }
-            CommandModal             = [pscustomobject]@{
-                IsOpen         = $State.Runtime.CommandModal.IsOpen
-                IsBusy         = $State.Runtime.CommandModal.IsBusy
-                CurrentCommand = $State.Runtime.CommandModal.CurrentCommand
-                History        = @($State.Runtime.CommandModal.History)
-            }
-        }
-    }
-
-    foreach ($filter in $State.Query.SelectedFilters) {
-        [void]$copy.Query.SelectedFilters.Add($filter)
-    }
-
-    return $copy
+    return Copy-StateObject -Obj $State
 }
 
 function Update-BrowserDerivedState {
@@ -310,7 +313,20 @@ function Update-BrowserDerivedState {
     return $State
 }
 
-function Invoke-BrowserReducer {
+function Get-FilterViewportSize {
+    param($CurrentState)
+    if ($CurrentState.Ui.Layout -and $CurrentState.Ui.Layout.Mode -eq 'Normal') {
+        return [Math]::Max(1, $CurrentState.Ui.Layout.FilterPane.H - 2)
+    }
+    return 1
+}
+
+function Get-ChangeViewportSize {
+    param($CurrentState)
+    return Get-ChangeViewCapacity -State $CurrentState
+}
+
+function Invoke-ChangelistReducer {
     param(
         [Parameter(Mandatory = $true)]$State,
         [Parameter(Mandatory = $true)]$Action
@@ -318,24 +334,12 @@ function Invoke-BrowserReducer {
 
     $next = Copy-BrowserState -State $State
 
-    function Get-FilterViewportSize {
-        param($CurrentState)
-        if ($CurrentState.Ui.Layout -and $CurrentState.Ui.Layout.Mode -eq 'Normal') {
-            return [Math]::Max(1, $CurrentState.Ui.Layout.FilterPane.H - 2)
-        }
-        return 1
-    }
-
-    function Get-ChangeViewportSize {
-        param($CurrentState)
-        return Get-ChangeViewCapacity -State $CurrentState
-    }
-
     switch ($Action.Type) {
         'CommandStart' {
-            $next.Runtime.CommandModal.IsBusy         = $true
-            $next.Runtime.CommandModal.IsOpen         = $true
-            $next.Runtime.CommandModal.CurrentCommand = [string]$Action.CommandLine
+            $next.Runtime.ModalPrompt.IsBusy         = $true
+            $next.Runtime.ModalPrompt.IsOpen         = $true
+            $next.Runtime.ModalPrompt.Purpose        = 'Command'
+            $next.Runtime.ModalPrompt.CurrentCommand = [string]$Action.CommandLine
             return $next
         }
         'CommandFinish' {
@@ -352,34 +356,34 @@ function Invoke-BrowserReducer {
                 ErrorText   = [string]$Action.ErrorText
                 DurationMs  = $durationMs
             }
-            $trimmed = @($historyItem) + @($next.Runtime.CommandModal.History |
+            $trimmed = @($historyItem) + @($next.Runtime.ModalPrompt.History |
                 Select-Object -First ($script:CommandHistoryMaxSize - 1))
-            $next.Runtime.CommandModal.History        = $trimmed
-            $next.Runtime.CommandModal.IsBusy         = $false
-            $next.Runtime.CommandModal.CurrentCommand = ''
+            $next.Runtime.ModalPrompt.History        = $trimmed
+            $next.Runtime.ModalPrompt.IsBusy         = $false
+            $next.Runtime.ModalPrompt.CurrentCommand = ''
             if ($succeeded) {
-                $next.Runtime.CommandModal.IsOpen = $false
+                $next.Runtime.ModalPrompt.IsOpen = $false
             }
             return $next
         }
         'ShowCommandModal' {
-            $next.Runtime.CommandModal.IsOpen = $true
+            $next.Runtime.ModalPrompt.IsOpen = $true
             return $next
         }
         'ToggleCommandModal' {
-            if (-not $next.Runtime.CommandModal.IsBusy) {
-                $next.Runtime.CommandModal.IsOpen = -not $next.Runtime.CommandModal.IsOpen
+            if (-not $next.Runtime.ModalPrompt.IsBusy) {
+                $next.Runtime.ModalPrompt.IsOpen = -not $next.Runtime.ModalPrompt.IsOpen
             }
             return $next
         }
         'HideCommandModal' {
-            # Escape: close help overlay first; then close command modal on second press
+            # Escape: close help overlay first; then close modal prompt on second press
             if ($next.Runtime.HelpOverlayOpen) {
                 $next.Runtime.HelpOverlayOpen = $false
                 return $next
             }
-            if (-not $next.Runtime.CommandModal.IsBusy) {
-                $next.Runtime.CommandModal.IsOpen = $false
+            if (-not $next.Runtime.ModalPrompt.IsBusy) {
+                $next.Runtime.ModalPrompt.IsOpen = $false
             }
             return $next
         }
@@ -569,7 +573,7 @@ function Invoke-BrowserReducer {
 
             # Save current cursor snapshot
             if (($next.Cursor.PSObject.Properties.Match('ViewSnapshots')).Count -gt 0 -and $null -ne $next.Cursor.ViewSnapshots) {
-                $next.Cursor.ViewSnapshots[$currentView] = @{
+                $next.Cursor.ViewSnapshots.$currentView = [pscustomobject]@{
                     ChangeIndex     = $next.Cursor.ChangeIndex
                     ChangeScrollTop = $next.Cursor.ChangeScrollTop
                 }
@@ -579,8 +583,8 @@ function Invoke-BrowserReducer {
             $next.Ui.ViewMode = $targetView
 
             # Restore target view cursor snapshot
-            if (($next.Cursor.PSObject.Properties.Match('ViewSnapshots')).Count -gt 0 -and $null -ne $next.Cursor.ViewSnapshots -and $next.Cursor.ViewSnapshots.ContainsKey($targetView)) {
-                $snap = $next.Cursor.ViewSnapshots[$targetView]
+            if (($next.Cursor.PSObject.Properties.Match('ViewSnapshots')).Count -gt 0 -and $null -ne $next.Cursor.ViewSnapshots -and ($next.Cursor.ViewSnapshots.PSObject.Properties.Match($targetView)).Count -gt 0) {
+                $snap = $next.Cursor.ViewSnapshots.$targetView
                 $next.Cursor.ChangeIndex     = [int]$snap.ChangeIndex
                 $next.Cursor.ChangeScrollTop = [int]$snap.ChangeScrollTop
             } else {
@@ -621,10 +625,48 @@ function Invoke-BrowserReducer {
     }
 }
 
+function Invoke-FilesReducer {
+    <#
+    .SYNOPSIS
+        Reducer for the Files screen actions. Stub — implemented in Step 1.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]$Action
+    )
+    $null = $Action  # stub — $Action will be dispatched in Step 1
+    $next = Copy-BrowserState -State $State
+    return Update-BrowserDerivedState -State $next
+}
+
+function Invoke-BrowserReducer {
+    <#
+    .SYNOPSIS
+        Top-level reducer router.  Dispatches to Invoke-ChangelistReducer or
+        Invoke-FilesReducer based on the active screen in Ui.ScreenStack.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]$Action
+    )
+
+    # Use PSObject.Properties index accessor — returns $null when property absent (safe for legacy test states).
+    $screenStack  = $State.Ui.PSObject.Properties['ScreenStack']?.Value
+    $activeScreen = if ($null -ne $screenStack -and $screenStack.Count -gt 0) { $screenStack[-1] } else { 'Changelists' }
+
+    if ($activeScreen -eq 'Files') {
+        return Invoke-FilesReducer -State $State -Action $Action
+    }
+    return Invoke-ChangelistReducer -State $State -Action $Action
+}
+
 function ConvertTo-ChangeNumberFromId {
     param([string]$Id)
     if ($Id -match '^\d+$') { return [int]$Id }
     return $null
 }
 
-Export-ModuleMember -Function New-BrowserState, Copy-BrowserState, Invoke-BrowserReducer, Update-BrowserDerivedState, ConvertTo-ChangeNumberFromId, Get-ChangeInnerViewRows, Get-ChangeRowsPerItem, Get-ChangeViewCapacity
+Export-ModuleMember -Function New-BrowserState, Copy-BrowserState, Copy-StateObject, `
+    Invoke-BrowserReducer, Invoke-ChangelistReducer, Invoke-FilesReducer, `
+    Update-BrowserDerivedState, ConvertTo-ChangeNumberFromId, `
+    Get-ChangeInnerViewRows, Get-ChangeRowsPerItem, Get-ChangeViewCapacity

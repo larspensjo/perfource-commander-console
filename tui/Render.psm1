@@ -973,7 +973,7 @@ function Apply-HelpOverlay {
 function Apply-ModalOverlay {
     param(
         [Parameter(Mandatory = $true)]$Frame,
-        [Parameter(Mandatory = $true)]$CommandModal
+        [Parameter(Mandatory = $true)]$ModalPrompt
     )
 
     $width      = $Frame.Width
@@ -983,7 +983,7 @@ function Apply-ModalOverlay {
     $rightPad   = $width - $leftPad - $modalWidth
 
     $maxRows   = [Math]::Max(4, [Math]::Min([int][Math]::Floor($height / 3), 12))
-    $modalRows = Build-CommandModalRows -CommandModal $CommandModal -Width $modalWidth -MaxRows $maxRows
+    $modalRows = Build-CommandModalRows -CommandModal $ModalPrompt -Width $modalWidth -MaxRows $maxRows
 
     # Anchor above the status bar (last row)
     $modalStart = $height - 1 - $modalRows.Count
@@ -1203,13 +1203,13 @@ function Render-BrowserState {
 
     $nextFrame    = Build-FrameFromState -State $State
     $helpOverlayOpen = [bool](Get-PropertyValueOrDefault -Object $State.Runtime -Name 'HelpOverlayOpen' -Default $false)
-    $commandModal = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'CommandModal' -Default $null
-    # Apply help overlay first, then command modal on top (command modal takes precedence)
+    $commandModal = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'ModalPrompt' -Default $null
+    # Apply help overlay first, then modal prompt on top (modal prompt takes precedence)
     if ($helpOverlayOpen) {
         $nextFrame = Apply-HelpOverlay -Frame $nextFrame -IsOpen $true
     }
     if ($null -ne $commandModal -and [bool](Get-PropertyValueOrDefault -Object $commandModal -Name 'IsOpen' -Default $false)) {
-        $nextFrame = Apply-ModalOverlay -Frame $nextFrame -CommandModal $commandModal
+        $nextFrame = Apply-ModalOverlay -Frame $nextFrame -ModalPrompt $commandModal
     }
     $changedRows = Get-FrameDiff -PreviousFrame $script:PreviousFrame -NextFrame $nextFrame
     $flushOk = Flush-FrameDiff -ChangedRows $changedRows -Frame $nextFrame

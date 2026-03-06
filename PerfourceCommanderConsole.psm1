@@ -3,6 +3,7 @@ Set-StrictMode -Version Latest
 # Import sub-modules; each handles its own internal dependencies via $PSScriptRoot
 Import-Module (Join-Path $PSScriptRoot 'p4\Models.psm1')    -Force
 Import-Module (Join-Path $PSScriptRoot 'p4\P4Cli.psm1')     -Force
+Import-Module (Join-Path $PSScriptRoot 'tui\Helpers.psm1')  -Force
 Import-Module (Join-Path $PSScriptRoot 'tui\Filtering.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'tui\Layout.psm1')    -Force
 Import-Module (Join-Path $PSScriptRoot 'tui\Reducer.psm1')   -Force

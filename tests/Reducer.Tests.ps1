@@ -212,9 +212,9 @@ Describe 'CommandModal reducer actions' {
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
             Type = 'CommandStart'; CommandLine = 'p4 changes'; StartedAt = (Get-Date)
         })
-        $next.Runtime.CommandModal.IsOpen         | Should -BeTrue
-        $next.Runtime.CommandModal.IsBusy         | Should -BeTrue
-        $next.Runtime.CommandModal.CurrentCommand | Should -Be 'p4 changes'
+        $next.Runtime.ModalPrompt.IsOpen         | Should -BeTrue
+        $next.Runtime.ModalPrompt.IsBusy         | Should -BeTrue
+        $next.Runtime.ModalPrompt.CurrentCommand | Should -Be 'p4 changes'
     }
 
     It 'CommandFinish on success appends history with DurationMs and closes modal' {
@@ -228,11 +228,11 @@ Describe 'CommandModal reducer actions' {
             StartedAt = $start; EndedAt = $end
             ExitCode = 0; Succeeded = $true; ErrorText = ''
         })
-        $next.Runtime.CommandModal.IsOpen              | Should -BeFalse
-        $next.Runtime.CommandModal.IsBusy              | Should -BeFalse
-        $next.Runtime.CommandModal.History.Count       | Should -Be 1
-        $next.Runtime.CommandModal.History[0].DurationMs | Should -Be 1000
-        $next.Runtime.CommandModal.History[0].Succeeded  | Should -BeTrue
+        $next.Runtime.ModalPrompt.IsOpen              | Should -BeFalse
+        $next.Runtime.ModalPrompt.IsBusy              | Should -BeFalse
+        $next.Runtime.ModalPrompt.History.Count       | Should -Be 1
+        $next.Runtime.ModalPrompt.History[0].DurationMs | Should -Be 1000
+        $next.Runtime.ModalPrompt.History[0].Succeeded  | Should -BeTrue
     }
 
     It 'CommandFinish on failure keeps modal open' {
@@ -246,10 +246,10 @@ Describe 'CommandModal reducer actions' {
             StartedAt = $start; EndedAt = $end
             ExitCode = 1; Succeeded = $false; ErrorText = 'connection error'
         })
-        $next.Runtime.CommandModal.IsOpen                | Should -BeTrue
-        $next.Runtime.CommandModal.IsBusy                | Should -BeFalse
-        $next.Runtime.CommandModal.History[0].Succeeded  | Should -BeFalse
-        $next.Runtime.CommandModal.History[0].ErrorText  | Should -Be 'connection error'
+        $next.Runtime.ModalPrompt.IsOpen                | Should -BeTrue
+        $next.Runtime.ModalPrompt.IsBusy                | Should -BeFalse
+        $next.Runtime.ModalPrompt.History[0].Succeeded  | Should -BeFalse
+        $next.Runtime.ModalPrompt.History[0].ErrorText  | Should -Be 'connection error'
     }
 
     It 'CommandFinish trims history to CommandHistoryMaxSize' {
@@ -265,7 +265,7 @@ Describe 'CommandModal reducer actions' {
                 ExitCode = 0; Succeeded = $true; ErrorText = ''
             })
         }
-        $state.Runtime.CommandModal.History.Count | Should -Be 50
+        $state.Runtime.ModalPrompt.History.Count | Should -Be 50
 
         # Add one more — must trim to 50
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
@@ -276,24 +276,24 @@ Describe 'CommandModal reducer actions' {
             StartedAt = $start; EndedAt = $end
             ExitCode = 0; Succeeded = $true; ErrorText = ''
         })
-        $next.Runtime.CommandModal.History.Count              | Should -Be 50
-        $next.Runtime.CommandModal.History[0].CommandLine     | Should -Be 'p4 new'
+        $next.Runtime.ModalPrompt.History.Count              | Should -Be 50
+        $next.Runtime.ModalPrompt.History[0].CommandLine     | Should -Be 'p4 new'
     }
 
     It 'ShowCommandModal opens modal' {
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ShowCommandModal' })
-        $next.Runtime.CommandModal.IsOpen | Should -BeTrue
+        $next.Runtime.ModalPrompt.IsOpen | Should -BeTrue
     }
 
     It 'ToggleCommandModal opens modal when closed' {
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleCommandModal' })
-        $next.Runtime.CommandModal.IsOpen | Should -BeTrue
+        $next.Runtime.ModalPrompt.IsOpen | Should -BeTrue
     }
 
     It 'ToggleCommandModal closes modal when open' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ShowCommandModal' })
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleCommandModal' })
-        $next.Runtime.CommandModal.IsOpen | Should -BeFalse
+        $next.Runtime.ModalPrompt.IsOpen | Should -BeFalse
     }
 
     It 'ToggleCommandModal is a no-op while busy' {
@@ -301,14 +301,14 @@ Describe 'CommandModal reducer actions' {
             Type = 'CommandStart'; CommandLine = 'p4 changes'; StartedAt = (Get-Date)
         })
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleCommandModal' })
-        $next.Runtime.CommandModal.IsOpen | Should -BeTrue
-        $next.Runtime.CommandModal.IsBusy | Should -BeTrue
+        $next.Runtime.ModalPrompt.IsOpen | Should -BeTrue
+        $next.Runtime.ModalPrompt.IsBusy | Should -BeTrue
     }
 
     It 'HideCommandModal closes modal when not busy' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ShowCommandModal' })
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'HideCommandModal' })
-        $next.Runtime.CommandModal.IsOpen | Should -BeFalse
+        $next.Runtime.ModalPrompt.IsOpen | Should -BeFalse
     }
 
     It 'HideCommandModal is a no-op while busy' {
@@ -316,11 +316,11 @@ Describe 'CommandModal reducer actions' {
             Type = 'CommandStart'; CommandLine = 'p4 changes'; StartedAt = (Get-Date)
         })
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'HideCommandModal' })
-        $next.Runtime.CommandModal.IsOpen | Should -BeTrue
-        $next.Runtime.CommandModal.IsBusy | Should -BeTrue
+        $next.Runtime.ModalPrompt.IsOpen | Should -BeTrue
+        $next.Runtime.ModalPrompt.IsBusy | Should -BeTrue
     }
 
-    It 'Copy-BrowserState copies CommandModal and History' {
+    It 'Copy-BrowserState copies ModalPrompt and History' {
         $start = [datetime]'2026-01-01 10:00:00'
         $end   = [datetime]'2026-01-01 10:00:01'
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
@@ -332,8 +332,8 @@ Describe 'CommandModal reducer actions' {
             ExitCode = 0; Succeeded = $true; ErrorText = ''
         })
         $copy = Copy-BrowserState -State $state
-        $copy.Runtime.CommandModal.History.Count       | Should -Be 1
-        $copy.Runtime.CommandModal.History[0].CommandLine | Should -Be 'p4 info'
+        $copy.Runtime.ModalPrompt.History.Count       | Should -Be 1
+        $copy.Runtime.ModalPrompt.History[0].CommandLine | Should -Be 'p4 info'
     }
 }
 

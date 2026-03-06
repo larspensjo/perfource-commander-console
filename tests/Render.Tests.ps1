@@ -602,7 +602,7 @@ Describe 'Frame helpers' {
 Describe 'Color helpers' {
     InModuleScope 'Render' {
         It 'maps marker glyphs with cursor precedence' {
-            Get-MarkerColor -Marker '>' | Should -Be 'Cyan'
+            Get-MarkerColor -Marker '▶' | Should -Be 'Cyan'
             Get-MarkerColor -Marker '░' | Should -Be 'Gray'
             Get-MarkerColor -Marker '│' | Should -Be 'DarkGray'
             Get-MarkerColor -Marker ' ' | Should -Be 'DarkGray'

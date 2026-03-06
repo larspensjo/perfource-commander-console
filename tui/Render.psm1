@@ -2,6 +2,7 @@
 
 $SCROLLBAR_THUMB_GLYPH = [char]0x2591
 $SCROLLBAR_TRACK_GLYPH = [char]0x2502
+$CURSOR_GLYPH          = [char]0x25B6  # ▶
 
 function Get-PropertyValueOrDefault {
     param(
@@ -445,7 +446,7 @@ function Get-MarkerColor {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Marker)
 
     switch ($Marker) {
-        '>' { return 'Cyan' }
+        $CURSOR_GLYPH { return 'Cyan' }
         $SCROLLBAR_THUMB_GLYPH { return 'Gray' }
         $SCROLLBAR_TRACK_GLYPH { return 'DarkGray' }
         default { return 'DarkGray' }
@@ -467,7 +468,7 @@ function Get-FilterRowModel {
 
     if ($null -ne $filterItem) {
         if ($State.Cursor.FilterIndex -eq $FilterIndex) {
-            $FilterMarker = '>'
+            $FilterMarker = $CURSOR_GLYPH
         } elseif ($null -ne $FilterThumb) {
             if ($FilterRowOffset -ge $FilterThumb.Start -and $FilterRowOffset -le $FilterThumb.End) {
                 $FilterMarker = $SCROLLBAR_THUMB_GLYPH
@@ -480,7 +481,7 @@ function Get-FilterRowModel {
         $isSelectable = [bool](Get-PropertyValueOrDefault -Object $filterItem -Name 'IsSelectable' -Default $true)
         $filterName = [string](Get-PropertyValueOrDefault -Object $filterItem -Name 'Name' -Default '')
         $filterMatchCount = [string](Get-PropertyValueOrDefault -Object $filterItem -Name 'MatchCount' -Default '')
-        $mark = if ($isSelected) { '[x]' } else { '[ ]' }
+        $mark = if ($isSelected) { '☑' } else { '☐' }
         $FilterText = "$FilterMarker $mark $filterName ($filterMatchCount)"
 
         if (-not $isSelectable -and -not $isSelected) {
@@ -1128,7 +1129,7 @@ function Build-FilesScreenFrame {
                 } elseif ($fileIdx -lt $fileCount) {
                     # Placeholder until Step 2 supplies actual FileEntry rendering.
                     $isSelected = ($fileIdx -eq $State.Cursor.FileIndex)
-                    $marker     = if ($isSelected) { '>' } else { ' ' }
+                    $marker     = if ($isSelected) { $CURSOR_GLYPH } else { ' ' }
                     $mColor     = if ($isSelected) { 'Cyan' } else { 'DarkGray' }
                     $tColor     = if ($isSelected) { 'White' } else { 'Gray' }
                     $inner      = @(
@@ -1265,7 +1266,7 @@ function Build-FrameFromState {
                     $entryId = $State.Derived.VisibleChangeIds[$changeClIdx]
                     $cl = Get-ChangeById -Changes $activeChanges -Id $entryId
                     if ($State.Cursor.ChangeIndex -eq $changeClIdx) {
-                        $changeMarker = '>'
+                        $changeMarker = $CURSOR_GLYPH
                     } elseif ($null -ne $changeThumb) {
                         if ($changeInnerRow -ge $changeThumb.Start -and $changeInnerRow -le $changeThumb.End) {
                             $changeMarker = $SCROLLBAR_THUMB_GLYPH

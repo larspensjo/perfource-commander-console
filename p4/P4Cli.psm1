@@ -22,7 +22,7 @@ function Invoke-P4 {
         [int]$TimeoutMs = 30000
     )
 
-    $globalArgs = @('-ztag')
+    $globalArgs = @('-ztag', '-Mj')
     $fullArgs = $globalArgs + $P4Args
 
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
@@ -79,7 +79,7 @@ function Invoke-P4 {
         throw ($messageParts -join "`n")
     }
 
-    return ($stdout -split "`r?`n") | Where-Object { $_ -ne '' }
+    return @(($stdout -split "`r?`n") | Where-Object { $_ -ne '' } | ForEach-Object { ConvertFrom-Json $_ })
 }
 
 function Get-P4Info {
@@ -88,48 +88,14 @@ function Get-P4Info {
 
     $lines = Invoke-P4 -P4Args @('info')
 
-    $kv = @{}
-    foreach ($line in $lines) {
-        if ($line -match '^\.\.\.\s+(?<k>\S+)\s+(?<v>.*)$') {
-            $kv[$Matches.k] = $Matches.v
-        }
-    }
+    $record = $lines | Select-Object -First 1
 
     [pscustomobject]@{
-        User   = [string]$kv.userName
-        Client = [string]$kv.clientName
-        Port   = [string]$kv.serverAddress
-        Root   = [string]$kv.clientRoot
+        User   = [string]$record.userName
+        Client = [string]$record.clientName
+        Port   = [string]$record.serverAddress
+        Root   = [string]$record.clientRoot
     }
-}
-
-function ConvertFrom-P4ZTagRecords {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string[]]$Lines
-    )
-
-    $records = @()
-    $current = @{}
-
-    foreach ($line in $Lines) {
-        if ($line -match '^\.\.\.\s+(?<k>\S+)\s+(?<v>.*)$') {
-            $k = $Matches.k
-            $v = $Matches.v
-
-            if ($current.ContainsKey($k)) {
-                $records += ,$current
-                $current = @{}
-            }
-            $current[$k] = $v
-        }
-    }
-
-    if ($current.Count -gt 0) {
-        $records += ,$current
-    }
-
-    return $records
 }
 
 function Get-P4PendingChangelists {
@@ -148,10 +114,10 @@ function Get-P4PendingChangelists {
         '-m', "$Max"
     )
 
-    $records = ConvertFrom-P4ZTagRecords -Lines $lines
+    $records = $lines
     $result = foreach ($record in $records) {
-        if (-not $record.ContainsKey('change')) { continue }
-        if (-not $record.ContainsKey('time')) { continue }
+        if ($null -eq $record.change) { continue }
+        if ($null -eq $record.time) { continue }
 
         $timestamp = [double]$record.time
         $time = [datetime]::UnixEpoch.AddSeconds($timestamp).ToLocalTime()
@@ -195,55 +161,39 @@ function Get-P4Describe {
 
     $lines = Invoke-P4 -P4Args @('describe', '-s', "$Change")
 
-    # Parse ztag key-value pairs.  The 'desc' field may span multiple lines:
-    # the first line carries the '... desc <text>' tag; subsequent continuation
-    # lines have no '...' prefix and are collected until the next tagged field.
-    $kv = @{}
-    $descLines = [System.Collections.Generic.List[string]]::new()
-    $inDesc = $false
-    foreach ($line in $lines) {
-        if ($line -match '^\.\.\.\.?\s+(?<k>\S+)\s*(?<v>.*)$') {
-            $inDesc = $false
-            $k = $Matches.k
-            $v = $Matches.v
-            $kv[$k] = $v
-            if ($k -eq 'desc') {
-                if ($v -ne '') { $descLines.Add($v) }
-                $inDesc = $true
-            }
-        } elseif ($inDesc) {
-            # Continuation line belonging to the multi-line description.
-            $descLines.Add($line)
-        }
-    }
-
-    if (-not $kv.ContainsKey('change')) {
+    $record = $lines | Select-Object -First 1
+    if ($null -eq $record -or $null -eq ($record.PSObject.Properties['change'])) {
         throw "Failed to parse describe output for CL $Change"
     }
 
-    $time = if ($kv.ContainsKey('time')) {
-        ([datetime]'1970-01-01T00:00:00Z').AddSeconds([double]$kv.time).ToLocalTime()
+    $time = if ($null -ne ($record.PSObject.Properties['time'])) {
+        ([datetime]'1970-01-01T00:00:00Z').AddSeconds([double]$record.time).ToLocalTime()
     } else { Get-Date }
 
-    # Extract indexed file entries: depotFile0/action0/type0, depotFile1/action1/type1, ...
+    # With -Mj, depotFile/action/type are JSON arrays; @() wraps single values for safety.
     $files = @()
-    for ($i = 0; ; $i++) {
-        $depotKey = "depotFile$i"
-        if (-not $kv.ContainsKey($depotKey)) { break }
-        $files += [pscustomobject]@{
-            DepotPath = [string]$kv[$depotKey]
-            Action    = if ($kv.ContainsKey("action$i")) { [string]$kv["action$i"] } else { '' }
-            Type      = if ($kv.ContainsKey("type$i"))   { [string]$kv["type$i"]   } else { '' }
+    if ($null -ne ($record.PSObject.Properties['depotFile'])) {
+        $depotFiles = @($record.depotFile)
+        $actions    = @($record.action)
+        $types      = if ($null -ne ($record.PSObject.Properties['type'])) { @($record.type) } else { @() }
+        for ($i = 0; $i -lt $depotFiles.Count; $i++) {
+            $files += [pscustomobject]@{
+                DepotPath = [string]$depotFiles[$i]
+                Action    = if ($i -lt $actions.Count) { [string]$actions[$i] } else { '' }
+                Type      = if ($i -lt $types.Count)   { [string]$types[$i]   } else { '' }
+            }
         }
     }
 
+    $descLines = @([string]$record.desc -split "`r?`n" | Where-Object { $_ -ne '' })
+
     [pscustomobject]@{
-        Change      = [int]$kv.change
-        User        = [string]$kv.user
-        Client      = [string]$kv.client
-        Status      = [string]$kv.status
+        Change      = [int]$record.change
+        User        = [string]$record.user
+        Client      = [string]$record.client
+        Status      = [string]$record.status
         Time        = $time
-        Description = @($descLines.GetEnumerator() | Where-Object { $_ -ne '' })
+        Description = $descLines
         Files       = @($files)
     }
 }
@@ -266,47 +216,37 @@ function Test-IsP4NoShelvedChangesError {
     return ($Message -match '(?i)no\s+matching\s+changelists')
 }
 
-# Pure helper: count opened files per changelist from 'p4 -ztag opened' output lines.
-# Each '... change N' line corresponds to one opened file in that changelist.
+# Pure helper: count opened files per changelist from 'p4 -ztag -Mj opened' JSON output.
+# Each PSObject record corresponds to one opened file; 'change' identifies the CL.
 function ConvertFrom-P4OpenedLinesToFileCounts {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Lines
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Records
     )
 
     $result = [System.Collections.Generic.Dictionary[int,int]]::new()
-    foreach ($line in $Lines) {
-        if ($line -match '^\.\.\.\s+change\s+(\d+)') {
-            $change = [int]$Matches[1]
-            if ($result.ContainsKey($change)) {
-                $result[$change]++
-            } else {
-                $result[$change] = 1
-            }
-        }
+    foreach ($record in $Records) {
+        if ($null -eq ($record.PSObject.Properties['change'])) { continue }
+        $change = [int]$record.change
+        if ($result.ContainsKey($change)) { $result[$change]++ } else { $result[$change] = 1 }
     }
     return $result
 }
 
-# Pure helper: count shelved files per changelist from 'p4 -ztag describe -S -s' output lines.
-# Tracks the current change from '... change N' lines and increments on 'depotFileN' keys.
+# Pure helper: count shelved files per changelist from 'p4 -ztag -Mj describe -S -s' JSON output.
+# Each PSObject record is one changelist; depotFile is a (possibly array) property.
 function ConvertFrom-P4DescribeShelvedLinesToFileCounts {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Lines
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Records
     )
 
     $result = [System.Collections.Generic.Dictionary[int,int]]::new()
-    $currentChange = -1
-    foreach ($line in $Lines) {
-        if ($line -match '^\.\.\.\s+change\s+(\d+)') {
-            $currentChange = [int]$Matches[1]
-            if (-not $result.ContainsKey($currentChange)) {
-                $result[$currentChange] = 0
-            }
-        } elseif ($line -match '^\.\.\.\s+depotFile\d+\s+' -and $currentChange -ge 0) {
-            $result[$currentChange]++
-        }
+    foreach ($record in $Records) {
+        if ($null -eq ($record.PSObject.Properties['change'])) { continue }
+        $change    = [int]$record.change
+        $fileCount = if ($null -ne ($record.PSObject.Properties['depotFile'])) { @($record.depotFile).Count } else { 0 }
+        $result[$change] = $fileCount
     }
     return $result
 }
@@ -332,7 +272,7 @@ function Get-P4OpenedFileCounts {
     }
 
     if ($null -eq $lines) { $lines = @() }
-    return ConvertFrom-P4OpenedLinesToFileCounts -Lines $lines
+    return ConvertFrom-P4OpenedLinesToFileCounts -Records $lines
 }
 
 function Get-P4OpenedChangeNumbers {
@@ -377,10 +317,8 @@ function Get-P4ShelvedChangeNumbers {
     }
 
     $result = [System.Collections.Generic.HashSet[int]]::new()
-    foreach ($line in $lines) {
-        if ($line -match '^\.\.\.\s+change\s+(\d+)') {
-            [void]$result.Add([int]$Matches[1])
-        }
+    foreach ($record in $lines) {
+        if ($null -ne ($record.PSObject.Properties['change'])) { [void]$result.Add([int]$record.change) }
     }
 
     return ,$result
@@ -413,7 +351,7 @@ function Get-P4ShelvedFileCounts {
         try {
             $lines = Invoke-P4 -P4Args $p4Args
             if ($null -eq $lines) { $lines = @() }
-            $chunkCounts = ConvertFrom-P4DescribeShelvedLinesToFileCounts -Lines $lines
+            $chunkCounts = ConvertFrom-P4DescribeShelvedLinesToFileCounts -Records $lines
             foreach ($kvp in $chunkCounts.GetEnumerator()) {
                 $result[$kvp.Key] = $kvp.Value
             }
@@ -431,7 +369,7 @@ function Get-P4OpenedFiles {
     .SYNOPSIS
         Returns FileEntry objects for all files opened in the given pending changelist.
     .DESCRIPTION
-        Calls 'p4 -ztag opened -c <cl>' (global flag added by Invoke-P4) and parses each ztag record into a FileEntry.
+        Calls 'p4 -ztag -Mj opened -c <cl>' (global flags added by Invoke-P4) and returns parsed PSObjects as FileEntry objects.
         An empty changelist (no opened files) returns an empty array without throwing.
     .PARAMETER Change
         The changelist number whose opened files to retrieve.
@@ -455,14 +393,12 @@ function Get-P4OpenedFiles {
 
     if ($lines.Count -eq 0) { return @() }
 
-    $records = ConvertFrom-P4ZTagRecords -Lines $lines
-
-    $result = foreach ($record in $records) {
-        if (-not $record.ContainsKey('depotFile')) { continue }
+    $result = foreach ($record in $lines) {
+        if ($null -eq ($record.PSObject.Properties['depotFile'])) { continue }
         $depotPath = [string]$record.depotFile
-        $action    = if ($record.ContainsKey('action')) { [string]$record.action } else { '' }
-        $fileType  = if ($record.ContainsKey('type'))   { [string]$record.type   } else { '' }
-        $recChange = if ($record.ContainsKey('change')) { [int]$record.change    } else { $Change }
+        $action    = if ($null -ne ($record.PSObject.Properties['action'])) { [string]$record.action } else { '' }
+        $fileType  = if ($null -ne ($record.PSObject.Properties['type']))   { [string]$record.type   } else { '' }
+        $recChange = if ($null -ne ($record.PSObject.Properties['change'])) { [int]$record.change    } else { $Change }
         New-P4FileEntry -DepotPath $depotPath -Action $action -FileType $fileType `
                         -Change $recChange -SourceKind 'Opened'
     }
@@ -510,11 +446,11 @@ function Get-P4SubmittedChangelists {
     }
 
     $lines = Invoke-P4 -P4Args $p4Args
-    $records = ConvertFrom-P4ZTagRecords -Lines $lines
+    $records = $lines
 
     $result = foreach ($record in $records) {
-        if (-not $record.ContainsKey('change')) { continue }
-        if (-not $record.ContainsKey('time')) { continue }
+        if ($null -eq $record.change) { continue }
+        if ($null -eq $record.time) { continue }
 
         $timestamp = [double]$record.time
         $time = [datetime]::UnixEpoch.AddSeconds($timestamp).ToLocalTime()

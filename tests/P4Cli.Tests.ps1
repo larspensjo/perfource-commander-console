@@ -33,10 +33,10 @@ Describe 'Invoke-P4' {
         InModuleScope P4Cli { $script:P4Executable = 'p4.exe' }
     }
 
-    It 'returns output lines on a zero-exit process' {
-        # cmd.exe /c echo hello  →  'hello' on stdout, exit 0
-        $result = InModuleScope P4Cli { Invoke-P4 -P4Args @('/c', 'echo', 'hello') }
-        $result | Should -Contain 'hello'
+    It 'returns parsed PSObjects on a zero-exit process' {
+        # cmd.exe /c echo {"v":"ok"}  →  one JSON object on stdout, exit 0
+        $result = InModuleScope P4Cli { Invoke-P4 -P4Args @('/c', 'echo', '{"v":"ok"}') }
+        $result[0].v | Should -Be 'ok'
     }
 
     It 'throws with exit-code detail on a non-zero exit' {
@@ -62,20 +62,17 @@ Describe 'Get-P4Describe' {
 
     It 'parses a describe record with indexed file keys' {
         Mock Invoke-P4 -ModuleName P4Cli {
-            return @(
-                '... change 12345',
-                '... user testuser',
-                '... client testclient',
-                '... status pending',
-                '... time 1700000000',
-                '... desc Line one',
-                '... depotFile0 //depot/a.txt',
-                '... action0 edit',
-                '... type0 text',
-                '... depotFile1 //depot/b.txt',
-                '... action1 add',
-                '... type1 binary'
-            )
+            return @([pscustomobject]@{
+                change    = '12345'
+                user      = 'testuser'
+                client    = 'testclient'
+                status    = 'pending'
+                time      = '1700000000'
+                desc      = 'Line one'
+                depotFile = @('//depot/a.txt', '//depot/b.txt')
+                action    = @('edit', 'add')
+                type      = @('text', 'binary')
+            })
         }
 
         $result = Get-P4Describe -Change 12345
@@ -94,15 +91,14 @@ Describe 'Get-P4Describe' {
 
     It 'parses a multi-line description' {
         Mock Invoke-P4 -ModuleName P4Cli {
-            return @(
-                '... change 99',
-                '... user alice',
-                '... client aliceclient',
-                '... status pending',
-                '... time 1700000000',
-                '... desc First line',
-                'Second line'
-            )
+            return @([pscustomobject]@{
+                change = '99'
+                user   = 'alice'
+                client = 'aliceclient'
+                status = 'pending'
+                time   = '1700000000'
+                desc   = "First line`nSecond line"
+            })
         }
 
         $result = Get-P4Describe -Change 99
@@ -113,14 +109,14 @@ Describe 'Get-P4Describe' {
 
     It 'returns an empty file list when no depotFile keys are present' {
         Mock Invoke-P4 -ModuleName P4Cli {
-            return @(
-                '... change 777',
-                '... user bob',
-                '... client bobclient',
-                '... status pending',
-                '... time 1700000000',
-                '... desc Only a description'
-            )
+            return @([pscustomobject]@{
+                change = '777'
+                user   = 'bob'
+                client = 'bobclient'
+                status = 'pending'
+                time   = '1700000000'
+                desc   = 'Only a description'
+            })
         }
 
         $result = Get-P4Describe -Change 777
@@ -128,27 +124,8 @@ Describe 'Get-P4Describe' {
     }
 
     It 'throws when describe output has no change key' {
-        Mock Invoke-P4 -ModuleName P4Cli { return @('... user someone') }
+        Mock Invoke-P4 -ModuleName P4Cli { return @([pscustomobject]@{ user = 'someone' }) }
         { Get-P4Describe -Change 99999 } | Should -Throw '*Failed to parse*'
-    }
-}
-
-Describe 'ConvertFrom-P4ZTagRecords' {
-    BeforeAll {
-        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
-    }
-
-    It 'splits records when a key repeats' {
-        $lines = @(
-            '... change 1',
-            '... user a',
-            '... change 2',
-            '... user b'
-        )
-        $records = InModuleScope P4Cli { ConvertFrom-P4ZTagRecords -Lines $args[0] } -ArgumentList @(,$lines)
-        $records.Count | Should -Be 2
-        $records[0].change | Should -Be '1'
-        $records[1].change | Should -Be '2'
     }
 }
 
@@ -160,15 +137,9 @@ Describe 'Get-P4OpenedChangeNumbers' {
     It 'returns set of change numbers from opened output' {
         Mock Invoke-P4 -ModuleName P4Cli {
             return @(
-                '... depotFile //depot/a.txt',
-                '... change 100',
-                '... action edit',
-                '... depotFile //depot/b.txt',
-                '... change 200',
-                '... action add',
-                '... depotFile //depot/c.txt',
-                '... change 100',
-                '... action edit'
+                [pscustomobject]@{ depotFile = '//depot/a.txt'; change = '100'; action = 'edit' },
+                [pscustomobject]@{ depotFile = '//depot/b.txt'; change = '200'; action = 'add' },
+                [pscustomobject]@{ depotFile = '//depot/c.txt'; change = '100'; action = 'edit' }
             )
         }
 
@@ -220,10 +191,8 @@ Describe 'Get-P4ShelvedChangeNumbers' {
         Mock Get-P4Info -ModuleName P4Cli { return [pscustomobject]@{ User = 'u'; Client = 'c'; Port = 'p'; Root = 'r' } }
         Mock Invoke-P4 -ModuleName P4Cli {
             return @(
-                '... change 300',
-                '... user u',
-                '... change 400',
-                '... user u'
+                [pscustomobject]@{ change = '300'; user = 'u' },
+                [pscustomobject]@{ change = '400'; user = 'u' }
             )
         }
 
@@ -320,25 +289,19 @@ Describe 'ConvertFrom-P4OpenedLinesToFileCounts' {
         Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
     }
 
-    It 'counts files per changelist from opened ztag output' {
-        $lines = @(
-            '... depotFile //depot/a.txt',
-            '... change 100',
-            '... action edit',
-            '... depotFile //depot/b.txt',
-            '... change 200',
-            '... action add',
-            '... depotFile //depot/c.txt',
-            '... change 100',
-            '... action edit'
+    It 'counts files per changelist from opened JSON records' {
+        $records = @(
+            [pscustomobject]@{ depotFile = '//depot/a.txt'; change = '100'; action = 'edit' },
+            [pscustomobject]@{ depotFile = '//depot/b.txt'; change = '200'; action = 'add' },
+            [pscustomobject]@{ depotFile = '//depot/c.txt'; change = '100'; action = 'edit' }
         )
-        $result = InModuleScope P4Cli { ConvertFrom-P4OpenedLinesToFileCounts -Lines $args[0] } -ArgumentList @(,$lines)
+        $result = InModuleScope P4Cli { ConvertFrom-P4OpenedLinesToFileCounts -Records $args[0] } -ArgumentList @(,$records)
         $result[100] | Should -Be 2
         $result[200] | Should -Be 1
     }
 
     It 'returns empty dictionary for empty input' {
-        $result = InModuleScope P4Cli { ConvertFrom-P4OpenedLinesToFileCounts -Lines @() }
+        $result = InModuleScope P4Cli { ConvertFrom-P4OpenedLinesToFileCounts -Records @() }
         $result.Count | Should -Be 0
     }
 }
@@ -348,32 +311,26 @@ Describe 'ConvertFrom-P4DescribeShelvedLinesToFileCounts' {
         Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
     }
 
-    It 'counts shelved files per changelist from describe -S -s output' {
-        $lines = @(
-            '... change 300',
-            '... user u',
-            '... depotFile0 //depot/x.txt',
-            '... depotFile1 //depot/y.txt',
-            '... change 400',
-            '... user u',
-            '... depotFile0 //depot/z.txt'
+    It 'counts shelved files per changelist from describe -S -s JSON records' {
+        $records = @(
+            [pscustomobject]@{ change = '300'; user = 'u'; depotFile = @('//depot/x.txt', '//depot/y.txt') },
+            [pscustomobject]@{ change = '400'; user = 'u'; depotFile = @('//depot/z.txt') }
         )
-        $result = InModuleScope P4Cli { ConvertFrom-P4DescribeShelvedLinesToFileCounts -Lines $args[0] } -ArgumentList @(,$lines)
+        $result = InModuleScope P4Cli { ConvertFrom-P4DescribeShelvedLinesToFileCounts -Records $args[0] } -ArgumentList @(,$records)
         $result[300] | Should -Be 2
         $result[400] | Should -Be 1
     }
 
     It 'returns empty dictionary for empty input' {
-        $result = InModuleScope P4Cli { ConvertFrom-P4DescribeShelvedLinesToFileCounts -Lines @() }
+        $result = InModuleScope P4Cli { ConvertFrom-P4DescribeShelvedLinesToFileCounts -Records @() }
         $result.Count | Should -Be 0
     }
 
-    It 'records zero count for a change with no depotFile keys' {
-        $lines = @(
-            '... change 500',
-            '... user u'
+    It 'records zero count for a change with no depotFile property' {
+        $records = @(
+            [pscustomobject]@{ change = '500'; user = 'u' }
         )
-        $result = InModuleScope P4Cli { ConvertFrom-P4DescribeShelvedLinesToFileCounts -Lines $args[0] } -ArgumentList @(,$lines)
+        $result = InModuleScope P4Cli { ConvertFrom-P4DescribeShelvedLinesToFileCounts -Records $args[0] } -ArgumentList @(,$records)
         $result.ContainsKey(500) | Should -BeTrue
         $result[500]             | Should -Be 0
     }
@@ -387,10 +344,8 @@ Describe 'Get-P4OpenedFileCounts' {
     It 'returns file counts per changelist from opened output' {
         Mock Invoke-P4 -ModuleName P4Cli {
             return @(
-                '... depotFile //depot/a.txt',
-                '... change 100',
-                '... depotFile //depot/b.txt',
-                '... change 100'
+                [pscustomobject]@{ depotFile = '//depot/a.txt'; change = '100' },
+                [pscustomobject]@{ depotFile = '//depot/b.txt'; change = '100' }
             )
         }
 
@@ -435,11 +390,8 @@ Describe 'Get-P4ShelvedFileCounts' {
     It 'parses shelved file counts from batched describe output' {
         Mock Invoke-P4 -ModuleName P4Cli {
             return @(
-                '... change 300',
-                '... depotFile0 //depot/a.txt',
-                '... depotFile1 //depot/b.txt',
-                '... change 400',
-                '... depotFile0 //depot/c.txt'
+                [pscustomobject]@{ change = '300'; depotFile = @('//depot/a.txt', '//depot/b.txt') },
+                [pscustomobject]@{ change = '400'; depotFile = @('//depot/c.txt') }
             )
         }
 
@@ -536,16 +488,16 @@ Describe 'Get-P4OpenedFiles' {
 
     It 'parses a single opened file into a FileEntry with correct fields' {
         Mock Invoke-P4 -ModuleName P4Cli {
-            return @(
-                '... depotFile //depot/src/Foo.cs',
-                '... clientFile //client/src/Foo.cs',
-                '... rev 3',
-                '... action edit',
-                '... change 101',
-                '... type text',
-                '... user alice',
-                '... client aliceclient'
-            )
+            return @([pscustomobject]@{
+                depotFile  = '//depot/src/Foo.cs'
+                clientFile = '//client/src/Foo.cs'
+                rev        = '3'
+                action     = 'edit'
+                change     = '101'
+                type       = 'text'
+                user       = 'alice'
+                client     = 'aliceclient'
+            })
         }
 
         $result = Get-P4OpenedFiles -Change 101
@@ -561,14 +513,8 @@ Describe 'Get-P4OpenedFiles' {
     It 'parses multiple opened files' {
         Mock Invoke-P4 -ModuleName P4Cli {
             return @(
-                '... depotFile //depot/a.txt',
-                '... action edit',
-                '... change 200',
-                '... type text',
-                '... depotFile //depot/b.txt',
-                '... action add',
-                '... change 200',
-                '... type binary'
+                [pscustomobject]@{ depotFile = '//depot/a.txt'; action = 'edit'; change = '200'; type = 'text' },
+                [pscustomobject]@{ depotFile = '//depot/b.txt'; action = 'add';  change = '200'; type = 'binary' }
             )
         }
 
@@ -598,11 +544,7 @@ Describe 'Get-P4OpenedFiles' {
 
     It 'handles missing type key gracefully (defaults to empty string)' {
         Mock Invoke-P4 -ModuleName P4Cli {
-            return @(
-                '... depotFile //depot/noType.txt',
-                '... action delete',
-                '... change 50'
-            )
+            return @([pscustomobject]@{ depotFile = '//depot/noType.txt'; action = 'delete'; change = '50' })
         }
 
         $result = Get-P4OpenedFiles -Change 50
@@ -613,11 +555,7 @@ Describe 'Get-P4OpenedFiles' {
 
     It 'uses the Change parameter value when ztag record has no change key' {
         Mock Invoke-P4 -ModuleName P4Cli {
-            return @(
-                '... depotFile //depot/noChange.txt',
-                '... action add',
-                '... type text'
-            )
+            return @([pscustomobject]@{ depotFile = '//depot/noChange.txt'; action = 'add'; type = 'text' })
         }
 
         $result = Get-P4OpenedFiles -Change 77
@@ -634,12 +572,7 @@ Describe 'Get-P4OpenedFiles' {
 
     It 'SearchKey on parsed entry is lowercased and includes DepotPath, Action, FileType' {
         Mock Invoke-P4 -ModuleName P4Cli {
-            return @(
-                '... depotFile //Depot/Dir/MyFile.CS',
-                '... action Edit',
-                '... change 5',
-                '... type Text'
-            )
+            return @([pscustomobject]@{ depotFile = '//Depot/Dir/MyFile.CS'; action = 'Edit'; change = '5'; type = 'Text' })
         }
 
         $result = Get-P4OpenedFiles -Change 5

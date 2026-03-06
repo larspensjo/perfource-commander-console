@@ -22,6 +22,39 @@ Describe 'Format-P4CommandLine' {
     }
 }
 
+Describe 'Invoke-P4' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+        # Redirect the module to cmd.exe so tests run without a real p4 binary.
+        InModuleScope P4Cli { $script:P4Executable = 'cmd.exe' }
+    }
+
+    AfterAll {
+        InModuleScope P4Cli { $script:P4Executable = 'p4.exe' }
+    }
+
+    It 'returns output lines on a zero-exit process' {
+        # cmd.exe /c echo hello  →  'hello' on stdout, exit 0
+        $result = InModuleScope P4Cli { Invoke-P4 -P4Args @('/c', 'echo', 'hello') }
+        $result | Should -Contain 'hello'
+    }
+
+    It 'throws with exit-code detail on a non-zero exit' {
+        # cmd.exe /c exit 1  →  exit code 1, no output
+        { InModuleScope P4Cli { Invoke-P4 -P4Args @('/c', 'exit', '1') } } |
+            Should -Throw '*p4 failed (exit 1)*'
+    }
+
+    It 'throws a timeout error and does not hang when the process exceeds TimeoutMs' {
+        # cmd.exe /c ping -n 10 127.0.0.1 takes ~9 s; 400 ms timeout fires first.
+        $before = Get-Date
+        { InModuleScope P4Cli { Invoke-P4 -P4Args @('/c', 'ping', '-n', '10', '127.0.0.1') -TimeoutMs 400 } } |
+            Should -Throw '*timed out after*'
+        $elapsed = (Get-Date) - $before
+        $elapsed.TotalSeconds | Should -BeLessThan 5
+    }
+}
+
 Describe 'Get-P4Describe' {
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force

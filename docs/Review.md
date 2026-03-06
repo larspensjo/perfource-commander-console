@@ -14,22 +14,17 @@
 
 ## Highest-impact robustness issues
 
-1. **`Invoke-P4` can hang indefinitely**
+1. ~~**`Invoke-P4` can hang indefinitely**~~ ✅ **Fixed**
 
-   * It does synchronous `ReadToEnd()` on stdout/stderr and then `WaitForExit()` with no timeout. If `p4` blocks (network stall, auth prompt edge-case, huge output), the entire UI freezes.
-     **Fix direction**: add a timeout + kill logic; optionally switch to async reads.
+   * Switched to `ReadToEndAsync()` on both streams + `WaitForExit(TimeoutMs)` (default 30 s) + `Kill()` on timeout. `$script:P4Executable` module variable allows tests to inject `cmd.exe`. Three new Pester tests cover success output, non-zero exit, and hard-kill after timeout.
 
-2. **Reload ignores `-MaxChanges`**
+2. ~~**Reload ignores `-MaxChanges`**~~ ✅ **Fixed**
 
-   * Initial load uses `$MaxChanges`, but the reload path hardcodes `200` (`p4 changes ... -m 200` and `Get-P4ChangelistEntries -Max 200`). That’s a flexibility bug and can surprise users.
-     **Fix direction**: use `$MaxChanges` consistently in the reload block.
+   * All reload paths read from `$s.Runtime.ConfiguredMax`, set from `-MaxChanges` at startup.
 
-3. **Suspicious relative module paths (likely breaks tests / direct imports)**
+3. ~~**Suspicious relative module paths**~~ ✅ **Fixed**
 
-   * `tui\Reducer.psm1` imports `'.\p4\P4Cli.psm1'` relative to the `tui` folder.
-   * `tests\P4Cli.Tests.ps1` imports `'.\p4\P4Cli.psm1'` relative to the `tests` folder.
-     Unless you actually have `tui\p4\...` and `tests\p4\...`, these imports will fail (or at least emit errors) when running tests or importing submodules directly.
-     **Fix direction**: prefer `Join-Path $PSScriptRoot '..\p4\P4Cli.psm1'` (and similarly for `Models.psm1`) or remove the reducer’s dependency on P4 modules entirely (it shouldn’t need them).
+   * All imports use `Join-Path $PSScriptRoot` with correct relative paths (e.g. `'..\p4\P4Cli.psm1'`).
 
 4. ~~**`Get-P4Describe` loses multi-line descriptions**~~ ✅ **Fixed**
 
@@ -58,7 +53,7 @@
 
    * Move constants into `State.Data.Settings` (max history size, modal max rows, max changes, key bindings, colors). This makes the TUI tunable without editing multiple modules. (Currently constants like `CommandHistoryMaxSize` and modal sizing logic are embedded.)
 
-2. **Dependency-inject the Perforce runner**
+2. **Dependency-inject the Perforce runner** (Minor usefulness)
 
    * Instead of calling `Invoke-P4`/`Get-P4Describe` directly from side-effect blocks, pass a runner object/scriptblock into `Start-P4Browser` and store it in state. This will make:
 
@@ -76,5 +71,3 @@
      * whether they apply to the current dataset
      * optional “requires field X” validation
        That fits your `VisibleFilters` derivation model.
-
-If you want, I can produce a prioritized patch list (small, surgical edits) targeting: (1) reload uses `$MaxChanges`, (2) fix bad import paths, (3) add timeout to `Invoke-P4`, and (4) improve multi-line describe parsing.

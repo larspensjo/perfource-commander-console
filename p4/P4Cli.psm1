@@ -2,6 +2,9 @@ Set-StrictMode -Version Latest
 
 Import-Module (Join-Path $PSScriptRoot 'Models.psm1') -Force
 
+# Overridable in tests via InModuleScope P4Cli { $script:P4Executable = 'cmd.exe' }
+$script:P4Executable = 'p4.exe'
+
 function Format-P4CommandLine {
     [CmdletBinding()]
     param(
@@ -14,11 +17,13 @@ function Format-P4CommandLine {
 function Invoke-P4 {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string[]]$P4Args
+        [Parameter(Mandatory)][string[]]$P4Args,
+        # Milliseconds to wait before killing the p4 process. Defaults to 30 s.
+        [int]$TimeoutMs = 30000
     )
 
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName = 'p4.exe'
+    $psi.FileName = $script:P4Executable
     $psi.Arguments = (Format-P4CommandLine -P4Args $P4Args).Substring(3)  # strip leading 'p4 '
     $psi.WorkingDirectory = (Get-Location).Path
     $psi.RedirectStandardOutput = $true
@@ -33,9 +38,22 @@ function Invoke-P4 {
         throw 'Failed to start p4.exe'
     }
 
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    $process.WaitForExit()
+    # Read stdout and stderr concurrently via async tasks to prevent the
+    # deadlock that can occur when one pipe's buffer fills before the other
+    # is drained.  WaitForExit(timeout) then gives us a hard upper bound on
+    # how long a stalled p4 call can block the UI.
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+
+    $exited = $process.WaitForExit($TimeoutMs)
+
+    if (-not $exited) {
+        try { $process.Kill() } catch { <# best-effort #> }
+        throw "p4 timed out after ${TimeoutMs} ms. Args: $($psi.Arguments)"
+    }
+
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
 
     if ($process.ExitCode -ne 0) {
         $messageParts = @(

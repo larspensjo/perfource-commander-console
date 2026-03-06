@@ -23,6 +23,18 @@
     },
     "Remove-Module": true,
     "Import-Module": true,
-    "Get-Command": true
+    "Get-Command": true,
+    "/^pwsh -NoProfile -Command \"Import-Module Pester -Force; Invoke-Pester -Path tests\\\\\"$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^pwsh -NoProfile -Command \"Import-Module Pester -Force; Invoke-Pester -Path tests\\\\\" 2>&1$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^& pwsh -NoProfile -Command \\{ Import-Module Pester -Force; Invoke-Pester -Path 'C:\\\\Users\\\\lpensjo\\\\src\\\\perfource-commander-console\\\\tests\\\\' \\} 2>&1$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
   }
 }

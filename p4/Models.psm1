@@ -63,4 +63,40 @@ function ConvertTo-SubmittedChangelistEntry {
     }
 }
 
-Export-ModuleMember -Function *-P4Changelist, ConvertTo-ChangelistEntry, ConvertTo-SubmittedChangelistEntry
+function New-P4FileEntry {
+    <#
+    .SYNOPSIS
+        Constructs a FileEntry object from raw Perforce file data.
+    .DESCRIPTION
+        Derives FileName from the tail of DepotPath and precomputes SearchKey
+        (lowercased concatenation of DepotPath, Action, and FileType) for fast
+        in-memory substring filtering without repeated string allocations.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DepotPath,
+        [Parameter(Mandatory = $false)][string]$Action     = '',
+        [Parameter(Mandatory = $false)][string]$FileType   = '',
+        [Parameter(Mandatory = $false)][int]$Change        = 0,
+        [Parameter(Mandatory = $false)][string]$SourceKind = 'Opened'
+    )
+
+    # Derive FileName: last path segment after the final '/'
+    $fileName = if ($DepotPath -match '[^/]+$') { $Matches[0] } else { $DepotPath }
+
+    # Precompute SearchKey once to avoid repeated allocations in the filter hot-path.
+    # Includes FileType so future 'type:' facets work without cache invalidation.
+    $searchKey = ($DepotPath + ' ' + $Action + ' ' + $FileType).ToLowerInvariant()
+
+    [pscustomobject]@{
+        DepotPath  = $DepotPath
+        FileName   = $fileName
+        Action     = $Action
+        FileType   = $FileType
+        Change     = $Change
+        SourceKind = $SourceKind
+        SearchKey  = $searchKey
+    }
+}
+
+Export-ModuleMember -Function *-P4Changelist, ConvertTo-ChangelistEntry, ConvertTo-SubmittedChangelistEntry, New-P4FileEntry

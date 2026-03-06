@@ -476,3 +476,173 @@ Describe 'Get-P4ShelvedFileCounts' {
         Assert-MockCalled Invoke-P4 -ModuleName P4Cli -Times 2 -Exactly
     }
 }
+Describe 'New-P4FileEntry' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\Models.psm1') -Force
+    }
+
+    It 'creates a FileEntry with all expected fields' {
+        $entry = New-P4FileEntry -DepotPath '//depot/foo/bar.cs' -Action 'edit' `
+                                 -FileType 'text' -Change 42 -SourceKind 'Opened'
+        $entry.DepotPath  | Should -Be '//depot/foo/bar.cs'
+        $entry.Action     | Should -Be 'edit'
+        $entry.FileType   | Should -Be 'text'
+        $entry.Change     | Should -Be 42
+        $entry.SourceKind | Should -Be 'Opened'
+    }
+
+    It 'derives FileName from the tail of the depot path' {
+        $entry = New-P4FileEntry -DepotPath '//depot/dir/subdir/MyFile.cs'
+        $entry.FileName | Should -Be 'MyFile.cs'
+    }
+
+    It 'derives FileName correctly for a root-level file' {
+        $entry = New-P4FileEntry -DepotPath '//depot/solo.txt'
+        $entry.FileName | Should -Be 'solo.txt'
+    }
+
+    It 'builds SearchKey as lowercased concat of DepotPath, Action, and FileType' {
+        $entry = New-P4FileEntry -DepotPath '//Depot/Path/MyFile.CS' `
+                                 -Action 'Edit' -FileType 'Text'
+        $entry.SearchKey | Should -Be '//depot/path/myfile.cs edit text'
+    }
+
+    It 'SearchKey includes empty strings for missing Action and FileType' {
+        $entry = New-P4FileEntry -DepotPath '//depot/a.txt'
+        $entry.SearchKey | Should -Be '//depot/a.txt  '
+    }
+
+    It 'Action and FileType default to empty string' {
+        $entry = New-P4FileEntry -DepotPath '//depot/b.txt'
+        $entry.Action   | Should -Be ''
+        $entry.FileType | Should -Be ''
+    }
+
+    It 'Change defaults to 0 when not supplied' {
+        $entry = New-P4FileEntry -DepotPath '//depot/c.txt'
+        $entry.Change | Should -Be 0
+    }
+
+    It 'SourceKind defaults to Opened when not supplied' {
+        $entry = New-P4FileEntry -DepotPath '//depot/d.txt'
+        $entry.SourceKind | Should -Be 'Opened'
+    }
+}
+
+Describe 'Get-P4OpenedFiles' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'parses a single opened file into a FileEntry with correct fields' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @(
+                '... depotFile //depot/src/Foo.cs',
+                '... clientFile //client/src/Foo.cs',
+                '... rev 3',
+                '... action edit',
+                '... change 101',
+                '... type text',
+                '... user alice',
+                '... client aliceclient'
+            )
+        }
+
+        $result = Get-P4OpenedFiles -Change 101
+        $result.Count           | Should -Be 1
+        $result[0].DepotPath    | Should -Be '//depot/src/Foo.cs'
+        $result[0].FileName     | Should -Be 'Foo.cs'
+        $result[0].Action       | Should -Be 'edit'
+        $result[0].FileType     | Should -Be 'text'
+        $result[0].Change       | Should -Be 101
+        $result[0].SourceKind   | Should -Be 'Opened'
+    }
+
+    It 'parses multiple opened files' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @(
+                '... depotFile //depot/a.txt',
+                '... action edit',
+                '... change 200',
+                '... type text',
+                '... depotFile //depot/b.txt',
+                '... action add',
+                '... change 200',
+                '... type binary'
+            )
+        }
+
+        $result = Get-P4OpenedFiles -Change 200
+        $result.Count        | Should -Be 2
+        $result[0].DepotPath | Should -Be '//depot/a.txt'
+        $result[0].Action    | Should -Be 'edit'
+        $result[1].DepotPath | Should -Be '//depot/b.txt'
+        $result[1].Action    | Should -Be 'add'
+    }
+
+    It 'returns empty array when changelist has no opened files' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            throw "p4 failed (exit 1).`nSTDOUT: //depot/... - file(s) not opened on this client."
+        }
+
+        $result = Get-P4OpenedFiles -Change 999
+        $result | Should -BeNullOrEmpty
+    }
+
+    It 'returns empty array when Invoke-P4 returns no lines' {
+        Mock Invoke-P4 -ModuleName P4Cli { return @() }
+
+        $result = Get-P4OpenedFiles -Change 303
+        $result | Should -BeNullOrEmpty
+    }
+
+    It 'handles missing type key gracefully (defaults to empty string)' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @(
+                '... depotFile //depot/noType.txt',
+                '... action delete',
+                '... change 50'
+            )
+        }
+
+        $result = Get-P4OpenedFiles -Change 50
+        $result.Count        | Should -Be 1
+        $result[0].FileType  | Should -Be ''
+        $result[0].Action    | Should -Be 'delete'
+    }
+
+    It 'uses the Change parameter value when ztag record has no change key' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @(
+                '... depotFile //depot/noChange.txt',
+                '... action add',
+                '... type text'
+            )
+        }
+
+        $result = Get-P4OpenedFiles -Change 77
+        $result[0].Change | Should -Be 77
+    }
+
+    It 'rethrows unexpected errors that are not no-opened-files errors' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            throw 'p4 failed (exit 1). STDERR: connect failed'
+        }
+
+        { Get-P4OpenedFiles -Change 1 } | Should -Throw '*connect failed*'
+    }
+
+    It 'SearchKey on parsed entry is lowercased and includes DepotPath, Action, FileType' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @(
+                '... depotFile //Depot/Dir/MyFile.CS',
+                '... action Edit',
+                '... change 5',
+                '... type Text'
+            )
+        }
+
+        $result = Get-P4OpenedFiles -Change 5
+        $result[0].SearchKey | Should -Be '//depot/dir/myfile.cs edit text'
+    }
+}

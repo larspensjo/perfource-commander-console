@@ -196,11 +196,28 @@ function Start-P4Browser {
                     }
                 }
 
-                # Handle file-list load request (side effect; implemented in Step 2).
-                # Step 1 just clears the flag so the screen can open without hanging.
+                # Handle file-list load request — I/O side effect kept outside the reducer.
                 if ($state.Runtime.LoadFilesRequested) {
                     $state.Runtime.LoadFilesRequested = $false
-                    # Step 2: invoke p4 opened / p4 describe here and populate Data.FileCache.
+                    $change     = [int]$state.Data.FilesSourceChange
+                    $sourceKind = [string]$state.Data.FilesSourceKind
+                    $cacheKey   = "${change}:${sourceKind}"
+
+                    if ($state.Data.FileCache.ContainsKey($cacheKey)) {
+                        # Cache hit — recompute derived state (cursor/scroll already reset by reducer)
+                        $state = Update-BrowserDerivedState -State $state
+                    } elseif ($sourceKind -eq 'Opened') {
+                        $loadFilesCmdLine = "p4 opened -c $change -ztag"
+                        $state = Invoke-BrowserSideEffect -State $state -CommandLine $loadFilesCmdLine -WorkItem {
+                            param($s)
+                            $files = Get-P4OpenedFiles -Change $change
+                            $s.Data.FileCache[$cacheKey] = $files
+                            $s.Runtime.LastError = $null
+                            return Update-BrowserDerivedState -State $s
+                        }
+                        # After I/O: if user navigated away, silently stay on current screen
+                    }
+                    # SourceKind = 'Submitted' is handled in Step 3
                 }
 
                 # Fetch describe on-demand (I/O lives outside the reducer to keep it pure)

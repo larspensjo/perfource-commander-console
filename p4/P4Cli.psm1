@@ -423,6 +423,50 @@ function Get-P4ShelvedFileCounts {
     return $result
 }
 
+function Get-P4OpenedFiles {
+    <#
+    .SYNOPSIS
+        Returns FileEntry objects for all files opened in the given pending changelist.
+    .DESCRIPTION
+        Calls 'p4 opened -c <cl> -ztag' and parses each ztag record into a FileEntry.
+        An empty changelist (no opened files) returns an empty array without throwing.
+    .PARAMETER Change
+        The changelist number whose opened files to retrieve.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][int]$Change
+    )
+
+    $lines = @()
+    try {
+        $lines = @(Invoke-P4 -P4Args @('opened', '-c', "$Change", '-ztag'))
+    }
+    catch {
+        $errorMessage = [string]$_.Exception.Message
+        if (Test-IsP4NoOpenedFilesError -Message $errorMessage) {
+            return @()
+        }
+        throw
+    }
+
+    if ($lines.Count -eq 0) { return @() }
+
+    $records = ConvertFrom-P4ZTagRecords -Lines $lines
+
+    $result = foreach ($record in $records) {
+        if (-not $record.ContainsKey('depotFile')) { continue }
+        $depotPath = [string]$record.depotFile
+        $action    = if ($record.ContainsKey('action')) { [string]$record.action } else { '' }
+        $fileType  = if ($record.ContainsKey('type'))   { [string]$record.type   } else { '' }
+        $recChange = if ($record.ContainsKey('change')) { [int]$record.change    } else { $Change }
+        New-P4FileEntry -DepotPath $depotPath -Action $action -FileType $fileType `
+                        -Change $recChange -SourceKind 'Opened'
+    }
+
+    return @($result)
+}
+
 function Remove-P4Changelist {
     <#
     .SYNOPSIS
@@ -508,4 +552,4 @@ function Get-P4SubmittedChangelistEntries {
     }
 }
 
-Export-ModuleMember -Function Format-P4CommandLine, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Remove-P4Changelist, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries
+Export-ModuleMember -Function Format-P4CommandLine, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Remove-P4Changelist, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles

@@ -113,18 +113,30 @@ function Start-P4Browser {
         }
 
         while ($state.Runtime.IsRunning) {
-            $currentWidth  = [Console]::WindowWidth
-            $currentHeight = [Console]::WindowHeight
-            if ($state.Ui.Layout.Width -ne $currentWidth -or $state.Ui.Layout.Height -ne $currentHeight) {
-                $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
-                    Type   = 'Resize'
-                    Width  = $currentWidth
-                    Height = $currentHeight
-                })
+            Render-BrowserState -State $state
+
+            # Poll for a keypress while also detecting console resize.
+            # [Console]::ReadKey blocks indefinitely, so we use KeyAvailable +
+            # a short sleep to stay responsive to window-resize events.
+            $keyInfo = $null
+            while ($null -eq $keyInfo) {
+                if ([Console]::KeyAvailable) {
+                    $keyInfo = [Console]::ReadKey($true)
+                } else {
+                    $currentWidth  = [Console]::WindowWidth
+                    $currentHeight = [Console]::WindowHeight
+                    if ($state.Ui.Layout.Width -ne $currentWidth -or $state.Ui.Layout.Height -ne $currentHeight) {
+                        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                            Type   = 'Resize'
+                            Width  = $currentWidth
+                            Height = $currentHeight
+                        })
+                        Render-BrowserState -State $state
+                    }
+                    Start-Sleep -Milliseconds 50
+                }
             }
 
-            Render-BrowserState -State $state
-            $keyInfo = [Console]::ReadKey($true)
             $action  = ConvertFrom-KeyInfoToAction -KeyInfo $keyInfo
             if ($null -ne $action) {
                 $state = Invoke-BrowserReducer -State $state -Action $action

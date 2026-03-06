@@ -416,6 +416,18 @@ function Get-ChangeById {
     return $Changes | Where-Object { $_.Id -eq $Id } | Select-Object -First 1
 }
 
+function Get-ActiveChangesList {
+    param([Parameter(Mandatory = $true)]$State)
+
+    $viewMode = Get-PropertyValueOrDefault -Object $State.Ui -Name 'ViewMode' -Default 'Pending'
+    if ($viewMode -eq 'Submitted') {
+        $submitted = Get-PropertyValueOrDefault -Object $State.Data -Name 'SubmittedChanges' -Default $null
+        if ($null -eq $submitted) { return @() }
+        return @($submitted)
+    }
+    return @($State.Data.AllChanges)
+}
+
 function Get-VisibleFilterByIndex {
     param(
         [Parameter(Mandatory = $true)]$State,
@@ -543,16 +555,23 @@ function Build-ChangeSegments {
         return
     }
 
-    $changeId = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Id' -Default '')
+    $changeId    = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Id'    -Default '')
     $changeTitle = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Title' -Default '')
+    $changeKind  = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Kind'  -Default '')
+    $changeUser  = [string](Get-PropertyValueOrDefault -Object $Change -Name 'User'  -Default '')
 
     $markerColor = if ($IsSelected) { 'Cyan' } else { Get-MarkerColor -Marker $Marker }
-    $titleColor = if ($IsSelected) { 'White' } else { 'Gray' }
+    $titleColor  = if ($IsSelected) { 'White' } else { 'Gray' }
 
     $segments = @(
-        @{ Text = $Marker; Color = $markerColor },
-        @{ Text = " $changeId"; Color = 'DarkGray' }
+        @{ Text = $Marker;      Color = $markerColor },
+        @{ Text = " $changeId"; Color = 'DarkGray'   }
     )
+
+    # Show user column for submitted entries
+    if ($changeKind -eq 'Submitted' -and $changeUser.Length -gt 0) {
+        $segments += @{ Text = " $changeUser"; Color = 'DarkYellow' }
+    }
 
     if ($changeTitle.Length -gt 0) {
         $segments += @{ Text = " $changeTitle"; Color = $titleColor }
@@ -585,6 +604,30 @@ function Build-ChangeDetailSegments {
         @{ Text = [char]::ConvertFromUtf32(0x1F4E6); Color = 'DarkCyan' },
         @{ Text = " $shelvedCount  ";                 Color = 'Gray'     },
         @{ Text = $dateStr;                           Color = 'DarkGray' }
+    )
+}
+
+function Build-SubmittedChangeDetailSegments {
+    param(
+        [AllowNull()]$Change
+    )
+
+    if ($null -eq $Change) {
+        Write-Output -NoEnumerate @()
+        return
+    }
+
+    $user        = [string](Get-PropertyValueOrDefault -Object $Change -Name 'User'       -Default '')
+    $capturedRaw =          Get-PropertyValueOrDefault -Object $Change -Name 'Captured'   -Default $null
+    $dateStr = ''
+    if ($null -ne $capturedRaw) {
+        try { $dateStr = ([datetime]$capturedRaw).ToString('yyyy-MM-dd HH:mm') } catch { $dateStr = '' }
+    }
+
+    Write-Output -NoEnumerate @(
+        @{ Text = $user;    Color = 'DarkYellow' },
+        @{ Text = '  ';     Color = 'Gray'       },
+        @{ Text = $dateStr; Color = 'DarkGray'   }
     )
 }
 
@@ -639,20 +682,21 @@ function Build-DetailSegments {
         $rows.Add(@(@{ Text = "Error: $errorDisplay"; Color = 'Red' }))
     }
 
-    # Resolve selected changelist entry
+    # Resolve selected changelist entry from view-appropriate source
     $selectedChange = $null
     if ($State.Derived.VisibleChangeIds.Count -gt 0) {
-        $selectedId = $State.Derived.VisibleChangeIds[[Math]::Min($State.Cursor.ChangeIndex, $State.Derived.VisibleChangeIds.Count - 1)]
-        $selectedChange = Get-ChangeById -Changes $State.Data.AllChanges -Id $selectedId
+        $selectedId    = $State.Derived.VisibleChangeIds[[Math]::Min($State.Cursor.ChangeIndex, $State.Derived.VisibleChangeIds.Count - 1)]
+        $activeChanges = Get-ActiveChangesList -State $State
+        $selectedChange = Get-ChangeById -Changes $activeChanges -Id $selectedId
     }
 
-    # Look up describe from cache via LastSelectedId
-    $desc = $null
-    $lastSelectedId = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'LastSelectedId' -Default $null
-    $describeCache  = Get-PropertyValueOrDefault -Object $State.Data   -Name 'DescribeCache'  -Default $null
-    if (-not [string]::IsNullOrWhiteSpace([string]$lastSelectedId) -and $null -ne $describeCache) {
+    # Look up describe from cache via DetailChangeId (persists after describe is fetched)
+    $desc           = $null
+    $detailChangeId = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'DetailChangeId' -Default $null
+    $describeCache  = Get-PropertyValueOrDefault -Object $State.Data    -Name 'DescribeCache'  -Default $null
+    if (-not [string]::IsNullOrWhiteSpace([string]$detailChangeId) -and $null -ne $describeCache) {
         $change = $null
-        if ([string]$lastSelectedId -match '^\d+$') { $change = [int]$lastSelectedId }
+        if ([string]$detailChangeId -match '^\d+$') { $change = [int]$detailChangeId }
         if ($null -ne $change -and $describeCache.ContainsKey($change)) {
             $desc = $describeCache[$change]
         }
@@ -711,9 +755,19 @@ function Build-StatusBarRow {
         [Parameter(Mandatory = $true)]$Layout
     )
 
-    $hideMode = if ($State.Ui.HideUnavailableFilters) { 'On' } else { 'Off' }
-    $expandHint = if ((Get-PropertyValueOrDefault -Object $State.Ui -Name 'ExpandedChangelists' -Default $false)) { '[E] Collapse' } else { '[E] Expand' }
-    $statusText = "Total: $($State.Data.AllChanges.Count) | Filtered: $($State.Derived.VisibleChangeIds.Count) | Selected Filters: $($State.Query.SelectedFilters.Count) | HideUnavailable: $hideMode | [Tab] Switch [Space] Toggle [PgUp/PgDn] Page [Home/End] [F5] Reload [X/Del] Delete [H] Hide $expandHint [F12] CmdLog [Q] Quit"
+    $viewMode = Get-PropertyValueOrDefault -Object $State.Ui -Name 'ViewMode' -Default 'Pending'
+    $viewBadge = "[$viewMode]"
+
+    $filteredCount = $State.Derived.VisibleChangeIds.Count
+    $totalCount    = if ($viewMode -eq 'Submitted') {
+        $sub = Get-PropertyValueOrDefault -Object $State.Data -Name 'SubmittedChanges' -Default @()
+        if ($null -eq $sub) { 0 } else { @($sub).Count }
+    } else {
+        $State.Data.AllChanges.Count
+    }
+
+    $expandHint  = if ((Get-PropertyValueOrDefault -Object $State.Ui -Name 'ExpandedChangelists' -Default $false)) { '[E] Collapse' } else { '[E] Expand' }
+    $statusText  = "$viewBadge Filtered: $filteredCount/$totalCount | [F1] Help [1/2] View [Tab] Pane [Space] Filter [Enter] Describe $expandHint [F5] Reload [Q] Quit"
     $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
 
     $segments = Write-ColorSegments -Segments @(@{
@@ -817,6 +871,105 @@ function Build-CommandModalRows {
     }
 }
 
+function Build-HelpOverlayRows {
+    param(
+        [Parameter(Mandatory = $true)][int]$Width,
+        [Parameter(Mandatory = $true)][int]$MaxRows
+    )
+
+    $borderColor = 'DarkMagenta'
+    $keyColor    = 'Cyan'
+    $descColor   = 'Gray'
+
+    $helpLines = @(
+        @{ Key = 'Tab';        Desc = 'Switch pane' },
+        @{ Key = '↑ ↓';        Desc = 'Navigate' },
+        @{ Key = 'PgUp/PgDn';  Desc = 'Page scroll' },
+        @{ Key = 'Home/End';   Desc = 'Jump top/bottom' },
+        @{ Key = 'Space';      Desc = 'Toggle filter' },
+        @{ Key = 'Enter/D';    Desc = 'Describe CL' },
+        @{ Key = 'E';          Desc = 'Expand/collapse rows' },
+        @{ Key = 'H';          Desc = 'Hide unavailable filters' },
+        @{ Key = '1 / 2';      Desc = 'Switch view (Pending/Submitted)' },
+        @{ Key = 'L';          Desc = 'Load more (submitted view)' },
+        @{ Key = 'F5';         Desc = 'Reload active view' },
+        @{ Key = 'X / Del';    Desc = 'Delete changelist (pending)' },
+        @{ Key = 'F12';        Desc = 'Toggle command log' },
+        @{ Key = 'F1 / Esc';   Desc = 'Close help' },
+        @{ Key = 'Q';          Desc = 'Quit' }
+    )
+
+    $innerRows    = [Math]::Max(3, [Math]::Min($MaxRows - 2, $helpLines.Count))
+    $displayLines = $helpLines | Select-Object -First $innerRows
+
+    $contentRows = foreach ($line in $displayLines) {
+        @(
+            @{ Text = ('  {0,-14}' -f $line.Key); Color = $keyColor  },
+            @{ Text = $line.Desc;                  Color = $descColor }
+        )
+    }
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+    $rows.Add((Build-BoxTopSegments -Title '[Help]' -Width $Width -BorderColor $borderColor -TitleColor 'Magenta'))
+    foreach ($row in $contentRows) {
+        $rows.Add((Build-BorderedRowSegments -InnerSegments $row -Width $Width -BorderColor $borderColor))
+    }
+    $rows.Add((Build-BoxBottomSegments -Width $Width -BorderColor $borderColor))
+
+    foreach ($row in $rows) {
+        Write-Output -NoEnumerate $row
+    }
+}
+
+function Apply-HelpOverlay {
+    param(
+        [Parameter(Mandatory = $true)]$Frame,
+        [Parameter(Mandatory = $true)][bool]$IsOpen
+    )
+
+    if (-not $IsOpen) { return $Frame }
+
+    $width      = $Frame.Width
+    $height     = $Frame.Height
+    $modalWidth = [Math]::Max(4, [Math]::Min(50, $width - 4))
+    $leftPad    = [Math]::Max(0, [Math]::Floor(($width - $modalWidth) / 2))
+    $rightPad   = $width - $leftPad - $modalWidth
+
+    $maxRows  = [Math]::Max(4, $height - 4)
+    $helpRows = Build-HelpOverlayRows -Width $modalWidth -MaxRows $maxRows
+
+    # Center vertically
+    $modalStart = [Math]::Max(0, [Math]::Floor(($height - 1 - $helpRows.Count) / 2))
+
+    $newRows = [object[]]::new($Frame.Rows.Count)
+    for ($i = 0; $i -lt $Frame.Rows.Count; $i++) {
+        $newRows[$i] = $Frame.Rows[$i]
+    }
+
+    for ($i = 0; $i -lt $helpRows.Count; $i++) {
+        $frameRowIndex = $modalStart + $i
+        if ($frameRowIndex -ge 0 -and $frameRowIndex -lt ($height - 1)) {
+            $leftSeg  = @{ Text = (' ' * $leftPad);  Color = 'Black'; BackgroundColor = '' }
+            $rightSeg = @{ Text = (' ' * $rightPad); Color = 'Black'; BackgroundColor = '' }
+            $segs     = @($leftSeg) + @($helpRows[$i]) + @($rightSeg)
+            $segs     = Merge-AdjacentSegments -Segments $segs
+            $segs     = Resize-SegmentRow -Segments $segs -Width $width
+            $segs     = Merge-AdjacentSegments -Segments $segs
+            $newRows[$frameRowIndex] = [pscustomobject]@{
+                Y         = $frameRowIndex
+                Segments  = $segs
+                Signature = Get-FrameRowSignature -Segments $segs
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Width  = $Frame.Width
+        Height = $Frame.Height
+        Rows   = $newRows
+    }
+}
+
 function Apply-ModalOverlay {
     param(
         [Parameter(Mandatory = $true)]$Frame,
@@ -900,6 +1053,12 @@ function Build-FrameFromState {
 
     $detailSegments = Build-DetailSegments -State $State
 
+    # View-mode context for list pane
+    $viewMode         = Get-PropertyValueOrDefault -Object $State.Ui   -Name 'ViewMode'         -Default 'Pending'
+    $submittedHasMore = [bool](Get-PropertyValueOrDefault -Object $State.Data -Name 'SubmittedHasMore' -Default $false)
+    $activeChanges    = Get-ActiveChangesList -State $State
+    $listPaneTitle    = if ($viewMode -eq 'Submitted') { '[Submitted Changelists]' } else { '[Pending Changelists]' }
+
     for ($globalRow = 0; $globalRow -lt $layout.FilterPane.H; $globalRow++) {
         $leftSegments = @()
         if ($globalRow -eq 0) {
@@ -918,18 +1077,34 @@ function Build-FrameFromState {
         $rightBackgroundColor = ''
         if ($globalRow -lt $layout.ListPane.H) {
             if ($globalRow -eq 0) {
-                $rightSegments = Build-BoxTopSegments -Title '[Changelists]' -Width $layout.ListPane.W -BorderColor $changeBorderColor -TitleColor $changeTitleColor
+                $rightSegments = Build-BoxTopSegments -Title $listPaneTitle -Width $layout.ListPane.W -BorderColor $changeBorderColor -TitleColor $changeTitleColor
             } elseif ($globalRow -eq ($layout.ListPane.H - 1)) {
-                $rightSegments = Build-BoxBottomSegments -Width $layout.ListPane.W -BorderColor $changeBorderColor
+                # Bottom border — show load-more hint in submitted view when more pages exist
+                if ($viewMode -eq 'Submitted' -and $submittedHasMore) {
+                    $hint       = ' [L] Load more '
+                    $innerWidth = [Math]::Max(0, $layout.ListPane.W - 2)
+                    $padLeft    = [Math]::Max(0, [Math]::Floor(($innerWidth - $hint.Length) / 2))
+                    $padRight   = [Math]::Max(0, $innerWidth - $padLeft - $hint.Length)
+                    $rightSegments = @(
+                        @{ Text = '╰';                Color = $changeBorderColor },
+                        @{ Text = ('─' * $padLeft);   Color = $changeBorderColor },
+                        @{ Text = $hint;              Color = 'Yellow'           },
+                        @{ Text = ('─' * $padRight);  Color = $changeBorderColor },
+                        @{ Text = '╯';                Color = $changeBorderColor }
+                    )
+                } else {
+                    $rightSegments = Build-BoxBottomSegments -Width $layout.ListPane.W -BorderColor $changeBorderColor
+                }
             } else {
                 $changeInnerRow = $globalRow - 1
                 $changeMarker = ' '
                 $changeClIdx  = $State.Cursor.ChangeScrollTop + [Math]::Floor($changeInnerRow / $rowsPerCl)
                 $changeRowType = $changeInnerRow % $rowsPerCl   # 0 = title row, 1 = detail row
                 $cl = $null
+                $changeRendered = $false
                 if ($changeClIdx -lt $State.Derived.VisibleChangeIds.Count) {
                     $entryId = $State.Derived.VisibleChangeIds[$changeClIdx]
-                    $cl = Get-ChangeById -Changes $State.Data.AllChanges -Id $entryId
+                    $cl = Get-ChangeById -Changes $activeChanges -Id $entryId
                     if ($State.Cursor.ChangeIndex -eq $changeClIdx) {
                         $changeMarker = '>'
                     } elseif ($null -ne $changeThumb) {
@@ -939,6 +1114,16 @@ function Build-FrameFromState {
                             $changeMarker = $SCROLLBAR_TRACK_GLYPH
                         }
                     }
+                } elseif ($changeClIdx -eq 0 -and $State.Derived.VisibleChangeIds.Count -eq 0 -and $changeInnerRow -eq 0) {
+                    # Empty list placeholder
+                    $placeholderText = if ($viewMode -eq 'Submitted') {
+                        if ($submittedHasMore) { 'Loading... press [L] to load submitted changelists' } else { 'No submitted changelists found.' }
+                    } else {
+                        '(no matching changelists)'
+                    }
+                    $changeInnerSegments = @(@{ Text = $placeholderText; Color = 'DarkGray' })
+                    $rightSegments   = Build-BorderedRowSegments -InnerSegments $changeInnerSegments -Width $layout.ListPane.W -BorderColor $changeBorderColor
+                    $changeRendered  = $true
                 } elseif ($null -ne $changeThumb) {
                     if ($changeInnerRow -ge $changeThumb.Start -and $changeInnerRow -le $changeThumb.End) {
                         $changeMarker = $SCROLLBAR_THUMB_GLYPH
@@ -947,17 +1132,23 @@ function Build-FrameFromState {
                     }
                 }
 
-                $isSelectedChange = ($changeClIdx -lt $State.Derived.VisibleChangeIds.Count -and $State.Cursor.ChangeIndex -eq $changeClIdx -and $null -ne $cl)
-                if ($changeRowType -eq 1) {
-                    # Detail row (expanded mode): marker + file counts + date
-                    $markerSeg = @{ Text = $changeMarker; Color = (Get-MarkerColor -Marker $changeMarker) }
-                    $changeInnerSegments = @($markerSeg) + @(Build-ChangeDetailSegments -Change $cl)
-                } else {
-                    $changeInnerSegments = Build-ChangeSegments -Marker $changeMarker -Change $cl -IsSelected $isSelectedChange
-                }
-                $rightSegments = Build-BorderedRowSegments -InnerSegments $changeInnerSegments -Width $layout.ListPane.W -BorderColor $changeBorderColor
-                if ($isSelectedChange) {
-                    $rightBackgroundColor = 'DarkCyan'
+                if (-not $changeRendered) {
+                    $isSelectedChange = ($changeClIdx -lt $State.Derived.VisibleChangeIds.Count -and $State.Cursor.ChangeIndex -eq $changeClIdx -and $null -ne $cl)
+                    if ($changeRowType -eq 1) {
+                        # Detail row (expanded mode): marker + details
+                        $markerSeg = @{ Text = $changeMarker; Color = (Get-MarkerColor -Marker $changeMarker) }
+                        if ($viewMode -eq 'Submitted') {
+                            $changeInnerSegments = @($markerSeg) + @(Build-SubmittedChangeDetailSegments -Change $cl)
+                        } else {
+                            $changeInnerSegments = @($markerSeg) + @(Build-ChangeDetailSegments -Change $cl)
+                        }
+                    } else {
+                        $changeInnerSegments = Build-ChangeSegments -Marker $changeMarker -Change $cl -IsSelected $isSelectedChange
+                    }
+                    $rightSegments = Build-BorderedRowSegments -InnerSegments $changeInnerSegments -Width $layout.ListPane.W -BorderColor $changeBorderColor
+                    if ($isSelectedChange) {
+                        $rightBackgroundColor = 'DarkCyan'
+                    }
                 }
             }
         } elseif ($globalRow -eq $layout.ListPane.H) {
@@ -1010,8 +1201,13 @@ function Render-BrowserState {
         return
     }
 
-    $nextFrame = Build-FrameFromState -State $State
+    $nextFrame    = Build-FrameFromState -State $State
+    $helpOverlayOpen = [bool](Get-PropertyValueOrDefault -Object $State.Runtime -Name 'HelpOverlayOpen' -Default $false)
     $commandModal = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'CommandModal' -Default $null
+    # Apply help overlay first, then command modal on top (command modal takes precedence)
+    if ($helpOverlayOpen) {
+        $nextFrame = Apply-HelpOverlay -Frame $nextFrame -IsOpen $true
+    }
     if ($null -ne $commandModal -and [bool](Get-PropertyValueOrDefault -Object $commandModal -Name 'IsOpen' -Default $false)) {
         $nextFrame = Apply-ModalOverlay -Frame $nextFrame -CommandModal $commandModal
     }
@@ -1022,4 +1218,4 @@ function Render-BrowserState {
     }
 }
 
-Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb, Build-ChangeDetailSegments
+Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Get-ActiveChangesList

@@ -400,4 +400,73 @@ function Remove-P4Changelist {
     Invoke-P4 -P4Args @('change', '-d', "$Change") | Out-Null
 }
 
-Export-ModuleMember -Function Format-P4CommandLine, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Remove-P4Changelist
+function Get-P4SubmittedChangelists {
+    <#
+    .SYNOPSIS
+        Returns submitted changelists, optionally paginated by change number.
+    .DESCRIPTION
+        Fetches submitted changelists from all users/clients.
+        When BeforeChange > 0, returns only changes with numbers less than BeforeChange.
+    .PARAMETER Max
+        Maximum number of changelists to return. Defaults to 50.
+    .PARAMETER BeforeChange
+        When greater than 0, fetches changes with numbers less than this value (pagination).
+    #>
+    [CmdletBinding()]
+    param(
+        [int]$Max = 50,
+        [int]$BeforeChange = 0
+    )
+
+    $p4Args = @('-ztag', 'changes', '-l', '-s', 'submitted', '-m', "$Max")
+    if ($BeforeChange -gt 0) {
+        $p4Args += "//...@<$BeforeChange"
+    }
+
+    $lines = Invoke-P4 -P4Args $p4Args
+    $records = ConvertFrom-P4ZTagRecords -Lines $lines
+
+    $result = foreach ($record in $records) {
+        if (-not $record.ContainsKey('change')) { continue }
+        if (-not $record.ContainsKey('time')) { continue }
+
+        $timestamp = [double]$record.time
+        $time = [datetime]::UnixEpoch.AddSeconds($timestamp).ToLocalTime()
+
+        $desc = [string]$record.desc
+        if ([string]::IsNullOrWhiteSpace($desc)) { $desc = '(no description)' }
+        New-P4Changelist `
+            -Change ([int]$record.change) `
+            -User ([string]$record.user) `
+            -Client ([string]$record.client) `
+            -Time $time `
+            -Status 'submitted' `
+            -Description $desc
+    }
+
+    return @($result | Sort-Object Time -Descending)
+}
+
+function Get-P4SubmittedChangelistEntries {
+    <#
+    .SYNOPSIS
+        Returns ChangelistEntry objects for submitted changelists, optionally paginated.
+    .PARAMETER Max
+        Maximum number of entries to return. Defaults to 50.
+    .PARAMETER BeforeChange
+        When greater than 0, fetches changes with numbers less than this value (pagination).
+    #>
+    [CmdletBinding()]
+    param(
+        [int]$Max = 50,
+        [int]$BeforeChange = 0
+    )
+
+    $changelists = Get-P4SubmittedChangelists -Max $Max -BeforeChange $BeforeChange
+
+    $changelists | ForEach-Object {
+        ConvertTo-SubmittedChangelistEntry -Changelist $_
+    }
+}
+
+Export-ModuleMember -Function Format-P4CommandLine, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Remove-P4Changelist, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries

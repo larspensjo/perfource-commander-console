@@ -84,6 +84,9 @@ function Start-P4Browser {
     $height = [Console]::WindowHeight
     $state  = New-BrowserState -Changes @() -InitialWidth $width -InitialHeight $height
 
+    # Phase 0.2: Store configured max for consistent reload behaviour
+    $state.Runtime.ConfiguredMax = $MaxChanges
+
     $previousOutputEncoding = [Console]::OutputEncoding
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -91,11 +94,19 @@ function Start-P4Browser {
     [Console]::CursorVisible = $false
 
     try {
+        # Populate current user (needed for submitted view's "My changes" filter)
+        try {
+            $p4Info = Get-P4Info
+            $state.Data.CurrentUser = $p4Info.User
+        } catch {
+            $state.Data.CurrentUser = ''
+        }
+
         # Initial load
         $loadCmdLine = "p4 changes -s pending -m $MaxChanges"
         $state = Invoke-BrowserSideEffect -State $state -CommandLine $loadCmdLine -WorkItem {
             param($s)
-            $fresh = Get-P4ChangelistEntries -Max $MaxChanges
+            $fresh = Get-P4ChangelistEntries -Max $s.Runtime.ConfiguredMax
             $s.Data.AllChanges = @($fresh)
             $s.Runtime.LastError = $null
             return Update-BrowserDerivedState -State $s
@@ -121,12 +132,53 @@ function Start-P4Browser {
                 # Handle reload flag (Reload I/O lives outside the reducer for purity)
                 if ($state.Runtime.ReloadRequested) {
                     $state.Runtime.ReloadRequested = $false
-                    $reloadCmdLine = "p4 changes -s pending -m 200"
+                    $configuredMax = $state.Runtime.ConfiguredMax
+                    $reloadCmdLine = "p4 changes -s pending -m $configuredMax"
                     $state = Invoke-BrowserSideEffect -State $state -CommandLine $reloadCmdLine -WorkItem {
                         param($s)
-                        $fresh = Get-P4ChangelistEntries -Max 200
+                        $fresh = Get-P4ChangelistEntries -Max $s.Runtime.ConfiguredMax
                         $s.Data.AllChanges = @($fresh)
                         $s.Runtime.LastError = $null
+                        return Update-BrowserDerivedState -State $s
+                    }
+                }
+
+                # Handle submitted view reload (F5 in submitted view)
+                if ($state.Runtime.SubmittedReloadRequested) {
+                    $state.Runtime.SubmittedReloadRequested = $false
+                    $state.Runtime.LoadMoreRequested        = $false
+                    $reloadSubmittedCmdLine = 'p4 changes -s submitted -m 50'
+                    $state = Invoke-BrowserSideEffect -State $state -CommandLine $reloadSubmittedCmdLine -WorkItem {
+                        param($s)
+                        $fresh = Get-P4SubmittedChangelistEntries -Max 50
+                        $s.Data.SubmittedChanges  = @($fresh)
+                        $s.Data.SubmittedHasMore  = ($fresh.Count -ge 50)
+                        $s.Data.SubmittedOldestId = if ($fresh.Count -gt 0) { [int]($fresh | ForEach-Object { [int]$_.Id } | Sort-Object | Select-Object -First 1) } else { $null }
+                        $s.Runtime.LastError      = $null
+                        return Update-BrowserDerivedState -State $s
+                    }
+                }
+
+                # Handle load-more flag for submitted changelists
+                if ($state.Runtime.LoadMoreRequested) {
+                    $state.Runtime.LoadMoreRequested = $false
+                    $beforeChange = $state.Data.SubmittedOldestId
+                    $loadMoreCmdLine = if ($null -ne $beforeChange) { "p4 changes -s submitted -m 50 //...@<$beforeChange" } else { 'p4 changes -s submitted -m 50' }
+                    $state = Invoke-BrowserSideEffect -State $state -CommandLine $loadMoreCmdLine -WorkItem {
+                        param($s)
+                        $pageSize = 50
+                        $bc       = $s.Data.SubmittedOldestId
+                        $newEntries = if ($null -ne $bc) {
+                            @(Get-P4SubmittedChangelistEntries -Max $pageSize -BeforeChange $bc)
+                        } else {
+                            @(Get-P4SubmittedChangelistEntries -Max $pageSize)
+                        }
+                        $s.Data.SubmittedChanges = @($s.Data.SubmittedChanges) + @($newEntries)
+                        if ($newEntries.Count -gt 0) {
+                            $s.Data.SubmittedOldestId = [int]($newEntries | ForEach-Object { [int]$_.Id } | Sort-Object | Select-Object -First 1)
+                        }
+                        $s.Data.SubmittedHasMore = ($newEntries.Count -ge $pageSize)
+                        $s.Runtime.LastError     = $null
                         return Update-BrowserDerivedState -State $s
                     }
                 }

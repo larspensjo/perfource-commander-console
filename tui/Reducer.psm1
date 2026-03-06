@@ -47,16 +47,21 @@ function New-BrowserState {
 
     $state = [pscustomobject]@{
         Data = [pscustomobject]@{
-            AllChanges    = @($Changes)
-            AllFilters    = @(Get-AllFilterNames)
-            DescribeCache = @{}
+            AllChanges        = @($Changes)
+            AllFilters        = @(Get-AllFilterNames -ViewMode 'Pending')
+            DescribeCache     = @{}
+            CurrentUser       = ''
+            SubmittedChanges  = @()
+            SubmittedHasMore  = $true
+            SubmittedOldestId = $null
         }
         Ui = [pscustomobject]@{
-            ActivePane = 'Filters'
-            IsMaximized = $false
+            ActivePane             = 'Filters'
+            IsMaximized            = $false
             HideUnavailableFilters = $false
-            ExpandedChangelists = $false
-            Layout = Get-BrowserLayout -Width $InitialWidth -Height $InitialHeight
+            ExpandedChangelists    = $false
+            ViewMode               = 'Pending'
+            Layout                 = Get-BrowserLayout -Width $InitialWidth -Height $InitialHeight
         }
         Query = [pscustomobject]@{
             SelectedFilters = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -69,18 +74,27 @@ function New-BrowserState {
             VisibleFilters = @()
         }
         Cursor = [pscustomobject]@{
-            FilterIndex = 0
+            FilterIndex     = 0
             FilterScrollTop = 0
-            ChangeIndex = 0
+            ChangeIndex     = 0
             ChangeScrollTop = 0
+            ViewSnapshots   = @{
+                Pending   = @{ ChangeIndex = 0; ChangeScrollTop = 0 }
+                Submitted = @{ ChangeIndex = 0; ChangeScrollTop = 0 }
+            }
         }
         Runtime = [pscustomobject]@{
-            IsRunning       = $true
-            LastError       = $null
-            LastSelectedId  = $null
-            DeleteChangeId  = $null
-            ReloadRequested = $false
-            CommandModal    = [pscustomobject]@{
+            IsRunning                = $true
+            LastError                = $null
+            LastSelectedId           = $null
+            DetailChangeId           = $null
+            DeleteChangeId           = $null
+            ReloadRequested          = $false
+            SubmittedReloadRequested = $false
+            LoadMoreRequested        = $false
+            ConfiguredMax            = 200
+            HelpOverlayOpen          = $false
+            CommandModal             = [pscustomobject]@{
                 IsOpen         = $false
                 IsBusy         = $false
                 CurrentCommand = ''
@@ -95,18 +109,35 @@ function New-BrowserState {
 function Copy-BrowserState {
     param([Parameter(Mandatory = $true)]$State)
 
+    # Deep-copy ViewSnapshots
+    $viewSnapshotsCopy = @{}
+    if (($State.Cursor.PSObject.Properties.Match('ViewSnapshots')).Count -gt 0 -and $null -ne $State.Cursor.ViewSnapshots) {
+        foreach ($key in $State.Cursor.ViewSnapshots.Keys) {
+            $snap = $State.Cursor.ViewSnapshots[$key]
+            $viewSnapshotsCopy[$key] = @{
+                ChangeIndex     = [int]$snap.ChangeIndex
+                ChangeScrollTop = [int]$snap.ChangeScrollTop
+            }
+        }
+    }
+
     $copy = [pscustomobject]@{
         Data = [pscustomobject]@{
-            AllChanges    = @($State.Data.AllChanges)
-            AllFilters       = @($State.Data.AllFilters)
-            DescribeCache = $State.Data.DescribeCache          # shared reference (append-only)
+            AllChanges        = @($State.Data.AllChanges)
+            AllFilters        = @($State.Data.AllFilters)
+            DescribeCache     = $State.Data.DescribeCache          # shared reference (append-only)
+            CurrentUser       = if (($State.Data.PSObject.Properties.Match('CurrentUser')).Count -gt 0) { [string]$State.Data.CurrentUser } else { '' }
+            SubmittedChanges  = if (($State.Data.PSObject.Properties.Match('SubmittedChanges')).Count -gt 0) { @($State.Data.SubmittedChanges) } else { @() }
+            SubmittedHasMore  = if (($State.Data.PSObject.Properties.Match('SubmittedHasMore')).Count -gt 0) { [bool]$State.Data.SubmittedHasMore } else { $true }
+            SubmittedOldestId = if (($State.Data.PSObject.Properties.Match('SubmittedOldestId')).Count -gt 0) { $State.Data.SubmittedOldestId } else { $null }
         }
         Ui = [pscustomobject]@{
-            ActivePane = $State.Ui.ActivePane
-            IsMaximized = $State.Ui.IsMaximized
+            ActivePane             = $State.Ui.ActivePane
+            IsMaximized            = $State.Ui.IsMaximized
             HideUnavailableFilters = $State.Ui.HideUnavailableFilters
-            ExpandedChangelists = if (($State.Ui.PSObject.Properties.Match('ExpandedChangelists')).Count -gt 0) { [bool]$State.Ui.ExpandedChangelists } else { $false }
-            Layout = $State.Ui.Layout
+            ExpandedChangelists    = if (($State.Ui.PSObject.Properties.Match('ExpandedChangelists')).Count -gt 0) { [bool]$State.Ui.ExpandedChangelists } else { $false }
+            ViewMode               = if (($State.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$State.Ui.ViewMode } else { 'Pending' }
+            Layout                 = $State.Ui.Layout
         }
         Query = [pscustomobject]@{
             SelectedFilters = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -119,18 +150,24 @@ function Copy-BrowserState {
             VisibleFilters = @($State.Derived.VisibleFilters)
         }
         Cursor = [pscustomobject]@{
-            FilterIndex = $State.Cursor.FilterIndex
+            FilterIndex     = $State.Cursor.FilterIndex
             FilterScrollTop = $State.Cursor.FilterScrollTop
-            ChangeIndex = $State.Cursor.ChangeIndex
+            ChangeIndex     = $State.Cursor.ChangeIndex
             ChangeScrollTop = $State.Cursor.ChangeScrollTop
+            ViewSnapshots   = $viewSnapshotsCopy
         }
         Runtime = [pscustomobject]@{
-            IsRunning       = $State.Runtime.IsRunning
-            LastError       = $State.Runtime.LastError
-            LastSelectedId  = $State.Runtime.LastSelectedId
-            DeleteChangeId  = $State.Runtime.DeleteChangeId
-            ReloadRequested = $State.Runtime.ReloadRequested
-            CommandModal    = [pscustomobject]@{
+            IsRunning                = $State.Runtime.IsRunning
+            LastError                = $State.Runtime.LastError
+            LastSelectedId           = $State.Runtime.LastSelectedId
+            DetailChangeId           = if (($State.Runtime.PSObject.Properties.Match('DetailChangeId')).Count -gt 0) { $State.Runtime.DetailChangeId } else { $null }
+            DeleteChangeId           = $State.Runtime.DeleteChangeId
+            ReloadRequested          = $State.Runtime.ReloadRequested
+            SubmittedReloadRequested = if (($State.Runtime.PSObject.Properties.Match('SubmittedReloadRequested')).Count -gt 0) { [bool]$State.Runtime.SubmittedReloadRequested } else { $false }
+            LoadMoreRequested        = if (($State.Runtime.PSObject.Properties.Match('LoadMoreRequested')).Count -gt 0) { [bool]$State.Runtime.LoadMoreRequested } else { $false }
+            ConfiguredMax            = if (($State.Runtime.PSObject.Properties.Match('ConfiguredMax')).Count -gt 0) { [int]$State.Runtime.ConfiguredMax } else { 200 }
+            HelpOverlayOpen          = if (($State.Runtime.PSObject.Properties.Match('HelpOverlayOpen')).Count -gt 0) { [bool]$State.Runtime.HelpOverlayOpen } else { $false }
+            CommandModal             = [pscustomobject]@{
                 IsOpen         = $State.Runtime.CommandModal.IsOpen
                 IsBusy         = $State.Runtime.CommandModal.IsBusy
                 CurrentCommand = $State.Runtime.CommandModal.CurrentCommand
@@ -149,7 +186,32 @@ function Copy-BrowserState {
 function Update-BrowserDerivedState {
     param([Parameter(Mandatory = $true)]$State)
 
-    $visibleChangeIds = Get-VisibleChangeIds -AllChanges $State.Data.AllChanges -SelectedFilters $State.Query.SelectedFilters -SearchText $State.Query.SearchText -SearchMode $State.Query.SearchMode -SortMode $State.Query.SortMode
+    # Determine active source list and view context
+    $viewMode    = if (($State.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$State.Ui.ViewMode } else { 'Pending' }
+    $currentUser = if (($State.Data.PSObject.Properties.Match('CurrentUser')).Count -gt 0) { [string]$State.Data.CurrentUser } else { '' }
+
+    # IMPORTANT: do NOT use if/else expression for @()-valued branches — PowerShell swallows
+    # empty-array pipeline output and the variable becomes $null, failing [AllowEmptyCollection()].
+    [object[]]$activeChanges = @()
+    if ($viewMode -eq 'Submitted') {
+        if (($State.Data.PSObject.Properties.Match('SubmittedChanges')).Count -gt 0 -and $null -ne $State.Data.SubmittedChanges) {
+            $activeChanges = @($State.Data.SubmittedChanges)
+        }
+    } else {
+        $activeChanges = @($State.Data.AllChanges)
+    }
+
+    # Regenerate AllFilters for the active view mode
+    $State.Data.AllFilters = @(Get-AllFilterNames -ViewMode $viewMode -CurrentUser $currentUser)
+
+    $visibleChangeIds = Get-VisibleChangeIds `
+        -AllChanges $activeChanges `
+        -SelectedFilters $State.Query.SelectedFilters `
+        -SearchText $State.Query.SearchText `
+        -SearchMode $State.Query.SearchMode `
+        -SortMode $State.Query.SortMode `
+        -ViewMode $viewMode `
+        -CurrentUser $currentUser
     $State.Derived.VisibleChangeIds = @($visibleChangeIds)
 
     $visibleChangeIdSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -157,24 +219,24 @@ function Update-BrowserDerivedState {
         [void]$visibleChangeIdSet.Add([string]$id)
     }
 
-    $visibleChanges = @($State.Data.AllChanges | Where-Object { $visibleChangeIdSet.Contains([string]$_.Id) })
+    $visibleChanges = @($activeChanges | Where-Object { $visibleChangeIdSet.Contains([string]$_.Id) })
 
     $filterItems = New-Object System.Collections.Generic.List[object]
     foreach ($filter in $State.Data.AllFilters) {
         $matchCount = 0
         foreach ($cl in $visibleChanges) {
-            if (Test-EntryMatchesFilter -FilterName $filter -Entry $cl) {
+            if (Test-EntryMatchesFilter -FilterName $filter -Entry $cl -ViewMode $viewMode -CurrentUser $currentUser) {
                 $matchCount++
             }
         }
 
-        $isSelected = $State.Query.SelectedFilters.Contains($filter)
+        $isSelected   = $State.Query.SelectedFilters.Contains($filter)
         $isSelectable = $isSelected -or ($matchCount -gt 0)
 
         $filterItems.Add([pscustomobject]@{
-            Name = $filter
-            MatchCount = $matchCount
-            IsSelected = $isSelected
+            Name        = $filter
+            MatchCount  = $matchCount
+            IsSelected  = $isSelected
             IsSelectable = $isSelectable
         }) | Out-Null
     }
@@ -311,9 +373,22 @@ function Invoke-BrowserReducer {
             return $next
         }
         'HideCommandModal' {
+            # Escape: close help overlay first; then close command modal on second press
+            if ($next.Runtime.HelpOverlayOpen) {
+                $next.Runtime.HelpOverlayOpen = $false
+                return $next
+            }
             if (-not $next.Runtime.CommandModal.IsBusy) {
                 $next.Runtime.CommandModal.IsOpen = $false
             }
+            return $next
+        }
+        'ToggleHelpOverlay' {
+            $next.Runtime.HelpOverlayOpen = -not $next.Runtime.HelpOverlayOpen
+            return $next
+        }
+        'HideHelpOverlay' {
+            $next.Runtime.HelpOverlayOpen = $false
             return $next
         }
         'Quit' {
@@ -453,9 +528,12 @@ function Invoke-BrowserReducer {
             $idx = [Math]::Max(0, [Math]::Min($next.Cursor.ChangeIndex,
                                                $next.Derived.VisibleChangeIds.Count - 1))
             $next.Runtime.LastSelectedId = $next.Derived.VisibleChangeIds[$idx]
+            $next.Runtime.DetailChangeId = $next.Derived.VisibleChangeIds[$idx]  # persists for rendering
             return Update-BrowserDerivedState -State $next
         }
         'DeleteChange' {
+            $currentViewMode = if (($next.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$next.Ui.ViewMode } else { 'Pending' }
+            if ($currentViewMode -eq 'Submitted') { return $next }  # No-op in submitted view
             if ($next.Derived.VisibleChangeIds.Count -eq 0) { return $next }
             $idx = [Math]::Max(0, [Math]::Min($next.Cursor.ChangeIndex,
                                                $next.Derived.VisibleChangeIds.Count - 1))
@@ -463,9 +541,15 @@ function Invoke-BrowserReducer {
             return Update-BrowserDerivedState -State $next
         }
         'Reload' {
+            $currentViewMode = if (($next.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$next.Ui.ViewMode } else { 'Pending' }
             $next.Data.DescribeCache = @{}
             $next.Runtime.LastSelectedId = $null
-            $next.Runtime.ReloadRequested = $true
+            $next.Runtime.DetailChangeId = $null
+            if ($currentViewMode -eq 'Submitted') {
+                $next.Runtime.SubmittedReloadRequested = $true
+            } else {
+                $next.Runtime.ReloadRequested = $true
+            }
             return Update-BrowserDerivedState -State $next
         }
         'Resize' {
@@ -475,6 +559,61 @@ function Invoke-BrowserReducer {
                 $next.Ui.Layout = Get-BrowserLayout -Width $width -Height $height
             }
             return Update-BrowserDerivedState -State $next
+        }
+        'SwitchView' {
+            $targetView  = [string]$Action.View
+            if ($targetView -ne 'Pending' -and $targetView -ne 'Submitted') { return $next }
+
+            $currentView = if (($next.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$next.Ui.ViewMode } else { 'Pending' }
+            if ($targetView -eq $currentView) { return $next }
+
+            # Save current cursor snapshot
+            if (($next.Cursor.PSObject.Properties.Match('ViewSnapshots')).Count -gt 0 -and $null -ne $next.Cursor.ViewSnapshots) {
+                $next.Cursor.ViewSnapshots[$currentView] = @{
+                    ChangeIndex     = $next.Cursor.ChangeIndex
+                    ChangeScrollTop = $next.Cursor.ChangeScrollTop
+                }
+            }
+
+            # Switch view mode
+            $next.Ui.ViewMode = $targetView
+
+            # Restore target view cursor snapshot
+            if (($next.Cursor.PSObject.Properties.Match('ViewSnapshots')).Count -gt 0 -and $null -ne $next.Cursor.ViewSnapshots -and $next.Cursor.ViewSnapshots.ContainsKey($targetView)) {
+                $snap = $next.Cursor.ViewSnapshots[$targetView]
+                $next.Cursor.ChangeIndex     = [int]$snap.ChangeIndex
+                $next.Cursor.ChangeScrollTop = [int]$snap.ChangeScrollTop
+            } else {
+                $next.Cursor.ChangeIndex     = 0
+                $next.Cursor.ChangeScrollTop = 0
+            }
+
+            # Reset filter cursor and selected filters (different filter sets per view)
+            $next.Cursor.FilterIndex     = 0
+            $next.Cursor.FilterScrollTop = 0
+            $next.Query.SelectedFilters.Clear()
+
+            # If switching to submitted for the first time (empty list), request initial load
+            if ($targetView -eq 'Submitted') {
+                [object[]]$submittedChanges = @()
+                if (($next.Data.PSObject.Properties.Match('SubmittedChanges')).Count -gt 0 -and $null -ne $next.Data.SubmittedChanges) {
+                    $submittedChanges = @($next.Data.SubmittedChanges)
+                }
+                $submittedHasMore = if (($next.Data.PSObject.Properties.Match('SubmittedHasMore')).Count -gt 0) { [bool]$next.Data.SubmittedHasMore } else { $true }
+                if ($submittedChanges.Count -eq 0 -and $submittedHasMore) {
+                    $next.Runtime.LoadMoreRequested = $true
+                }
+            }
+
+            return Update-BrowserDerivedState -State $next
+        }
+        'LoadMore' {
+            $currentViewMode  = if (($next.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$next.Ui.ViewMode } else { 'Pending' }
+            $submittedHasMore = if (($next.Data.PSObject.Properties.Match('SubmittedHasMore')).Count -gt 0) { [bool]$next.Data.SubmittedHasMore } else { $false }
+            if ($currentViewMode -eq 'Submitted' -and $submittedHasMore) {
+                $next.Runtime.LoadMoreRequested = $true
+            }
+            return $next
         }
         default {
             return Update-BrowserDerivedState -State $next

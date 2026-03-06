@@ -102,8 +102,8 @@ Describe 'ConvertFrom-KeyInfoToAction' {
         $action.Type | Should -Be 'ToggleHideUnavailableFilters'
     }
 
-    It 'unmapped key returns null' {
+    It 'F1 maps to ToggleHelpOverlay' {
         $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key F1)
-        $action | Should -BeNullOrEmpty
+        $action.Type | Should -Be 'ToggleHelpOverlay'
     }
 }

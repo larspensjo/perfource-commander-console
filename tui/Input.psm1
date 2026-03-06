@@ -21,9 +21,13 @@ function ConvertFrom-KeyInfoToAction {
         'E' { return [pscustomobject]@{ Type = 'ToggleChangelistView' } }
         'Delete' { return [pscustomobject]@{ Type = 'DeleteChange' } }
         'X' { return [pscustomobject]@{ Type = 'DeleteChange' } }
+        'F1' { return [pscustomobject]@{ Type = 'ToggleHelpOverlay' } }
         'F5' { return [pscustomobject]@{ Type = 'Reload' } }
         'F12' { return [pscustomobject]@{ Type = 'ToggleCommandModal' } }
         'Escape' { return [pscustomobject]@{ Type = 'HideCommandModal' } }
+        'D1' { return [pscustomobject]@{ Type = 'SwitchView'; View = 'Pending' } }
+        'D2' { return [pscustomobject]@{ Type = 'SwitchView'; View = 'Submitted' } }
+        'L' { return [pscustomobject]@{ Type = 'LoadMore' } }
         default { return $null }
     }
 }

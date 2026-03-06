@@ -43,4 +43,24 @@ function ConvertTo-ChangelistEntry {
     }
 }
 
-Export-ModuleMember -Function *-P4Changelist, ConvertTo-ChangelistEntry
+function ConvertTo-SubmittedChangelistEntry {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Changelist
+    )
+
+    $title = [string]$Changelist.Description
+    if ([string]::IsNullOrWhiteSpace($title)) { $title = '(no description)' }
+
+    [pscustomobject]@{
+        Id         = "$($Changelist.Change)"
+        Title      = $title
+        User       = [string]$Changelist.User
+        Client     = [string]$Changelist.Client
+        SubmitTime = $Changelist.Time
+        Captured   = $Changelist.Time
+        Kind       = 'Submitted'
+    }
+}
+
+Export-ModuleMember -Function *-P4Changelist, ConvertTo-ChangelistEntry, ConvertTo-SubmittedChangelistEntry

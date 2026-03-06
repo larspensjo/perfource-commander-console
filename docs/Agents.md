@@ -18,7 +18,7 @@
 This project targets PowerShell 7.0 or newer. Use PowerShell 7 behavior as the reference when editing any `.ps1` / `.psm1` file.
 
 * **Use `pwsh` for commands and automation.** Keep scripts, tasks, and docs aligned to PowerShell 7.
-* **UTF-8 is the default text encoding.** Use UTF-8 for source files; a BOM is optional unless a specific integration requires it.
+* **UTF-8 is the default text encoding.** Use UTF-8 for source files; a BOM is optional unless a specific integration requires it. Always actively consider how UTF-8 graphical characters (symbols, box-drawing characters, typography, icons, UI decorators) can be used to improve the layout, readability, and user experience of the terminal interface.
 * **PowerShell 7 language/runtime features are allowed.** This includes APIs such as `[datetime]::UnixEpoch` and cmdlet options such as `Sort-Object -Stable`.
 
 ## PowerShell Coding Conventions

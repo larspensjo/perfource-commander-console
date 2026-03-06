@@ -46,13 +46,13 @@
 1. **File list screen** with:
    - Virtualized list rendering (render only visible window)
    - Smooth scrolling: Up/Down, PageUp/PageDown, Home/End
-   - Scroll thumb indicator
+   - Scroll thumb indicator (e.g. `▐` or `█`)
 2. **Load full file list** into memory for the selected changelist.
 3. **Basic filtering**
    - Substring filter (case-insensitive) across path and filename
    - Optional keyword `action:<value>` (exact match) if action data exists
 4. Status bar counters:
-   - `Files: <visible>/<total>  Filtered: <filteredCount>`
+   - `📁 Files: <visible>/<total>  🔍 Filtered: <filteredCount>`
 5. Minimal file inspector:
    - Full depot path
    - Action (if available)
@@ -166,7 +166,7 @@ Design notes:
 
 MVP filter UI should be simple and low risk:
 
-- “Filter:” line that shows the active query
+- “Filter:” line that shows the active query (prepend with `🔍`)
 - “Hints” for syntax:
   - `text` → substring match
   - `action:add` → action exact match
@@ -182,14 +182,18 @@ Input method (MVP):
 
 Row format (MVP):
 
-```
-<Action>  <DepotPathTailOrTrimmed>
+```text
+[Icon] <Action>  <DepotPathTailOrTrimmed>
 ```
 
 Rules:
+- Add a column for a UTF-8 file icon:
+  - Default: `📄`
+  - Depending on action or type, these can be mapped (e.g. `❌` for delete, `📝` for edit, `➕` for add, etc.)
+  - Or, map file extensions to icons (e.g., `.cs` → `🔷`, `.json` → `⚙️`).
 - Prefer showing the **filename** prominently.
 - Keep the right side stable as you scroll.
-- If you truncate, truncate the **left** of the path and keep the tail.
+- If you truncate, truncate the **left** of the path and keep the tail, perhaps indicating truncation with `…` (U+2026).
 - Define a shared `Format-TruncatedDepotPath -Path $path -MaxWidth $w` helper. This will be reused by the inspector, status bar, and future viewers (diff, filelog).
 
 ### Bottom-right: Inspector

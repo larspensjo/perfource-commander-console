@@ -182,12 +182,15 @@ function Start-P4Browser {
     $consoleState = Initialize-BrowserConsole
 
     try {
-        # Populate current user (needed for submitted view's "My changes" filter)
+        # Populate session info from p4 info so submitted queries can be scoped
+        # to the current workspace mapping from the start of the session.
         try {
             $p4Info = Get-P4Info
             $state.Data.CurrentUser = $p4Info.User
+            $state.Data.CurrentClient = $p4Info.Client
         } catch {
             $state.Data.CurrentUser = ''
+            $state.Data.CurrentClient = ''
         }
 
         # Initial load
@@ -248,10 +251,15 @@ function Start-P4Browser {
                 if ($state.Runtime.SubmittedReloadRequested) {
                     $state.Runtime.SubmittedReloadRequested = $false
                     $state.Runtime.LoadMoreRequested        = $false
-                    $reloadSubmittedCmdLine = 'p4 changes -s submitted -m 50'
+                    $reloadSubmittedSpec = if ([string]::IsNullOrWhiteSpace([string]$state.Data.CurrentClient)) { '//...' } else { "//$($state.Data.CurrentClient)/..." }
+                    $reloadSubmittedCmdLine = Format-P4CommandLine -P4Args @('changes', '-s', 'submitted', '-m', '50', $reloadSubmittedSpec)
                     $state = Invoke-BrowserSideEffect -State $state -CommandLine $reloadSubmittedCmdLine -WorkItem {
                         param($s)
-                        $fresh = Get-P4SubmittedChangelistEntries -Max 50
+                        $fresh = if ([string]::IsNullOrWhiteSpace([string]$s.Data.CurrentClient)) {
+                            Get-P4SubmittedChangelistEntries -Max 50
+                        } else {
+                            Get-P4SubmittedChangelistEntries -Max 50 -Client $s.Data.CurrentClient
+                        }
                         $s.Data.SubmittedChanges  = @($fresh)
                         $s.Data.SubmittedHasMore  = ($fresh.Count -ge 50)
                         $s.Data.SubmittedOldestId = if ($fresh.Count -gt 0) { [int]($fresh | ForEach-Object { [int]$_.Id } | Sort-Object | Select-Object -First 1) } else { $null }
@@ -264,15 +272,28 @@ function Start-P4Browser {
                 if ($state.Runtime.LoadMoreRequested) {
                     $state.Runtime.LoadMoreRequested = $false
                     $beforeChange = $state.Data.SubmittedOldestId
-                    $loadMoreCmdLine = if ($null -ne $beforeChange) { "p4 changes -s submitted -m 50 //...@<$beforeChange" } else { 'p4 changes -s submitted -m 50' }
+                    $loadMoreSpec = if ([string]::IsNullOrWhiteSpace([string]$state.Data.CurrentClient)) { '//...' } else { "//$($state.Data.CurrentClient)/..." }
+                    $loadMoreCmdLine = if ($null -ne $beforeChange) {
+                        Format-P4CommandLine -P4Args @('changes', '-s', 'submitted', '-m', '50', "$loadMoreSpec@<$beforeChange")
+                    } else {
+                        Format-P4CommandLine -P4Args @('changes', '-s', 'submitted', '-m', '50', $loadMoreSpec)
+                    }
                     $state = Invoke-BrowserSideEffect -State $state -CommandLine $loadMoreCmdLine -WorkItem {
                         param($s)
                         $pageSize = 50
                         $bc       = $s.Data.SubmittedOldestId
                         $newEntries = if ($null -ne $bc) {
-                            @(Get-P4SubmittedChangelistEntries -Max $pageSize -BeforeChange $bc)
+                            if ([string]::IsNullOrWhiteSpace([string]$s.Data.CurrentClient)) {
+                                @(Get-P4SubmittedChangelistEntries -Max $pageSize -BeforeChange $bc)
+                            } else {
+                                @(Get-P4SubmittedChangelistEntries -Max $pageSize -BeforeChange $bc -Client $s.Data.CurrentClient)
+                            }
                         } else {
-                            @(Get-P4SubmittedChangelistEntries -Max $pageSize)
+                            if ([string]::IsNullOrWhiteSpace([string]$s.Data.CurrentClient)) {
+                                @(Get-P4SubmittedChangelistEntries -Max $pageSize)
+                            } else {
+                                @(Get-P4SubmittedChangelistEntries -Max $pageSize -Client $s.Data.CurrentClient)
+                            }
                         }
                         $s.Data.SubmittedChanges = @($s.Data.SubmittedChanges) + @($newEntries)
                         if ($newEntries.Count -gt 0) {

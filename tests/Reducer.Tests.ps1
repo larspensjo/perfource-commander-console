@@ -462,6 +462,11 @@ Describe 'Files screen reducer — Step 1' {
         $state.Data.FilesSourceKind   | Should -BeNullOrEmpty
     }
 
+    It 'New-BrowserState includes CurrentUser and CurrentClient defaults' {
+        $state.Data.CurrentUser   | Should -Be ''
+        $state.Data.CurrentClient | Should -Be ''
+    }
+
     It 'New-BrowserState includes FileFilterTokens and FileFilterText' {
         $state.Query.FileFilterTokens.Count | Should -Be 0
         $state.Query.FileFilterText         | Should -BeNullOrEmpty

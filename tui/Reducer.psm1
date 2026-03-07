@@ -130,6 +130,7 @@ function New-BrowserState {
             FilesSourceChange = $null
             FilesSourceKind   = ''
             CurrentUser       = ''
+            CurrentClient     = ''
             SubmittedChanges  = @()
             SubmittedHasMore  = $true
             SubmittedOldestId = $null

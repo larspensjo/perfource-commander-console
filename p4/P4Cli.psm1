@@ -564,23 +564,33 @@ function Get-P4SubmittedChangelists {
     .SYNOPSIS
         Returns submitted changelists, optionally paginated by change number.
     .DESCRIPTION
-        Fetches submitted changelists from all users/clients.
+        Fetches submitted changelists limited to the current workspace mapping
+        (or to the explicitly provided client workspace).
         When BeforeChange > 0, returns only changes with numbers less than BeforeChange.
     .PARAMETER Max
         Maximum number of changelists to return. Defaults to 50.
     .PARAMETER BeforeChange
         When greater than 0, fetches changes with numbers less than this value (pagination).
+    .PARAMETER Client
+        The Perforce client workspace whose mapping should limit the submitted
+        changelist query. When omitted, the current client from Get-P4Info is used.
     #>
     [CmdletBinding()]
     param(
         [int]$Max = 50,
-        [int]$BeforeChange = 0
+        [int]$BeforeChange = 0,
+        [string]$Client = ''
     )
 
-    $p4Args = @('changes', '-l', '-s', 'submitted', '-m', "$Max")
-    if ($BeforeChange -gt 0) {
-        $p4Args += "//...@<$BeforeChange"
+    if ([string]::IsNullOrWhiteSpace($Client)) {
+        $info = Get-P4Info
+        $Client = [string]$info.Client
     }
+
+    $workspaceSpec = "//$Client/..."
+    $querySpec = if ($BeforeChange -gt 0) { "$workspaceSpec@<$BeforeChange" } else { $workspaceSpec }
+
+    $p4Args = @('changes', '-l', '-s', 'submitted', '-m', "$Max", $querySpec)
 
     $lines = Invoke-P4 -P4Args $p4Args
     $records = $lines
@@ -614,14 +624,18 @@ function Get-P4SubmittedChangelistEntries {
         Maximum number of entries to return. Defaults to 50.
     .PARAMETER BeforeChange
         When greater than 0, fetches changes with numbers less than this value (pagination).
+    .PARAMETER Client
+        The Perforce client workspace whose mapping should limit the submitted
+        changelist query. When omitted, the current client from Get-P4Info is used.
     #>
     [CmdletBinding()]
     param(
         [int]$Max = 50,
-        [int]$BeforeChange = 0
+        [int]$BeforeChange = 0,
+        [string]$Client = ''
     )
 
-    $changelists = Get-P4SubmittedChangelists -Max $Max -BeforeChange $BeforeChange
+    $changelists = Get-P4SubmittedChangelists -Max $Max -BeforeChange $BeforeChange -Client $Client
 
     $changelists | ForEach-Object {
         ConvertTo-SubmittedChangelistEntry -Changelist $_

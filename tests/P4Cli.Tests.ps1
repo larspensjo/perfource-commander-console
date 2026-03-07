@@ -284,6 +284,68 @@ Describe 'Get-P4ChangelistEntries' {
     }
 }
 
+Describe 'Get-P4SubmittedChangelists' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'limits submitted queries to an explicit client mapping' {
+        Mock Get-P4Info -ModuleName P4Cli { throw 'should not be called' }
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @(
+                [pscustomobject]@{
+                    change = '12345'
+                    user   = 'alice'
+                    client = 'ws-main'
+                    time   = '1700000000'
+                    desc   = 'Submitted change'
+                }
+            )
+        }
+
+        $result = @(Get-P4SubmittedChangelists -Max 25 -Client 'ws-main')
+
+        $result.Count | Should -Be 1
+        $result[0].Change | Should -Be 12345
+        Assert-MockCalled Get-P4Info -ModuleName P4Cli -Times 0 -Exactly
+        Assert-MockCalled Invoke-P4 -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
+            $P4Args.Count -eq 7 -and
+            $P4Args[0] -eq 'changes' -and
+            $P4Args[1] -eq '-l' -and
+            $P4Args[2] -eq '-s' -and
+            $P4Args[3] -eq 'submitted' -and
+            $P4Args[4] -eq '-m' -and
+            $P4Args[5] -eq '25' -and
+            $P4Args[6] -eq '//ws-main/...'
+        }
+    }
+
+    It 'uses the current client mapping when no client is supplied' {
+        Mock Get-P4Info -ModuleName P4Cli { return [pscustomobject]@{ Client = 'ws-current' } }
+        Mock Invoke-P4 -ModuleName P4Cli { return @() }
+
+        $result = @(Get-P4SubmittedChangelists -Max 10)
+
+        $result.Count | Should -Be 0
+        Assert-MockCalled Get-P4Info -ModuleName P4Cli -Times 1 -Exactly
+        Assert-MockCalled Invoke-P4 -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
+            $P4Args[-1] -eq '//ws-current/...'
+        }
+    }
+
+    It 'applies pagination within the client mapping' {
+        Mock Get-P4Info -ModuleName P4Cli { return [pscustomobject]@{ Client = 'ws-current' } }
+        Mock Invoke-P4 -ModuleName P4Cli { return @() }
+
+        $result = @(Get-P4SubmittedChangelists -Max 50 -BeforeChange 67890)
+
+        $result.Count | Should -Be 0
+        Assert-MockCalled Invoke-P4 -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
+            $P4Args[-1] -eq '//ws-current/...@<67890'
+        }
+    }
+}
+
 Describe 'ConvertFrom-P4OpenedLinesToFileCounts' {
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force

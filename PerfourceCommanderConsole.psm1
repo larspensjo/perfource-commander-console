@@ -135,6 +135,66 @@ function Invoke-BrowserSideEffect {
     return $s
 }
 
+function ConvertTo-BrowserSubmittedFileEntries {
+    param(
+        [Parameter(Mandatory = $true)]$Describe,
+        [Parameter(Mandatory = $true)][int]$Change
+    )
+
+    return @(
+        @($Describe.Files) | ForEach-Object {
+            New-P4FileEntry -DepotPath ([string]$_.DepotPath) `
+                            -Action ([string]$_.Action) `
+                            -FileType ([string]$_.Type) `
+                            -Change $Change `
+                            -SourceKind 'Submitted'
+        }
+    )
+}
+
+function Invoke-BrowserFilesLoad {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][int]$Change,
+        [Parameter(Mandatory = $true)][string]$SourceKind,
+        [Parameter(Mandatory = $true)][string]$CacheKey
+    )
+
+    switch ($SourceKind) {
+        'Opened' {
+            $loadFilesCmdLine = Format-P4CommandLine -P4Args @('opened', '-c', "$Change")
+            return Invoke-BrowserSideEffect -State $State -CommandLine $loadFilesCmdLine -WorkItem {
+                param($s)
+                $files = Get-P4OpenedFiles -Change $Change
+                $s.Data.FileCache[$CacheKey] = $files
+                $s.Runtime.LastError = $null
+                return Update-BrowserDerivedState -State $s
+            }
+        }
+        'Submitted' {
+            $loadFilesCmdLine = Format-P4CommandLine -P4Args @('describe', '-s', "$Change")
+            return Invoke-BrowserSideEffect -State $State -CommandLine $loadFilesCmdLine -WorkItem {
+                param($s)
+
+                $describe = if ($s.Data.DescribeCache.ContainsKey($Change)) {
+                    $s.Data.DescribeCache[$Change]
+                } else {
+                    $fetchedDescribe = Get-P4Describe -Change $Change
+                    $s.Data.DescribeCache[$Change] = $fetchedDescribe
+                    $fetchedDescribe
+                }
+
+                $s.Data.FileCache[$CacheKey] = ConvertTo-BrowserSubmittedFileEntries -Describe $describe -Change $Change
+                $s.Runtime.LastError = $null
+                return Update-BrowserDerivedState -State $s
+            }
+        }
+        default {
+            throw "Unsupported FilesSourceKind '$SourceKind'."
+        }
+    }
+}
+
 function Start-P4Browser {
     <#
     .SYNOPSIS
@@ -315,18 +375,10 @@ function Start-P4Browser {
                     if ($state.Data.FileCache.ContainsKey($cacheKey)) {
                         # Cache hit — recompute derived state (cursor/scroll already reset by reducer)
                         $state = Update-BrowserDerivedState -State $state
-                    } elseif ($sourceKind -eq 'Opened') {
-                        $loadFilesCmdLine = Format-P4CommandLine -P4Args @('opened', '-c', "$change")
-                        $state = Invoke-BrowserSideEffect -State $state -CommandLine $loadFilesCmdLine -WorkItem {
-                            param($s)
-                            $files = Get-P4OpenedFiles -Change $change
-                            $s.Data.FileCache[$cacheKey] = $files
-                            $s.Runtime.LastError = $null
-                            return Update-BrowserDerivedState -State $s
-                        }
-                        # After I/O: if user navigated away, silently stay on current screen
+                    } else {
+                        $state = Invoke-BrowserFilesLoad -State $state -Change $change -SourceKind $sourceKind -CacheKey $cacheKey
                     }
-                    # SourceKind = 'Submitted' is handled in Step 3
+                    # After I/O: if user navigated away, silently stay on current screen
                 }
 
                 # Fetch describe on-demand (I/O lives outside the reducer to keep it pure)

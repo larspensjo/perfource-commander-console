@@ -688,6 +688,39 @@ Describe 'Files screen reducer — Step 1' {
         $next.Runtime.HelpOverlayOpen    | Should -BeTrue
         $next.Ui.ScreenStack[-1]         | Should -Be 'Files'
     }
+
+    It 'LogCommandExecution on Files screen is forwarded into CommandLog' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.LoadFilesRequested = $false
+        $action = [pscustomobject]@{
+            Type           = 'LogCommandExecution'
+            CommandLine    = 'p4 describe -s 123'
+            FormattedLines = @('CL#123  Sample change')
+            OutputCount    = 1
+            SummaryLine    = ''
+            ExitCode       = 0
+            ErrorText      = ''
+            Succeeded      = $true
+            StartedAt      = (Get-Date)
+            EndedAt        = (Get-Date)
+            DurationMs     = 5
+        }
+
+        $next = Invoke-BrowserReducer -State $state -Action $action
+
+        $next.Runtime.CommandLog.Count | Should -Be 1
+        $next.Runtime.CommandLog[0].CommandLine | Should -Be 'p4 describe -s 123'
+    }
+
+    It 'SwitchView from Files screen is forwarded and pops back to the target root view' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.LoadFilesRequested = $false
+
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' })
+
+        $next.Ui.ViewMode | Should -Be 'CommandLog'
+        $next.Ui.ScreenStack | Should -Be @('Changelists')
+    }
 }
 
 # ─── CommandLog feature tests ─────────────────────────────────────────────────
@@ -723,6 +756,12 @@ Describe 'CommandLog reducer' {
         $next = Invoke-BrowserReducer -State $state -Action $action
         $next.Runtime.CommandLog.Count | Should -Be 1
         $next.Runtime.CommandLog[0].CommandLine | Should -Be 'p4 info'
+    }
+
+    It 'Test-IsBrowserGlobalAction returns true for SwitchView and LogCommandExecution' {
+        (Test-IsBrowserGlobalAction -ActionType 'SwitchView')        | Should -BeTrue
+        (Test-IsBrowserGlobalAction -ActionType 'LogCommandExecution') | Should -BeTrue
+        (Test-IsBrowserGlobalAction -ActionType 'OpenFilesScreen')   | Should -BeFalse
     }
 
     It 'LogCommandExecution assigns incrementing CommandIds' {

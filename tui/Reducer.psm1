@@ -2,6 +2,14 @@ Set-StrictMode -Version Latest
 
 $script:CommandHistoryMaxSize = 50
 $script:CommandLogMaxSize     = 200
+$script:BrowserGlobalActionTypes = @(
+    'CommandStart', 'CommandFinish',
+    'ToggleCommandModal', 'ShowCommandModal',
+    'SwitchView',
+    'Quit', 'Resize',
+    'ToggleHelpOverlay', 'HideHelpOverlay',
+    'LogCommandExecution'
+)
 
 Import-Module (Join-Path $PSScriptRoot 'Filtering.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Layout.psm1') -Force
@@ -575,6 +583,11 @@ function Get-FilterViewportSize {
     return 1
 }
 
+function Test-IsBrowserGlobalAction {
+    param([Parameter(Mandatory = $true)][string]$ActionType)
+    return ($ActionType -in $script:BrowserGlobalActionTypes)
+}
+
 function Get-ChangeViewportSize {
     param($CurrentState)
     return Get-ChangeViewCapacity -State $CurrentState
@@ -1055,13 +1068,7 @@ function Invoke-FilesReducer {
     )
 
     # Delegate actions whose logic is identical on every screen.
-    $globalActions = @(
-        'CommandStart', 'CommandFinish',
-        'ToggleCommandModal', 'ShowCommandModal',
-        'Quit', 'Resize',
-        'ToggleHelpOverlay', 'HideHelpOverlay'
-    )
-    if ($Action.Type -in $globalActions) {
+    if (Test-IsBrowserGlobalAction -ActionType ([string]$Action.Type)) {
         return Invoke-ChangelistReducer -State $State -Action $Action
     }
 
@@ -1182,14 +1189,7 @@ function Invoke-CommandOutputReducer {
     )
 
     # Delegate global lifecycle actions to ChangelistReducer
-    $globalActions = @(
-        'CommandStart', 'CommandFinish',
-        'ToggleCommandModal', 'ShowCommandModal',
-        'Quit', 'Resize',
-        'ToggleHelpOverlay', 'HideHelpOverlay',
-        'LogCommandExecution'
-    )
-    if ($Action.Type -in $globalActions) {
+    if (Test-IsBrowserGlobalAction -ActionType ([string]$Action.Type)) {
         return Invoke-ChangelistReducer -State $State -Action $Action
     }
 
@@ -1303,6 +1303,7 @@ function ConvertTo-ChangeNumberFromId {
 Export-ModuleMember -Function New-BrowserState, Copy-BrowserState, Copy-StateObject, `
     Invoke-BrowserReducer, Invoke-ChangelistReducer, Invoke-FilesReducer, Invoke-CommandOutputReducer, `
     Update-BrowserDerivedState, Update-CommandLogDerivedState, Update-OutputDerivedState, `
+    Test-IsBrowserGlobalAction, `
     ConvertTo-ChangeNumberFromId, `
     Get-ChangeInnerViewRows, Get-ChangeRowsPerItem, Get-ChangeViewCapacity, `
     Get-CommandOutputCount, Get-OutputViewportSize

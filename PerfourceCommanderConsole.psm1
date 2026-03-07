@@ -10,6 +10,42 @@ Import-Module (Join-Path $PSScriptRoot 'tui\Reducer.psm1')   -Force
 Import-Module (Join-Path $PSScriptRoot 'tui\Input.psm1')     -Force
 Import-Module (Join-Path $PSScriptRoot 'tui\Render.psm1')    -Force -DisableNameChecking
 
+function Get-BrowserConsoleSize {
+    [pscustomobject]@{
+        Width  = [Console]::WindowWidth
+        Height = [Console]::WindowHeight
+    }
+}
+
+function Test-BrowserConsoleKeyAvailable {
+    return [Console]::KeyAvailable
+}
+
+function Read-BrowserConsoleKey {
+    return [Console]::ReadKey($true)
+}
+
+function Initialize-BrowserConsole {
+    $previousOutputEncoding = [Console]::OutputEncoding
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+    $previousCursorVisible = [Console]::CursorVisible
+    [Console]::CursorVisible = $false
+
+    return [pscustomobject]@{
+        OutputEncoding = $previousOutputEncoding
+        CursorVisible  = $previousCursorVisible
+    }
+}
+
+function Restore-BrowserConsole {
+    param([Parameter(Mandatory = $true)]$ConsoleState)
+
+    [Console]::CursorVisible = [bool]$ConsoleState.CursorVisible
+    [Console]::OutputEncoding = $ConsoleState.OutputEncoding
+    Clear-Host
+}
+
 function Invoke-BrowserSideEffect {
     <#
     .SYNOPSIS
@@ -109,29 +145,41 @@ function Start-P4Browser {
         Total Commander-inspired workflow.
     .PARAMETER MaxChanges
         Maximum number of pending changelists to load. Defaults to 200.
+    .PARAMETER IntegrityTest
+        When specified, enables the runtime frame-integrity checker.
+        On every render, every row is checked for correct width and that panel
+        borders sit at their expected column positions.  The first violation
+        throws a terminating error immediately, halting the session so the
+        offending state can be inspected.
     .EXAMPLE
         Start-P4Browser
     .EXAMPLE
         Start-P4Browser -MaxChanges 500
+    .EXAMPLE
+        Start-P4Browser -IntegrityTest
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)]
-        [int]$MaxChanges = 200
+        [int]$MaxChanges = 200,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$IntegrityTest
     )
 
-    $width  = [Console]::WindowWidth
-    $height = [Console]::WindowHeight
+    if ($IntegrityTest) {
+        Enable-FrameIntegrityTest
+    }
+
+    $consoleSize = Get-BrowserConsoleSize
+    $width  = [int]$consoleSize.Width
+    $height = [int]$consoleSize.Height
     $state  = New-BrowserState -Changes @() -InitialWidth $width -InitialHeight $height
 
     # Phase 0.2: Store configured max for consistent reload behaviour
     $state.Runtime.ConfiguredMax = $MaxChanges
 
-    $previousOutputEncoding = [Console]::OutputEncoding
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-
-    $previousCursorVisible = [Console]::CursorVisible
-    [Console]::CursorVisible = $false
+    $consoleState = Initialize-BrowserConsole
 
     try {
         # Populate current user (needed for submitted view's "My changes" filter)
@@ -160,11 +208,12 @@ function Start-P4Browser {
             # a short sleep to stay responsive to window-resize events.
             $keyInfo = $null
             while ($null -eq $keyInfo) {
-                if ([Console]::KeyAvailable) {
-                    $keyInfo = [Console]::ReadKey($true)
+                if (Test-BrowserConsoleKeyAvailable) {
+                    $keyInfo = Read-BrowserConsoleKey
                 } else {
-                    $currentWidth  = [Console]::WindowWidth
-                    $currentHeight = [Console]::WindowHeight
+                    $currentSize   = Get-BrowserConsoleSize
+                    $currentWidth  = [int]$currentSize.Width
+                    $currentHeight = [int]$currentSize.Height
                     if ($state.Ui.Layout.Width -ne $currentWidth -or $state.Ui.Layout.Height -ne $currentHeight) {
                         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
                             Type   = 'Resize'
@@ -295,9 +344,7 @@ function Start-P4Browser {
         }
     }
     finally {
-        [Console]::CursorVisible = $previousCursorVisible
-        [Console]::OutputEncoding = $previousOutputEncoding
-        Clear-Host
+        Restore-BrowserConsole -ConsoleState $consoleState
     }
 }
 

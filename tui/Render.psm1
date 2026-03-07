@@ -4,6 +4,9 @@ $SCROLLBAR_THUMB_GLYPH = [char]0x2591
 $SCROLLBAR_TRACK_GLYPH = [char]0x2502
 $CURSOR_GLYPH          = [char]0x25B6  # ▶
 
+# Set to $true via Enable-FrameIntegrityTest to activate the runtime border checker.
+$script:IntegrityTestEnabled = $false
+
 function Get-PropertyValueOrDefault {
     param(
         [AllowNull()]$Object,
@@ -228,24 +231,30 @@ function Resize-SegmentRow {
 
     if ($Width -le 0) { return @() }
 
-    # Flatten nested arrays recursively, preserving individual segment colors.
+    # Flatten nested arrays recursively in-order, preserving individual segment
+    # colors. A previous breadth-first expansion reordered bordered rows like
+    # [left-border, inner..., right-border] into [left-border, right-border,
+    # inner...], which made pane borders disappear from the seam columns.
     $flat = [System.Collections.Generic.List[object]]::new()
-    $queue = [System.Collections.Generic.Queue[object]]::new()
-    foreach ($s in @($Segments)) { $queue.Enqueue($s) }
-    while ($queue.Count -gt 0) {
-        $s = $queue.Dequeue()
-        if ($null -eq $s) { continue }
-        if ($s -is [System.Collections.IEnumerable] -and -not ($s -is [string]) -and -not (Test-IsSegmentLike -Value $s)) {
-            foreach ($inner in @($s)) { $queue.Enqueue($inner) }
-            continue
+    $appendSegmentsInOrder = {
+        param($Items)
+
+        foreach ($s in @($Items)) {
+            if ($null -eq $s) { continue }
+            if ($s -is [System.Collections.IEnumerable] -and -not ($s -is [string]) -and -not (Test-IsSegmentLike -Value $s)) {
+                & $appendSegmentsInOrder $s
+                continue
+            }
+
+            $h = @{
+                Text            = [string](Get-PropertyValueOrDefault -Object $s -Name 'Text'            -Default '')
+                Color           = [string](Get-PropertyValueOrDefault -Object $s -Name 'Color'           -Default 'Gray')
+                BackgroundColor = [string](Get-PropertyValueOrDefault -Object $s -Name 'BackgroundColor' -Default '')
+            }
+            $flat.Add($h)
         }
-        $h = @{
-            Text            = [string](Get-PropertyValueOrDefault -Object $s -Name 'Text'            -Default '')
-            Color           = [string](Get-PropertyValueOrDefault -Object $s -Name 'Color'           -Default 'Gray')
-            BackgroundColor = [string](Get-PropertyValueOrDefault -Object $s -Name 'BackgroundColor' -Default '')
-        }
-        $flat.Add($h)
     }
+    & $appendSegmentsInOrder $Segments
 
     $result = [System.Collections.Generic.List[object]]::new()
     $remaining = $Width
@@ -1825,6 +1834,98 @@ function Build-FrameFromState {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Runtime integrity checker.
+# Disabled by default.  Enable with Enable-FrameIntegrityTest (called
+# automatically when Start-P4Browser -IntegrityTest is used).
+#
+# When enabled, every rendered frame is checked for:
+#   1. Correct total character width per row.
+#   2. Box-drawing border glyphs at the expected column positions (Normal
+#      layout only, skipping the status bar and the pane separator row).
+#
+# On the first violation a terminating error is thrown, halting the loop
+# immediately so the bad frame state can be inspected.
+# ---------------------------------------------------------------------------
+function Test-FrameIntegrity {
+    param(
+        [Parameter(Mandatory = $true)]$Frame,
+        [AllowNull()]$Layout = $null
+    )
+
+    if (-not $script:IntegrityTestEnabled) { return }
+
+    $lastRowY     = $Frame.Height - 1
+    # │   ╭   ╮   ╰   ╯
+    $borderGlyphs = [char[]]@([char]0x2502, [char]0x256D, [char]0x256E, [char]0x2570, [char]0x256F)
+
+    foreach ($row in @($Frame.Rows)) {
+        # --- 1. Width check ---------------------------------------------------
+        $actualWidth = 0
+        foreach ($seg in @($row.Segments)) {
+            $actualWidth += ([string](Get-PropertyValueOrDefault -Object $seg -Name 'Text' -Default '')).Length
+        }
+
+        $expectedWidth = if ($row.Y -eq $lastRowY) { [Math]::Max(0, $Frame.Width - 1) } else { $Frame.Width }
+        if ($actualWidth -ne $expectedWidth) {
+            throw "Frame integrity violation — Row $($row.Y): width $actualWidth != expected $expectedWidth"
+        }
+
+        # --- 2. Border-position check (Normal layout content rows only) -------
+        if ($null -eq $Layout -or $Layout.Mode -ne 'Normal') { continue }
+        if ($row.Y -eq $lastRowY) { continue }                     # status bar — no pane borders
+        if ($row.Y -eq $Layout.ListPane.H) { continue }            # separator gap row — right side is blank
+
+        $rowText = ''
+        foreach ($seg in @($row.Segments)) {
+            $rowText += [string](Get-PropertyValueOrDefault -Object $seg -Name 'Text' -Default '')
+        }
+
+        # Helper: extract a labelled character window around $col for diagnostics
+        $windowFn = {
+            param([string]$s, [int]$col, [int]$radius = 6)
+            $from = [Math]::Max(0, $col - $radius)
+            $to   = [Math]::Min($s.Length - 1, $col + $radius)
+            $chars = for ($i = $from; $i -le $to; $i++) {
+                $marker = if ($i -eq $col) { '*' } else { ' ' }
+                "$marker$i='$($s[$i])'"
+            }
+            "[layout FilterPane.W=$($Layout.FilterPane.W) frame.Width=$($Frame.Width)] " + ($chars -join ' ')
+        }
+
+        # Column: right edge of FilterPane
+        $colFilterRight = $Layout.FilterPane.W - 1
+        if ($rowText.Length -gt $colFilterRight) {
+            if ($borderGlyphs -notcontains $rowText[$colFilterRight]) {
+                $ctx = & $windowFn $rowText $colFilterRight
+                throw "Frame integrity violation — Row $($row.Y): FilterPane right border overwritten at col $colFilterRight (found '$($rowText[$colFilterRight])') $ctx"
+            }
+        }
+
+        # Column: gap between panes (must be a plain space)
+        $colGap = $Layout.FilterPane.W
+        if ($rowText.Length -gt $colGap) {
+            if ($rowText[$colGap] -ne ' ') {
+                $ctx = & $windowFn $rowText $colGap
+                throw "Frame integrity violation — Row $($row.Y): pane gap at col $colGap overwritten (found '$($rowText[$colGap])') $ctx"
+            }
+        }
+
+        # Column: left edge of the right pane (list or detail)
+        $colRightLeft = $Layout.FilterPane.W + 1
+        if ($rowText.Length -gt $colRightLeft) {
+            if ($borderGlyphs -notcontains $rowText[$colRightLeft]) {
+                $ctx = & $windowFn $rowText $colRightLeft
+                throw "Frame integrity violation — Row $($row.Y): right-pane left border overwritten at col $colRightLeft (found '$($rowText[$colRightLeft])') $ctx"
+            }
+        }
+    }
+}
+
+function Enable-FrameIntegrityTest {
+    $script:IntegrityTestEnabled = $true
+}
+
 function Render-BrowserState {
     param(
         [Parameter(Mandatory = $true)]$State
@@ -1854,6 +1955,11 @@ function Render-BrowserState {
     } else {
         Build-FrameFromState -State $State
     }
+    # Check structural integrity of the base frame before overlays are applied.
+    # Overlays intentionally cover pane borders, so checking after them would
+    # produce false positives.
+    $null = Test-FrameIntegrity -Frame $nextFrame -Layout $layout
+
     $helpOverlayOpen = [bool](Get-PropertyValueOrDefault -Object $State.Runtime -Name 'HelpOverlayOpen' -Default $false)
     $commandModal = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'ModalPrompt' -Default $null
     # Apply help overlay first, then modal prompt on top (modal prompt takes precedence)
@@ -1863,6 +1969,7 @@ function Render-BrowserState {
     if ($null -ne $commandModal -and [bool](Get-PropertyValueOrDefault -Object $commandModal -Name 'IsOpen' -Default $false)) {
         $nextFrame = Apply-ModalOverlay -Frame $nextFrame -ModalPrompt $commandModal
     }
+
     $changedRows = Get-FrameDiff -PreviousFrame $script:PreviousFrame -NextFrame $nextFrame
     $flushOk = Flush-FrameDiff -ChangedRows $changedRows -Frame $nextFrame
     if ($flushOk) {
@@ -1870,4 +1977,4 @@ function Render-BrowserState {
     }
 }
 
-Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Get-ActiveChangesList, Build-FilesScreenFrame, Build-FilesStatusBarRow, Build-CommandLogFrame, Build-CommandOutputFrame
+Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Get-ActiveChangesList, Build-FilesScreenFrame, Build-FilesStatusBarRow, Build-CommandLogFrame, Build-CommandOutputFrame, Test-FrameIntegrity, Enable-FrameIntegrityTest

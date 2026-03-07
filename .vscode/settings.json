@@ -36,6 +36,10 @@
       "approve": true,
       "matchCommandLine": true
     },
-    "&": true
+    "&": true,
+    "/^pwsh -NoProfile -Command \"Import-Module Pester -Force; Invoke-Pester -Path 'c:\\\\Users\\\\lpensjo\\\\src\\\\perfource-commander-console\\\\tests\\\\' -Output Detailed\" 2>&1 \\| Select-Object -Last 80$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
   }
 }

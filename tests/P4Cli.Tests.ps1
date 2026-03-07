@@ -579,3 +579,57 @@ Describe 'Get-P4OpenedFiles' {
         $result[0].SearchKey | Should -Be '//depot/dir/myfile.cs edit text'
     }
 }
+
+Describe 'P4 observer' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+        InModuleScope P4Cli { $script:P4Executable = 'cmd.exe' }
+    }
+
+    AfterAll {
+        InModuleScope P4Cli { $script:P4Executable = 'p4.exe' }
+    }
+
+    AfterEach {
+        # ensure clean observer state between tests
+        InModuleScope P4Cli { $script:P4ExecutionObserver = $null }
+    }
+
+    It 'Register-P4Observer sets the module-level observer' {
+        Register-P4Observer -Observer { }
+        $obs = InModuleScope P4Cli { $script:P4ExecutionObserver }
+        $obs | Should -Not -BeNullOrEmpty
+    }
+
+    It 'Unregister-P4Observer clears the observer' {
+        Register-P4Observer -Observer { }
+        Unregister-P4Observer
+        $obs = InModuleScope P4Cli { $script:P4ExecutionObserver }
+        $obs | Should -BeNullOrEmpty
+    }
+
+    It 'observer is called after a successful Invoke-P4' {
+        $called = [ref]$false
+        Register-P4Observer -Observer { $called.Value = $true }
+        try {
+            InModuleScope P4Cli { Invoke-P4 -P4Args @('/c', 'echo', '{"v":"ok"}') }
+        } catch {}
+        $called.Value | Should -BeTrue
+    }
+
+    It 'observer is called even when Invoke-P4 throws (non-zero exit)' {
+        $called = [ref]$false
+        Register-P4Observer -Observer { $called.Value = $true }
+        try {
+            InModuleScope P4Cli { Invoke-P4 -P4Args @('/c', 'exit', '1') }
+        } catch {}
+        $called.Value | Should -BeTrue
+    }
+
+    It 'exceptions thrown inside the observer do not propagate out of Invoke-P4' {
+        Register-P4Observer -Observer { throw 'observer-bomb' }
+        # A successful invocation must still return results even if observer throws
+        { InModuleScope P4Cli { Invoke-P4 -P4Args @('/c', 'echo', '{"v":"ok"}') } } |
+            Should -Not -Throw
+    }
+}

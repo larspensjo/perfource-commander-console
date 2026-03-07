@@ -4,10 +4,8 @@
 
 * Use the Unidirectional Data flow design pattern (UDF).
 * Prioritize elegance, robustness and flexibility.
-* Use unit tests to lock-in functionality.
 * Use the principle Correctness by Construction.
 * Avoid repetition.
-* Use Dependency Injection to make testing easier.
 * Don't repeat yourself.
 * Avoid "naked constants".
 
@@ -58,6 +56,10 @@ pwsh -NoProfile -File .vscode/Invoke-Linter.ps1
 This analyses all `.ps1`, `.psm1`, and `.psd1` files in the workspace using the settings in `PSScriptAnalyzerSettings.psd1`. Output is formatted as `file(line,col): severity rulename: message`. Fix all reported warnings and errors before committing.
 
 ### Pester Tests
+
+* Use unit tests to lock-in functionality.
+* Use Dependency Injection to make testing easier.
+* Test behavior and contracts, not arbitrary literals. Prefer assertions about outcomes, transitions, emitted effects, and command arguments over direct checks of internal/config constants.
 
 **Important:** Always run Pester tests from a **terminal** (`run_in_terminal` or a
 manual shell), **never** via VSCode's built-in test runner (`runTests`). The test

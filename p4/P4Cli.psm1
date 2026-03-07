@@ -5,6 +5,13 @@ Import-Module (Join-Path $PSScriptRoot 'Models.psm1') -Force
 # Overridable in tests via InModuleScope P4Cli { $script:P4Executable = 'cmd.exe' }
 $script:P4Executable = 'p4.exe'
 
+# Maximum number of formatted output lines to store per command invocation.
+$script:CommandOutputMaxLines = 2000
+
+# Observer scriptblock invoked after each Invoke-P4 call.
+# Signature: { param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs) }
+[scriptblock]$script:P4ExecutionObserver = $null
+
 function Format-P4CommandLine {
     [CmdletBinding()]
     param(
@@ -12,6 +19,122 @@ function Format-P4CommandLine {
     )
     $quoted = $P4Args | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
     return 'p4 ' + ($quoted -join ' ')
+}
+
+function Format-P4OutputLine {
+    <#
+    .SYNOPSIS
+        Converts raw p4 JSON output lines into human-readable summary strings.
+    .DESCRIPTION
+        Parses each raw JSON line defensively.  For recognised record shapes a
+        concise summary is produced (e.g. "CL#12345  Fix build  user@ws").
+        Unrecognised or unparseable records fall back to a compacted version of
+        the raw line.  The result is capped at $script:CommandOutputMaxLines
+        lines; records beyond the cap are counted but not formatted.
+    .OUTPUTS
+        PSCustomObject with:
+          FormattedLines  string[]  — formatted lines (capped)
+          OutputCount     int       — total record count before the cap
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$RawLines
+    )
+
+    $formatted = [System.Collections.Generic.List[string]]::new()
+    $total = 0
+
+    foreach ($line in $RawLines) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $total++
+
+        $record = $null
+        try { $record = ConvertFrom-Json $line -ErrorAction Stop } catch { }
+
+        if ($null -eq $record) {
+            if ($formatted.Count -lt $script:CommandOutputMaxLines) {
+                $fallback = ($line -replace '\s+', ' ').Trim()
+                if ($fallback.Length -gt 120) { $fallback = $fallback.Substring(0, 117) + '...' }
+                $formatted.Add($fallback)
+            }
+            continue
+        }
+
+        try {
+            $parts = [System.Collections.Generic.List[string]]::new()
+
+            if ($null -ne ($record.PSObject.Properties['change'])) {
+                $parts.Add("CL#$($record.change)")
+            }
+            if ($null -ne ($record.PSObject.Properties['desc'])) {
+                $desc = ([string]$record.desc -replace '\r?\n', ' ').Trim()
+                if ($desc.Length -gt 60) { $desc = $desc.Substring(0, 57) + '...' }
+                $parts.Add($desc)
+            }
+            if ($null -ne ($record.PSObject.Properties['user'])) {
+                $userVal = [string]$record.user
+                if ($null -ne ($record.PSObject.Properties['client'])) {
+                    $parts.Add("$userVal@$($record.client)")
+                } else {
+                    $parts.Add($userVal)
+                }
+            } elseif ($null -ne ($record.PSObject.Properties['client'])) {
+                $parts.Add("@$($record.client)")
+            }
+            if ($null -ne ($record.PSObject.Properties['depotFile'])) {
+                $df = [string]$record.depotFile
+                if ($null -ne ($record.PSObject.Properties['action'])) {
+                    $parts.Add("[$($record.action)] $df")
+                } else {
+                    $parts.Add($df)
+                }
+            }
+            if ($null -ne ($record.PSObject.Properties['serverAddress'])) {
+                $parts.Add("server=$($record.serverAddress)")
+            }
+
+            if ($formatted.Count -lt $script:CommandOutputMaxLines) {
+                if ($parts.Count -gt 0) {
+                    $formatted.Add(($parts -join '  '))
+                } else {
+                    $fallback = ($line -replace '\s+', ' ').Trim()
+                    if ($fallback.Length -gt 120) { $fallback = $fallback.Substring(0, 117) + '...' }
+                    $formatted.Add($fallback)
+                }
+            }
+        } catch {
+            if ($formatted.Count -lt $script:CommandOutputMaxLines) {
+                $fallback = ($line -replace '\s+', ' ').Trim()
+                if ($fallback.Length -gt 120) { $fallback = $fallback.Substring(0, 117) + '...' }
+                $formatted.Add($fallback)
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        FormattedLines = @($formatted.ToArray())
+        OutputCount    = $total
+    }
+}
+
+function Register-P4Observer {
+    <#
+    .SYNOPSIS
+        Registers a scriptblock to be called after every Invoke-P4 execution.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][scriptblock]$Observer)
+    $script:P4ExecutionObserver = $Observer
+}
+
+function Unregister-P4Observer {
+    <#
+    .SYNOPSIS
+        Clears the registered P4 execution observer.
+    #>
+    [CmdletBinding()]
+    param()
+    $script:P4ExecutionObserver = $null
 }
 
 function Invoke-P4 {
@@ -24,10 +147,11 @@ function Invoke-P4 {
 
     $globalArgs = @('-ztag', '-Mj')
     $fullArgs = $globalArgs + $P4Args
+    $commandLine = Format-P4CommandLine -P4Args $fullArgs
 
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $script:P4Executable
-    $psi.Arguments = (Format-P4CommandLine -P4Args $fullArgs).Substring(3)  # strip leading 'p4 '
+    $psi.Arguments = $commandLine.Substring(3)  # strip leading 'p4 '
     $psi.WorkingDirectory = (Get-Location).Path
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
@@ -37,6 +161,7 @@ function Invoke-P4 {
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $psi
 
+    $startedAt = Get-Date
     if (-not $process.Start()) {
         throw 'Failed to start p4.exe'
     }
@@ -68,6 +193,18 @@ function Invoke-P4 {
     $exitCode = $process.ExitCode
     $process.Dispose()
 
+    $rawLines  = @(($stdout -split "`r?`n") | Where-Object { $_ -ne '' })
+    $endedAt   = Get-Date
+    $durationMs = [int](($endedAt - $startedAt).TotalMilliseconds)
+
+    if ($script:P4ExecutionObserver) {
+        try {
+            & $script:P4ExecutionObserver -CommandLine $commandLine -RawLines $rawLines `
+                -ExitCode $exitCode -ErrorOutput $stderr `
+                -StartedAt $startedAt -EndedAt $endedAt -DurationMs $durationMs
+        } catch { <# observer must not break p4 operations #> }
+    }
+
     if ($exitCode -ne 0) {
         $messageParts = @(
             "p4 failed (exit $exitCode).",
@@ -79,7 +216,7 @@ function Invoke-P4 {
         throw ($messageParts -join "`n")
     }
 
-    return @(($stdout -split "`r?`n") | Where-Object { $_ -ne '' } | ForEach-Object { ConvertFrom-Json $_ })
+    return @($rawLines | ForEach-Object { ConvertFrom-Json $_ })
 }
 
 function Get-P4Info {
@@ -491,4 +628,4 @@ function Get-P4SubmittedChangelistEntries {
     }
 }
 
-Export-ModuleMember -Function Format-P4CommandLine, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Remove-P4Changelist, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles
+Export-ModuleMember -Function Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Remove-P4Changelist, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles

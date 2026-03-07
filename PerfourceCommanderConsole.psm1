@@ -32,6 +32,25 @@ function Invoke-BrowserSideEffect {
     })
     Render-BrowserState -State $s
 
+    # Collect p4 observer events emitted during WorkItem execution
+    $eventQueue = [System.Collections.Generic.List[pscustomobject]]::new()
+    Register-P4Observer -Observer {
+        param($CommandLine, $RawLines, $ExitCode, $ErrorOutput, $StartedAt, $EndedAt, $DurationMs)
+        $fmt = Format-P4OutputLine -RawLines $RawLines
+        $eventQueue.Add([pscustomobject]@{
+            CommandLine    = $CommandLine
+            FormattedLines = $fmt.FormattedLines
+            OutputCount    = $fmt.OutputCount
+            SummaryLine    = ''
+            ExitCode       = $ExitCode
+            ErrorText      = $ErrorOutput
+            Succeeded      = ($ExitCode -eq 0)
+            StartedAt      = $StartedAt
+            EndedAt        = $EndedAt
+            DurationMs     = $DurationMs
+        })
+    }
+
     $startedAt = Get-Date
     $exitCode  = 0
     $succeeded = $true
@@ -45,7 +64,27 @@ function Invoke-BrowserSideEffect {
         $errorText = $_.Exception.Message
         $s.Runtime.LastError = $errorText
     }
+    finally {
+        Unregister-P4Observer
+    }
     $endedAt = Get-Date
+
+    # Dispatch LogCommandExecution for every p4 invocation captured by the observer
+    foreach ($evt in $eventQueue) {
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{
+            Type           = 'LogCommandExecution'
+            CommandLine    = $evt.CommandLine
+            FormattedLines = $evt.FormattedLines
+            OutputCount    = $evt.OutputCount
+            SummaryLine    = $evt.SummaryLine
+            ExitCode       = $evt.ExitCode
+            ErrorText      = $evt.ErrorText
+            Succeeded      = $evt.Succeeded
+            StartedAt      = $evt.StartedAt
+            EndedAt        = $evt.EndedAt
+            DurationMs     = $evt.DurationMs
+        })
+    }
 
     $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{
         Type        = 'CommandFinish'

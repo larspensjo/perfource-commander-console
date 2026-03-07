@@ -37,11 +37,62 @@ function Get-SubmittedFilterPredicates {
     }
 }
 
+function Get-CommandLogFilterPredicates {
+    <#
+    .SYNOPSIS
+        Returns ordered predicates for the Command Log view mode filters.
+    .DESCRIPTION
+        Produces:
+          - Status group: 'OK', 'Error' — keyed on the Succeeded property.
+          - Command-type group: one entry per unique p4 subcommand extracted from
+            CommandLine. Subcommand extracted via regex 'p4\s+(\S+)'.
+            Unrecognised command lines are collected under an 'other' bucket.
+        The result is an ordered hashtable so the filter pane renders in a
+        consistent, predictable order.
+    .OUTPUTS
+        [ordered] hashtable  —  FilterName → [scriptblock]
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyCollection()]
+        [object[]]$CommandLog = @()
+    )
+
+    $result = [ordered]@{}
+
+    if (@($CommandLog).Count -eq 0) {
+        return $result
+    }
+
+    # Status filters
+    $result['OK']    = { param($e) [bool]$e.Succeeded }.GetNewClosure()
+    $result['Error'] = { param($e) -not [bool]$e.Succeeded }.GetNewClosure()
+
+    # Collect unique subcommands
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in $CommandLog) {
+        $cmdLine = [string]$entry.CommandLine
+        if ($cmdLine -match 'p4\s+(-\S+\s+)*(\S+)') {
+            $sub = $Matches[2]
+            if (-not [string]::IsNullOrWhiteSpace($sub) -and $sub -notmatch '^-') {
+                [void]$seen.Add($sub.ToLower())
+            }
+        }
+    }
+
+    foreach ($sub in ($seen | Sort-Object)) {
+        $subCopy = $sub  # capture for closure
+        $result["cmd:$sub"] = { param($e) ([string]$e.CommandLine) -match ('p4(\s+-\S+)*\s+' + [regex]::Escape($subCopy) + '(\s|$)') }.GetNewClosure()
+    }
+
+    return $result
+}
+
 # Returns the ordered list of all filter names for the given view mode.
 function Get-AllFilterNames {
     param(
         [Parameter(Mandatory = $false)]
-        [ValidateSet('Pending', 'Submitted')]
         [string]$ViewMode = 'Pending',
 
         [Parameter(Mandatory = $false)]
@@ -50,6 +101,9 @@ function Get-AllFilterNames {
 
     if ($ViewMode -eq 'Submitted') {
         return @((Get-SubmittedFilterPredicates -CurrentUser $CurrentUser).Keys)
+    }
+    if ($ViewMode -eq 'CommandLog') {
+        return @()  # CommandLog filter names depend on dynamic data; computed in Update-CommandLogDerivedState
     }
     return @($script:PendingFilterPredicates.Keys)
 }
@@ -60,10 +114,17 @@ function Test-EntryMatchesFilter {
     param(
         [Parameter(Mandatory = $true)][string]$FilterName,
         [Parameter(Mandatory = $true)][AllowNull()]$Entry,
-        [Parameter(Mandatory = $false)][ValidateSet('Pending', 'Submitted')][string]$ViewMode = 'Pending',
+        [Parameter(Mandatory = $false)][string]$ViewMode = 'Pending',
         [Parameter(Mandatory = $false)][string]$CurrentUser = ''
     )
     if ($null -eq $Entry) { return $false }
+
+    if ($ViewMode -eq 'CommandLog') {
+        $predicates = Get-CommandLogFilterPredicates -CommandLog @($Entry)
+        $predicate  = $predicates[$FilterName]
+        if ($null -eq $predicate) { return $false }
+        return [bool](& $predicate $Entry)
+    }
 
     if ($ViewMode -eq 'Submitted') {
         $predicates = Get-SubmittedFilterPredicates -CurrentUser $CurrentUser
@@ -83,9 +144,12 @@ function Get-VisibleChangeIds {
         [Parameter(Mandatory = $false)][AllowEmptyString()][string]$SearchText = '',
         [Parameter(Mandatory = $false)][ValidateSet('None', 'Regex', 'Text')][string]$SearchMode = 'None',
         [Parameter(Mandatory = $false)][ValidateSet('Default', 'CapturedDesc')][string]$SortMode = 'Default',
-        [Parameter(Mandatory = $false)][ValidateSet('Pending', 'Submitted')][string]$ViewMode = 'Pending',
+        [Parameter(Mandatory = $false)][string]$ViewMode = 'Pending',
         [Parameter(Mandatory = $false)][string]$CurrentUser = ''
     )
+
+    # CommandLog mode does not use changelist-based filtering
+    if ($ViewMode -eq 'CommandLog') { return @() }
 
     $predicates = if ($ViewMode -eq 'Submitted') {
         Get-SubmittedFilterPredicates -CurrentUser $CurrentUser
@@ -152,4 +216,4 @@ function Get-VisibleChangeIds {
     return @($filtered | ForEach-Object { $_.Id })
 }
 
-Export-ModuleMember -Function Get-AllFilterNames, Test-EntryMatchesFilter, Get-VisibleChangeIds
+Export-ModuleMember -Function Get-AllFilterNames, Get-CommandLogFilterPredicates, Test-EntryMatchesFilter, Get-VisibleChangeIds

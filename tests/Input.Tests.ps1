@@ -87,9 +87,17 @@ Describe 'ConvertFrom-KeyInfoToAction' {
         $action.Type | Should -Be 'Reload'
     }
 
-    It 'F12 maps to ToggleCommandModal' {
+    It 'F12 maps to SwitchView CommandLog' {
         $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key F12)
-        $action.Type | Should -Be 'ToggleCommandModal'
+        $action.Type | Should -Be 'SwitchView'
+        $action.View | Should -Be 'CommandLog'
+    }
+
+    It 'D3 maps to SwitchView CommandLog' {
+        $keyInfo = [System.ConsoleKeyInfo]::new([char][System.ConsoleKey]::D3, [System.ConsoleKey]::D3, $false, $false, $false)
+        $action  = ConvertFrom-KeyInfoToAction -KeyInfo $keyInfo
+        $action.Type | Should -Be 'SwitchView'
+        $action.View | Should -Be 'CommandLog'
     }
 
     It 'Escape maps to HideCommandModal' {

@@ -23,10 +23,11 @@ function ConvertFrom-KeyInfoToAction {
         'X' { return [pscustomobject]@{ Type = 'DeleteChange' } }
         'F1' { return [pscustomobject]@{ Type = 'ToggleHelpOverlay' } }
         'F5' { return [pscustomobject]@{ Type = 'Reload' } }
-        'F12' { return [pscustomobject]@{ Type = 'ToggleCommandModal' } }
+        'F12' { return [pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' } }
         'Escape' { return [pscustomobject]@{ Type = 'HideCommandModal' } }
         'D1' { return [pscustomobject]@{ Type = 'SwitchView'; View = 'Pending' } }
         'D2' { return [pscustomobject]@{ Type = 'SwitchView'; View = 'Submitted' } }
+        'D3' { return [pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' } }
         'L' { return [pscustomobject]@{ Type = 'LoadMore' } }
         # Files screen navigation
         'RightArrow' { return [pscustomobject]@{ Type = 'OpenFilesScreen' } }

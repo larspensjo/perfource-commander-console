@@ -1,6 +1,7 @@
 Set-StrictMode -Version Latest
 
 $script:CommandHistoryMaxSize = 50
+$script:CommandLogMaxSize     = 200
 
 Import-Module (Join-Path $PSScriptRoot 'Filtering.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Layout.psm1') -Force
@@ -131,6 +132,8 @@ function New-BrowserState {
             SubmittedChanges  = @()
             SubmittedHasMore  = $true
             SubmittedOldestId = $null
+            # CommandOutputCache: keyed by CommandId (string); append-only, shared across copies.
+            CommandOutputCache = @{}
         }
         Ui = [pscustomobject]@{
             ActivePane             = 'Filters'
@@ -141,6 +144,7 @@ function New-BrowserState {
             ExpandedChangelists    = $false
             ViewMode               = 'Pending'
             Layout                 = Get-BrowserLayout -Width $InitialWidth -Height $InitialHeight
+            ExpandedCommands       = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         }
         Query = [pscustomobject]@{
             SelectedFilters  = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -151,20 +155,27 @@ function New-BrowserState {
             FileFilterText   = ''    # raw text for display
         }
         Derived = [pscustomobject]@{
-            VisibleChangeIds   = @()
-            VisibleFilters     = @()
-            VisibleFileIndices = @()  # int[] indices into FileCache entry
+            VisibleChangeIds      = @()
+            VisibleFilters        = @()
+            VisibleFileIndices    = @()  # int[] indices into FileCache entry
+            VisibleCommandIds     = @()  # CommandId strings for CommandLog view
+            VisibleCommandFilters = @()  # filter items for CommandLog left pane
         }
         Cursor = [pscustomobject]@{
-            FilterIndex     = 0
-            FilterScrollTop = 0
-            ChangeIndex     = 0
-            ChangeScrollTop = 0
-            FileIndex       = 0   # mirrors ChangeIndex for the files list
-            FileScrollTop   = 0   # mirrors ChangeScrollTop for the files list
-            ViewSnapshots   = [pscustomobject]@{
-                Pending   = [pscustomobject]@{ ChangeIndex = 0; ChangeScrollTop = 0 }
-                Submitted = [pscustomobject]@{ ChangeIndex = 0; ChangeScrollTop = 0 }
+            FilterIndex       = 0
+            FilterScrollTop   = 0
+            ChangeIndex       = 0
+            ChangeScrollTop   = 0
+            FileIndex         = 0
+            FileScrollTop     = 0
+            CommandIndex      = 0
+            CommandScrollTop  = 0
+            OutputIndex       = 0
+            OutputScrollTop   = 0
+            ViewSnapshots     = [pscustomobject]@{
+                Pending    = [pscustomobject]@{ ChangeIndex = 0; ChangeScrollTop = 0 }
+                Submitted  = [pscustomobject]@{ ChangeIndex = 0; ChangeScrollTop = 0 }
+                CommandLog = [pscustomobject]@{ CommandIndex = 0; CommandScrollTop = 0 }
             }
         }
         Runtime = [pscustomobject]@{
@@ -176,9 +187,12 @@ function New-BrowserState {
             ReloadRequested          = $false
             SubmittedReloadRequested = $false
             LoadMoreRequested        = $false
-            LoadFilesRequested       = $false  # set by OpenFilesScreen; consumed by main loop
+            LoadFilesRequested       = $false
             ConfiguredMax            = 200
             HelpOverlayOpen          = $false
+            NextCommandId            = 1
+            CommandLog               = @()
+            CommandOutputCommandId   = $null
             ModalPrompt              = [pscustomobject]@{
                 IsOpen         = $false
                 IsBusy         = $false
@@ -205,12 +219,178 @@ function Copy-BrowserState {
     return Copy-StateObject -Obj $State
 }
 
+function Get-CommandOutputCount {
+    <#
+    .SYNOPSIS
+        Returns the number of formatted output lines for the currently viewed command.
+    #>
+    param($State)
+    $cmdId = ''
+    $cidProp = $State.Runtime.PSObject.Properties['CommandOutputCommandId']
+    if ($null -ne $cidProp -and $null -ne $cidProp.Value) { $cmdId = [string]$cidProp.Value }
+    if ([string]::IsNullOrEmpty($cmdId)) { return 0 }
+    $cache = $State.Data.PSObject.Properties['CommandOutputCache']?.Value
+    if ($null -eq $cache -or -not $cache.ContainsKey($cmdId)) { return 0 }
+    return @($cache[$cmdId]).Count
+}
+
+function Get-OutputViewportSize {
+    param($State)
+    if ($null -ne $State.Ui.Layout -and $State.Ui.Layout.Mode -eq 'Normal') {
+        return [Math]::Max(1, $State.Ui.Layout.ListPane.H - 2)
+    }
+    return 10
+}
+
+function Update-OutputDerivedState {
+    param($State)
+    $outputCount = Get-CommandOutputCount -State $State
+    $viewport    = Get-OutputViewportSize  -State $State
+
+    if ($outputCount -eq 0) {
+        $State.Cursor.OutputIndex     = 0
+        $State.Cursor.OutputScrollTop = 0
+        return $State
+    }
+
+    if ($State.Cursor.OutputIndex -lt 0)             { $State.Cursor.OutputIndex = 0 }
+    if ($State.Cursor.OutputIndex -ge $outputCount)  { $State.Cursor.OutputIndex = $outputCount - 1 }
+    $maxScroll = [Math]::Max(0, $outputCount - $viewport)
+    if ($State.Cursor.OutputScrollTop -lt 0)         { $State.Cursor.OutputScrollTop = 0 }
+    if ($State.Cursor.OutputScrollTop -gt $maxScroll){ $State.Cursor.OutputScrollTop = $maxScroll }
+    if ($State.Cursor.OutputIndex -lt $State.Cursor.OutputScrollTop) {
+        $State.Cursor.OutputScrollTop = $State.Cursor.OutputIndex
+    }
+    if ($State.Cursor.OutputIndex -ge ($State.Cursor.OutputScrollTop + $viewport)) {
+        $State.Cursor.OutputScrollTop = [Math]::Max(0, $State.Cursor.OutputIndex - $viewport + 1)
+    }
+    return $State
+}
+
+function Update-CommandLogDerivedState {
+    <#
+    .SYNOPSIS
+        Computes derived state for the CommandLog view mode.
+    .DESCRIPTION
+        Called by Update-BrowserDerivedState when ViewMode -eq 'CommandLog'.
+        Computes VisibleCommandIds, VisibleCommandFilters, and VisibleFilters.
+        Clamps CommandIndex/CommandScrollTop and FilterIndex/FilterScrollTop.
+    #>
+    param([Parameter(Mandatory = $true)]$State)
+
+    # Get CommandLog (newest first in storage)
+    $commandLog = @()
+    $clProp = $State.Runtime.PSObject.Properties['CommandLog']
+    if ($null -ne $clProp -and $null -ne $clProp.Value) {
+        $commandLog = @($clProp.Value)
+    }
+
+    # Get predicates keyed by filter name
+    $predicates     = Get-CommandLogFilterPredicates -CommandLog $commandLog
+    $allFilterNames = @($predicates.Keys)
+    $State.Data.AllFilters = $allFilterNames
+
+    # Compute VisibleCommandIds — oldest first (reverse of storage)
+    $selectedFilters = $State.Query.SelectedFilters
+    $visibleIds = [System.Collections.Generic.List[string]]::new()
+    for ($i = $commandLog.Count - 1; $i -ge 0; $i--) {
+        $entry   = $commandLog[$i]
+        $passes  = $true
+        foreach ($filter in $selectedFilters) {
+            $pred = $predicates[$filter]
+            if ($null -ne $pred -and -not ([bool](& $pred $entry))) {
+                $passes = $false
+                break
+            }
+        }
+        if ($passes) { [void]$visibleIds.Add([string]$entry.CommandId) }
+    }
+    [object[]]$visibleCommandIds = @($visibleIds.ToArray())
+    $State.Derived.VisibleCommandIds = $visibleCommandIds
+
+    # Compute filter items (same shape as VisibleFilters so filter pane reuse works)
+    $filterItems = [System.Collections.Generic.List[object]]::new()
+    foreach ($filterName in $allFilterNames) {
+        $matchCount = 0
+        foreach ($entry in $commandLog) {
+            $pred = $predicates[$filterName]
+            if ($null -ne $pred -and [bool](& $pred $entry)) { $matchCount++ }
+        }
+        $isSelected   = $selectedFilters.Contains($filterName)
+        $filterItems.Add([pscustomobject]@{
+            Name        = $filterName
+            MatchCount  = $matchCount
+            IsSelected  = $isSelected
+            IsSelectable = ($isSelected -or ($matchCount -gt 0))
+        }) | Out-Null
+    }
+    $allCommandFilters = @($filterItems.ToArray())
+    $State.Derived.VisibleFilters        = $allCommandFilters
+    $State.Derived.VisibleCommandFilters = $allCommandFilters
+
+    # Clamp FilterIndex / FilterScrollTop
+    $filterViewport = 1
+    if ($null -ne $State.Ui.Layout -and $State.Ui.Layout.Mode -eq 'Normal') {
+        $filterViewport = [Math]::Max(1, $State.Ui.Layout.FilterPane.H - 2)
+    }
+    $filterCount = $allCommandFilters.Count
+    if ($filterCount -eq 0) {
+        $State.Cursor.FilterIndex     = 0
+        $State.Cursor.FilterScrollTop = 0
+    } else {
+        if ($State.Cursor.FilterIndex -lt 0)              { $State.Cursor.FilterIndex = 0 }
+        if ($State.Cursor.FilterIndex -ge $filterCount)   { $State.Cursor.FilterIndex = $filterCount - 1 }
+        $maxFilterScroll = [Math]::Max(0, $filterCount - $filterViewport)
+        if ($State.Cursor.FilterScrollTop -lt 0)          { $State.Cursor.FilterScrollTop = 0 }
+        if ($State.Cursor.FilterScrollTop -gt $maxFilterScroll) { $State.Cursor.FilterScrollTop = $maxFilterScroll }
+        if ($State.Cursor.FilterIndex -lt $State.Cursor.FilterScrollTop) {
+            $State.Cursor.FilterScrollTop = $State.Cursor.FilterIndex
+        }
+        if ($State.Cursor.FilterIndex -ge ($State.Cursor.FilterScrollTop + $filterViewport)) {
+            $State.Cursor.FilterScrollTop = [Math]::Max(0, $State.Cursor.FilterIndex - $filterViewport + 1)
+        }
+    }
+
+    # Clamp CommandIndex / CommandScrollTop
+    $commandCount = $visibleCommandIds.Count
+    if ($commandCount -eq 0) {
+        $State.Cursor.CommandIndex     = 0
+        $State.Cursor.CommandScrollTop = 0
+    } else {
+        if ($State.Cursor.CommandIndex -lt 0)              { $State.Cursor.CommandIndex = 0 }
+        if ($State.Cursor.CommandIndex -ge $commandCount)  { $State.Cursor.CommandIndex = $commandCount - 1 }
+        $commandViewport = if ($null -ne $State.Ui.Layout -and $State.Ui.Layout.Mode -eq 'Normal') {
+            [Math]::Max(1, $State.Ui.Layout.ListPane.H - 2)
+        } else { 1 }
+        $maxCommandScroll = [Math]::Max(0, $commandCount - $commandViewport)
+        if ($State.Cursor.CommandScrollTop -lt 0)          { $State.Cursor.CommandScrollTop = 0 }
+        if ($State.Cursor.CommandScrollTop -gt $maxCommandScroll) { $State.Cursor.CommandScrollTop = $maxCommandScroll }
+        if ($State.Cursor.CommandIndex -lt $State.Cursor.CommandScrollTop) {
+            $State.Cursor.CommandScrollTop = $State.Cursor.CommandIndex
+        }
+        if ($State.Cursor.CommandIndex -ge ($State.Cursor.CommandScrollTop + $commandViewport)) {
+            $State.Cursor.CommandScrollTop = [Math]::Max(0, $State.Cursor.CommandIndex - $commandViewport + 1)
+        }
+    }
+
+    # Safety: CommandLog mode does not display changelists
+    $State.Derived.VisibleChangeIds   = @()
+    $State.Derived.VisibleFileIndices = @()
+
+    return $State
+}
+
 function Update-BrowserDerivedState {
     param([Parameter(Mandatory = $true)]$State)
 
     # Determine active source list and view context
     $viewMode    = if (($State.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$State.Ui.ViewMode } else { 'Pending' }
     $currentUser = if (($State.Data.PSObject.Properties.Match('CurrentUser')).Count -gt 0) { [string]$State.Data.CurrentUser } else { '' }
+
+    # CommandLog mode has entirely separate derived state — return early.
+    if ($viewMode -eq 'CommandLog') {
+        return Update-CommandLogDerivedState -State $State
+    }
 
     # IMPORTANT: do NOT use if/else expression for @()-valued branches — PowerShell swallows
     # empty-array pipeline output and the variable becomes $null, failing [AllowEmptyCollection()].
@@ -405,6 +585,7 @@ function Invoke-ChangelistReducer {
     )
 
     $next = Copy-BrowserState -State $State
+    $currentViewMode = if (($next.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$next.Ui.ViewMode } else { 'Pending' }
 
     switch ($Action.Type) {
         'CommandStart' {
@@ -482,6 +663,10 @@ function Invoke-ChangelistReducer {
         'MoveUp' {
             if ($next.Ui.ActivePane -eq 'Filters') {
                 if ($next.Cursor.FilterIndex -gt 0) { $next.Cursor.FilterIndex-- }
+            } elseif ($currentViewMode -eq 'CommandLog') {
+                if (($next.Cursor.PSObject.Properties.Match('CommandIndex')).Count -gt 0 -and $next.Cursor.CommandIndex -gt 0) {
+                    $next.Cursor.CommandIndex--
+                }
             } else {
                 if ($next.Cursor.ChangeIndex -gt 0) { $next.Cursor.ChangeIndex-- }
             }
@@ -491,6 +676,11 @@ function Invoke-ChangelistReducer {
             if ($next.Ui.ActivePane -eq 'Filters') {
                 $maxFilterIndex = [Math]::Max(0, $next.Derived.VisibleFilters.Count - 1)
                 if ($next.Cursor.FilterIndex -lt $maxFilterIndex) { $next.Cursor.FilterIndex++ }
+            } elseif ($currentViewMode -eq 'CommandLog') {
+                if (($next.Cursor.PSObject.Properties.Match('CommandIndex')).Count -gt 0 -and ($next.Derived.PSObject.Properties.Match('VisibleCommandIds')).Count -gt 0) {
+                    $maxIdx = [Math]::Max(0, $next.Derived.VisibleCommandIds.Count - 1)
+                    if ($next.Cursor.CommandIndex -lt $maxIdx) { $next.Cursor.CommandIndex++ }
+                }
             } else {
                 $maxChangeIndex = [Math]::Max(0, $next.Derived.VisibleChangeIds.Count - 1)
                 if ($next.Cursor.ChangeIndex -lt $maxChangeIndex) { $next.Cursor.ChangeIndex++ }
@@ -501,6 +691,11 @@ function Invoke-ChangelistReducer {
             if ($next.Ui.ActivePane -eq 'Filters') {
                 $step = Get-FilterViewportSize -CurrentState $next
                 $next.Cursor.FilterIndex = [Math]::Max(0, $next.Cursor.FilterIndex - $step)
+            } elseif ($currentViewMode -eq 'CommandLog') {
+                if (($next.Cursor.PSObject.Properties.Match('CommandIndex')).Count -gt 0) {
+                    $step = Get-ChangeViewportSize -CurrentState $next
+                    $next.Cursor.CommandIndex = [Math]::Max(0, $next.Cursor.CommandIndex - $step)
+                }
             } else {
                 $step = Get-ChangeViewportSize -CurrentState $next
                 $next.Cursor.ChangeIndex = [Math]::Max(0, $next.Cursor.ChangeIndex - $step)
@@ -512,6 +707,12 @@ function Invoke-ChangelistReducer {
                 $step = Get-FilterViewportSize -CurrentState $next
                 $maxFilterIndex = [Math]::Max(0, $next.Derived.VisibleFilters.Count - 1)
                 $next.Cursor.FilterIndex = [Math]::Min($maxFilterIndex, $next.Cursor.FilterIndex + $step)
+            } elseif ($currentViewMode -eq 'CommandLog') {
+                if (($next.Cursor.PSObject.Properties.Match('CommandIndex')).Count -gt 0 -and ($next.Derived.PSObject.Properties.Match('VisibleCommandIds')).Count -gt 0) {
+                    $step = Get-ChangeViewportSize -CurrentState $next
+                    $maxIdx = [Math]::Max(0, $next.Derived.VisibleCommandIds.Count - 1)
+                    $next.Cursor.CommandIndex = [Math]::Min($maxIdx, $next.Cursor.CommandIndex + $step)
+                }
             } else {
                 $step = Get-ChangeViewportSize -CurrentState $next
                 $maxChangeIndex = [Math]::Max(0, $next.Derived.VisibleChangeIds.Count - 1)
@@ -523,6 +724,11 @@ function Invoke-ChangelistReducer {
             if ($next.Ui.ActivePane -eq 'Filters') {
                 $next.Cursor.FilterIndex = 0
                 $next.Cursor.FilterScrollTop = 0
+            } elseif ($currentViewMode -eq 'CommandLog') {
+                if (($next.Cursor.PSObject.Properties.Match('CommandIndex')).Count -gt 0) {
+                    $next.Cursor.CommandIndex     = 0
+                    $next.Cursor.CommandScrollTop = 0
+                }
             } else {
                 $next.Cursor.ChangeIndex = 0
                 $next.Cursor.ChangeScrollTop = 0
@@ -532,6 +738,10 @@ function Invoke-ChangelistReducer {
         'MoveEnd' {
             if ($next.Ui.ActivePane -eq 'Filters') {
                 $next.Cursor.FilterIndex = [Math]::Max(0, $next.Derived.VisibleFilters.Count - 1)
+            } elseif ($currentViewMode -eq 'CommandLog') {
+                if (($next.Cursor.PSObject.Properties.Match('CommandIndex')).Count -gt 0 -and ($next.Derived.PSObject.Properties.Match('VisibleCommandIds')).Count -gt 0) {
+                    $next.Cursor.CommandIndex = [Math]::Max(0, $next.Derived.VisibleCommandIds.Count - 1)
+                }
             } else {
                 $next.Cursor.ChangeIndex = [Math]::Max(0, $next.Derived.VisibleChangeIds.Count - 1)
             }
@@ -596,7 +806,22 @@ function Invoke-ChangelistReducer {
             return Update-BrowserDerivedState -State $next
         }
         'ToggleChangelistView' {
-            $next.Ui.ExpandedChangelists = -not [bool]$next.Ui.ExpandedChangelists
+            if ($currentViewMode -eq 'CommandLog') {
+                # In CommandLog mode, toggle expand for the selected command
+                $expandedProp = $next.Ui.PSObject.Properties['ExpandedCommands']
+                if ($null -ne $expandedProp -and ($next.Derived.PSObject.Properties.Match('VisibleCommandIds')).Count -gt 0 -and $next.Derived.VisibleCommandIds.Count -gt 0) {
+                    $idx    = [Math]::Max(0, [Math]::Min($next.Cursor.CommandIndex, $next.Derived.VisibleCommandIds.Count - 1))
+                    $cmdId  = [string]$next.Derived.VisibleCommandIds[$idx]
+                    $expSet = $next.Ui.ExpandedCommands
+                    if ($expSet.Contains($cmdId)) {
+                        [void]$expSet.Remove($cmdId)
+                    } else {
+                        [void]$expSet.Add($cmdId)
+                    }
+                }
+            } else {
+                $next.Ui.ExpandedChangelists = -not [bool]$next.Ui.ExpandedChangelists
+            }
             return Update-BrowserDerivedState -State $next
         }
         'Describe' {
@@ -638,16 +863,31 @@ function Invoke-ChangelistReducer {
         }
         'SwitchView' {
             $targetView  = [string]$Action.View
-            if ($targetView -ne 'Pending' -and $targetView -ne 'Submitted') { return $next }
+            if ($targetView -ne 'Pending' -and $targetView -ne 'Submitted' -and $targetView -ne 'CommandLog') { return $next }
 
             $currentView = if (($next.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$next.Ui.ViewMode } else { 'Pending' }
             if ($targetView -eq $currentView) { return $next }
 
+            # If on a pushed screen (Files/CommandOutput), pop back to Changelists first.
+            [object[]]$currentStack = if (($next.Ui.PSObject.Properties.Match('ScreenStack')).Count -gt 0 -and $null -ne $next.Ui.ScreenStack) { @($next.Ui.ScreenStack) } else { @('Changelists') }
+            if ($currentStack.Count -gt 1) {
+                $next.Ui.ScreenStack = @('Changelists')
+            }
+
             # Save current cursor snapshot
             if (($next.Cursor.PSObject.Properties.Match('ViewSnapshots')).Count -gt 0 -and $null -ne $next.Cursor.ViewSnapshots) {
-                $next.Cursor.ViewSnapshots.$currentView = [pscustomobject]@{
-                    ChangeIndex     = $next.Cursor.ChangeIndex
-                    ChangeScrollTop = $next.Cursor.ChangeScrollTop
+                if ($currentView -eq 'CommandLog') {
+                    if (($next.Cursor.PSObject.Properties.Match('CommandIndex')).Count -gt 0) {
+                        $next.Cursor.ViewSnapshots.CommandLog = [pscustomobject]@{
+                            CommandIndex     = $next.Cursor.CommandIndex
+                            CommandScrollTop = $next.Cursor.CommandScrollTop
+                        }
+                    }
+                } else {
+                    $next.Cursor.ViewSnapshots.$currentView = [pscustomobject]@{
+                        ChangeIndex     = $next.Cursor.ChangeIndex
+                        ChangeScrollTop = $next.Cursor.ChangeScrollTop
+                    }
                 }
             }
 
@@ -655,10 +895,24 @@ function Invoke-ChangelistReducer {
             $next.Ui.ViewMode = $targetView
 
             # Restore target view cursor snapshot
-            if (($next.Cursor.PSObject.Properties.Match('ViewSnapshots')).Count -gt 0 -and $null -ne $next.Cursor.ViewSnapshots -and ($next.Cursor.ViewSnapshots.PSObject.Properties.Match($targetView)).Count -gt 0) {
-                $snap = $next.Cursor.ViewSnapshots.$targetView
-                $next.Cursor.ChangeIndex     = [int]$snap.ChangeIndex
-                $next.Cursor.ChangeScrollTop = [int]$snap.ChangeScrollTop
+            if (($next.Cursor.PSObject.Properties.Match('ViewSnapshots')).Count -gt 0 -and $null -ne $next.Cursor.ViewSnapshots) {
+                if ($targetView -eq 'CommandLog') {
+                    $snap = $next.Cursor.ViewSnapshots.CommandLog
+                    if ($null -ne $snap -and ($snap.PSObject.Properties.Match('CommandIndex')).Count -gt 0) {
+                        $next.Cursor.CommandIndex     = [int]$snap.CommandIndex
+                        $next.Cursor.CommandScrollTop = [int]$snap.CommandScrollTop
+                    } else {
+                        $next.Cursor.CommandIndex     = 0
+                        $next.Cursor.CommandScrollTop = 0
+                    }
+                } elseif (($next.Cursor.ViewSnapshots.PSObject.Properties.Match($targetView)).Count -gt 0) {
+                    $snap = $next.Cursor.ViewSnapshots.$targetView
+                    $next.Cursor.ChangeIndex     = [int]$snap.ChangeIndex
+                    $next.Cursor.ChangeScrollTop = [int]$snap.ChangeScrollTop
+                } else {
+                    $next.Cursor.ChangeIndex     = 0
+                    $next.Cursor.ChangeScrollTop = 0
+                }
             } else {
                 $next.Cursor.ChangeIndex     = 0
                 $next.Cursor.ChangeScrollTop = 0
@@ -691,7 +945,67 @@ function Invoke-ChangelistReducer {
             }
             return $next
         }
+        'LogCommandExecution' {
+            # Assign next monotonic CommandId
+            $cmdIdInt = if (($next.Runtime.PSObject.Properties.Match('NextCommandId')).Count -gt 0) { [int]$next.Runtime.NextCommandId } else { 1 }
+            $cmdId    = [string]$cmdIdInt
+            $next.Runtime.NextCommandId = $cmdIdInt + 1
+
+            # Build metadata item (no FormattedLines — those go into CommandOutputCache)
+            $startedAt  = [datetime]$Action.StartedAt
+            $endedAt    = [datetime]$Action.EndedAt
+            $durationMs = [int](($endedAt - $startedAt).TotalMilliseconds)
+            $metaItem   = [pscustomobject]@{
+                CommandId   = $cmdId
+                StartedAt   = $startedAt
+                EndedAt     = $endedAt
+                CommandLine = [string]$Action.CommandLine
+                ExitCode    = [int]$Action.ExitCode
+                Succeeded   = [bool]$Action.Succeeded
+                ErrorText   = [string]$Action.ErrorText
+                DurationMs  = $durationMs
+                OutputCount = [int]$Action.OutputCount
+                SummaryLine = [string]$Action.SummaryLine
+                OutputRef   = $cmdId
+            }
+
+            # Store formatted lines in CommandOutputCache (shared dictionary)
+            $formattedLines = @()
+            $flProp = $Action.PSObject.Properties['FormattedLines']
+            if ($null -ne $flProp -and $null -ne $flProp.Value) { $formattedLines = @($flProp.Value) }
+            $next.Data.CommandOutputCache[$cmdId] = $formattedLines
+
+            # Prepend metadata to CommandLog (newest first) and trim if over limit
+            $newLog = @($metaItem) + @($next.Runtime.CommandLog)
+            if ($newLog.Count -gt $script:CommandLogMaxSize) {
+                $evicted = $newLog[$script:CommandLogMaxSize..($newLog.Count - 1)]
+                foreach ($e in $evicted) {
+                    $evKey = [string]$e.OutputRef
+                    if (-not [string]::IsNullOrEmpty($evKey) -and $next.Data.CommandOutputCache.ContainsKey($evKey)) {
+                        $next.Data.CommandOutputCache.Remove($evKey) | Out-Null
+                    }
+                }
+                $newLog = $newLog[0..($script:CommandLogMaxSize - 1)]
+            }
+            $next.Runtime.CommandLog = $newLog
+
+            return Update-BrowserDerivedState -State $next
+        }
         'OpenFilesScreen' {
+            # In CommandLog mode, open the CommandOutput screen for the selected command.
+            if ($currentViewMode -eq 'CommandLog') {
+                if (($next.Derived.PSObject.Properties.Match('VisibleCommandIds')).Count -gt 0 -and $next.Derived.VisibleCommandIds.Count -gt 0) {
+                    $idx   = [Math]::Max(0, [Math]::Min($next.Cursor.CommandIndex, $next.Derived.VisibleCommandIds.Count - 1))
+                    $cmdId = [string]$next.Derived.VisibleCommandIds[$idx]
+                    [object[]]$currentStack = if (($next.Ui.PSObject.Properties.Match('ScreenStack')).Count -gt 0 -and $null -ne $next.Ui.ScreenStack) { @($next.Ui.ScreenStack) } else { @('Changelists') }
+                    $next.Ui.ScreenStack = $currentStack + @('CommandOutput')
+                    $next.Runtime.CommandOutputCommandId = $cmdId
+                    $next.Cursor.OutputIndex     = 0
+                    $next.Cursor.OutputScrollTop = 0
+                }
+                return Update-BrowserDerivedState -State $next
+            }
+
             if ($next.Derived.VisibleChangeIds.Count -eq 0) { return $next }
             $idx         = [Math]::Max(0, [Math]::Min($next.Cursor.ChangeIndex, $next.Derived.VisibleChangeIds.Count - 1))
             $changeIdStr = $next.Derived.VisibleChangeIds[$idx]
@@ -854,11 +1168,111 @@ function Invoke-FilesReducer {
     }
 }
 
+function Invoke-CommandOutputReducer {
+    <#
+    .SYNOPSIS
+        Reducer for the CommandOutput screen. Handles scrolling through formatted
+        p4 command output and Escape/left-arrow to pop the screen.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]$Action
+    )
+
+    # Delegate global lifecycle actions to ChangelistReducer
+    $globalActions = @(
+        'CommandStart', 'CommandFinish',
+        'ToggleCommandModal', 'ShowCommandModal',
+        'Quit', 'Resize',
+        'ToggleHelpOverlay', 'HideHelpOverlay',
+        'LogCommandExecution'
+    )
+    if ($Action.Type -in $globalActions) {
+        return Invoke-ChangelistReducer -State $State -Action $Action
+    }
+
+    $next = Copy-BrowserState -State $State
+
+    $closeScreen = {
+        param($s)
+        $stack = [System.Collections.Generic.List[string]]::new()
+        foreach ($item in @($s.Ui.ScreenStack)) { $stack.Add([string]$item) }
+        if ($stack.Count -gt 1) { $stack.RemoveAt($stack.Count - 1) }
+        $s.Ui.ScreenStack = $stack.ToArray()
+        return Update-BrowserDerivedState -State $s
+    }
+
+    switch ($Action.Type) {
+        'HideCommandModal' {
+            if ($next.Runtime.HelpOverlayOpen) {
+                $next.Runtime.HelpOverlayOpen = $false
+                return $next
+            }
+            if ($next.Runtime.ModalPrompt.IsOpen -and -not $next.Runtime.ModalPrompt.IsBusy) {
+                $next.Runtime.ModalPrompt.IsOpen = $false
+                return $next
+            }
+            return & $closeScreen $next
+        }
+        'CloseFilesScreen' {
+            return & $closeScreen $next
+        }
+        'MoveUp' {
+            if (($next.Cursor.PSObject.Properties.Match('OutputIndex')).Count -gt 0 -and $next.Cursor.OutputIndex -gt 0) {
+                $next.Cursor.OutputIndex--
+            }
+            return Update-OutputDerivedState -State $next
+        }
+        'MoveDown' {
+            $outputCount = Get-CommandOutputCount -State $next
+            $maxIdx = [Math]::Max(0, $outputCount - 1)
+            if (($next.Cursor.PSObject.Properties.Match('OutputIndex')).Count -gt 0 -and $next.Cursor.OutputIndex -lt $maxIdx) {
+                $next.Cursor.OutputIndex++
+            }
+            return Update-OutputDerivedState -State $next
+        }
+        'PageUp' {
+            $step = Get-OutputViewportSize -State $next
+            if (($next.Cursor.PSObject.Properties.Match('OutputIndex')).Count -gt 0) {
+                $next.Cursor.OutputIndex = [Math]::Max(0, $next.Cursor.OutputIndex - $step)
+            }
+            return Update-OutputDerivedState -State $next
+        }
+        'PageDown' {
+            $step        = Get-OutputViewportSize -State $next
+            $outputCount = Get-CommandOutputCount -State $next
+            $maxIdx      = [Math]::Max(0, $outputCount - 1)
+            if (($next.Cursor.PSObject.Properties.Match('OutputIndex')).Count -gt 0) {
+                $next.Cursor.OutputIndex = [Math]::Min($maxIdx, $next.Cursor.OutputIndex + $step)
+            }
+            return Update-OutputDerivedState -State $next
+        }
+        'MoveHome' {
+            if (($next.Cursor.PSObject.Properties.Match('OutputIndex')).Count -gt 0) {
+                $next.Cursor.OutputIndex     = 0
+                $next.Cursor.OutputScrollTop = 0
+            }
+            return Update-OutputDerivedState -State $next
+        }
+        'MoveEnd' {
+            $outputCount = Get-CommandOutputCount -State $next
+            if (($next.Cursor.PSObject.Properties.Match('OutputIndex')).Count -gt 0) {
+                $next.Cursor.OutputIndex = [Math]::Max(0, $outputCount - 1)
+            }
+            return Update-OutputDerivedState -State $next
+        }
+        default {
+            return Update-BrowserDerivedState -State $next
+        }
+    }
+}
+
 function Invoke-BrowserReducer {
     <#
     .SYNOPSIS
-        Top-level reducer router.  Dispatches to Invoke-ChangelistReducer or
-        Invoke-FilesReducer based on the active screen in Ui.ScreenStack.
+        Top-level reducer router.  Dispatches to Invoke-ChangelistReducer,
+        Invoke-FilesReducer, or Invoke-CommandOutputReducer based on the
+        active screen in Ui.ScreenStack.
     #>
     param(
         [Parameter(Mandatory = $true)]$State,
@@ -872,6 +1286,9 @@ function Invoke-BrowserReducer {
     if ($activeScreen -eq 'Files') {
         return Invoke-FilesReducer -State $State -Action $Action
     }
+    if ($activeScreen -eq 'CommandOutput') {
+        return Invoke-CommandOutputReducer -State $State -Action $Action
+    }
     return Invoke-ChangelistReducer -State $State -Action $Action
 }
 
@@ -882,6 +1299,8 @@ function ConvertTo-ChangeNumberFromId {
 }
 
 Export-ModuleMember -Function New-BrowserState, Copy-BrowserState, Copy-StateObject, `
-    Invoke-BrowserReducer, Invoke-ChangelistReducer, Invoke-FilesReducer, `
-    Update-BrowserDerivedState, ConvertTo-ChangeNumberFromId, `
-    Get-ChangeInnerViewRows, Get-ChangeRowsPerItem, Get-ChangeViewCapacity
+    Invoke-BrowserReducer, Invoke-ChangelistReducer, Invoke-FilesReducer, Invoke-CommandOutputReducer, `
+    Update-BrowserDerivedState, Update-CommandLogDerivedState, Update-OutputDerivedState, `
+    ConvertTo-ChangeNumberFromId, `
+    Get-ChangeInnerViewRows, Get-ChangeRowsPerItem, Get-ChangeViewCapacity, `
+    Get-CommandOutputCount, Get-OutputViewportSize

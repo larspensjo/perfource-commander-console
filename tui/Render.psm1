@@ -772,7 +772,7 @@ function Build-StatusBarRow {
     }
 
     $expandHint  = if ((Get-PropertyValueOrDefault -Object $State.Ui -Name 'ExpandedChangelists' -Default $false)) { '[E] Collapse' } else { '[E] Expand' }
-    $statusText  = "$viewBadge Filtered: $filteredCount/$totalCount | [F1] Help [1/2] View [Tab] Pane [Space] Filter [Enter] Describe $expandHint [F5] Reload [Q] Quit"
+    $statusText  = "$viewBadge Filtered: $filteredCount/$totalCount | [F1] Help [1/2/3] View [Tab] Pane [Space] Filter [Enter] Describe $expandHint [F5] Reload [Q] Quit"
     $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
 
     $segments = Write-ColorSegments -Segments @(@{
@@ -899,7 +899,7 @@ function Build-HelpOverlayRows {
         @{ Key = 'L';          Desc = 'Load more (submitted view)' },
         @{ Key = 'F5';         Desc = 'Reload active view' },
         @{ Key = 'X / Del';    Desc = 'Delete changelist (pending)' },
-        @{ Key = 'F12';        Desc = 'Toggle command log' },
+        @{ Key = '3 / F12';    Desc = 'Command log view' },
         @{ Key = 'F1 / Esc';   Desc = 'Close help' },
         @{ Key = 'Q';          Desc = 'Quit' }
     )
@@ -1186,6 +1186,458 @@ function Build-FilesScreenFrame {
     }
 }
 
+function Build-CommandLogRowSegments {
+    <#
+    .SYNOPSIS
+        Builds render segments for a single command log row.
+    .DESCRIPTION
+        Primary row: HH:mm:ss  [OK]  1234ms  p4 changes ...
+        If the command is in ExpandedCommands, an extra summary row is emitted below.
+    #>
+    param(
+        [Parameter(Mandatory)]$Entry,           # CommandLog metadata item
+        [Parameter(Mandatory)][bool]$IsSelected,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Marker
+    )
+
+    if ($null -eq $Entry) {
+        if ($Marker -ne ' ' -and -not [string]::IsNullOrEmpty($Marker)) {
+            Write-Output -NoEnumerate @(@{ Text = $Marker; Color = (Get-MarkerColor -Marker $Marker) })
+        } else {
+            Write-Output -NoEnumerate @()
+        }
+        return
+    }
+
+    $timeStr    = ([datetime]$Entry.StartedAt).ToString('HH:mm:ss')
+    $succeeded  = [bool]$Entry.Succeeded
+    $tag        = if ($succeeded) { '[OK] ' } else { '[ERR]' }
+    $tagColor   = if ($succeeded) { 'Green' } else { 'Red' }
+    $durationMs = [int]$Entry.DurationMs
+    $cmdLine    = [string]$Entry.CommandLine
+    $mColor     = if ($IsSelected) { 'Cyan' } else { Get-MarkerColor -Marker $Marker }
+    $textColor  = if ($IsSelected) { 'White' } else { 'Gray' }
+
+    Write-Output -NoEnumerate @(
+        @{ Text = $Marker;               Color = $mColor     },
+        @{ Text = " $timeStr ";          Color = 'DarkGray'  },
+        @{ Text = $tag;                  Color = $tagColor   },
+        @{ Text = " ${durationMs}ms  ";  Color = 'DarkGray'  },
+        @{ Text = $cmdLine;              Color = $textColor  }
+    )
+}
+
+function Build-CommandExpandedRowSegments {
+    <#
+    .SYNOPSIS
+        Builds the expanded summary row shown below a command when it is expanded (E key).
+    #>
+    param(
+        [Parameter(Mandatory)]$Entry,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Marker
+    )
+
+    if ($null -eq $Entry) {
+        Write-Output -NoEnumerate @()
+        return
+    }
+
+    $mColor  = Get-MarkerColor -Marker $Marker
+    $summary = [string]$Entry.SummaryLine
+
+    if ([string]::IsNullOrWhiteSpace($summary)) {
+        $outputCount = [int]$Entry.OutputCount
+        $succeeded   = [bool]$Entry.Succeeded
+        $errText     = [string]$Entry.ErrorText
+        if (-not $succeeded -and -not [string]::IsNullOrWhiteSpace($errText)) {
+            $firstLine = ($errText -split '\r?\n' | Where-Object { $_ -ne '' } | Select-Object -First 1)
+            $summary   = "  Error: $firstLine"
+        } else {
+            $summary = "  $outputCount entries"
+        }
+    }
+
+    Write-Output -NoEnumerate @(
+        @{ Text = $Marker;   Color = $mColor     },
+        @{ Text = $summary;  Color = 'DarkGray'  }
+    )
+}
+
+function Build-CommandDetailContent {
+    <#
+    .SYNOPSIS
+        Builds detail pane rows showing the selected command's full info + output preview.
+    #>
+    param([Parameter(Mandatory)]$State)
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+
+    # Find selected command entry
+    $selectedEntry = $null
+    if (($State.Derived.PSObject.Properties.Match('VisibleCommandIds')).Count -gt 0 -and $State.Derived.VisibleCommandIds.Count -gt 0) {
+        $idx    = [Math]::Max(0, [Math]::Min($State.Cursor.CommandIndex, $State.Derived.VisibleCommandIds.Count - 1))
+        $cmdId  = [string]$State.Derived.VisibleCommandIds[$idx]
+        $cmdLog = @()
+        $clProp = $State.Runtime.PSObject.Properties['CommandLog']
+        if ($null -ne $clProp -and $null -ne $clProp.Value) { $cmdLog = @($clProp.Value) }
+        $selectedEntry = $cmdLog | Where-Object { [string]$_.CommandId -eq $cmdId } | Select-Object -First 1
+    }
+
+    if ($null -eq $selectedEntry) {
+        $rows.Add(@(@{ Text = '(no command selected)'; Color = 'DarkGray' }))
+        Write-Output -NoEnumerate $rows.ToArray()
+        return
+    }
+
+    $timeStr = ([datetime]$selectedEntry.StartedAt).ToString('yyyy-MM-dd HH:mm:ss')
+    $endStr  = ([datetime]$selectedEntry.EndedAt).ToString('HH:mm:ss')
+    $rows.Add(@(
+        @{ Text = [string]$selectedEntry.CommandLine; Color = 'Cyan' }
+    ))
+    $rows.Add(@(
+        @{ Text = "${timeStr}–${endStr}"; Color = 'DarkGray' },
+        @{ Text = "  $([int]$selectedEntry.DurationMs)ms"; Color = 'Gray' }
+    ))
+    $statusText  = if ([bool]$selectedEntry.Succeeded) { 'OK' } else { "Exit $([int]$selectedEntry.ExitCode)" }
+    $statusColor = if ([bool]$selectedEntry.Succeeded) { 'Green' } else { 'Red' }
+    $rows.Add(@(@{ Text = $statusText; Color = $statusColor }))
+
+    if (-not [bool]$selectedEntry.Succeeded -and -not [string]::IsNullOrWhiteSpace([string]$selectedEntry.ErrorText)) {
+        $errText = [string]$selectedEntry.ErrorText
+        $firstLine = ($errText -split '\r?\n' | Where-Object { $_ -ne '' } | Select-Object -First 1)
+        $rows.Add(@(@{ Text = $firstLine; Color = 'DarkRed' }))
+    }
+
+    $rows.Add(@(@{ Text = ''; Color = 'Gray' }))
+
+    # Preview first ~10 output lines
+    $cache = $State.Data.PSObject.Properties['CommandOutputCache']?.Value
+    $cmdId = [string]$selectedEntry.CommandId
+    if ($null -ne $cache -and $cache.ContainsKey($cmdId)) {
+        $lines = @($cache[$cmdId])
+        $preview = $lines | Select-Object -First 10
+        foreach ($line in $preview) {
+            $rows.Add(@(@{ Text = [string]$line; Color = 'Gray' }))
+        }
+        if ($lines.Count -gt 10) {
+            $rows.Add(@(@{ Text = "… $($lines.Count - 10) more lines (→ to view all)"; Color = 'DarkGray' }))
+        }
+    }
+
+    Write-Output -NoEnumerate $rows.ToArray()
+}
+
+function Build-CommandLogStatusBarRow {
+    param(
+        [Parameter(Mandatory)]$State,
+        [Parameter(Mandatory)]$Layout
+    )
+
+    $totalCount    = if (($State.Runtime.PSObject.Properties.Match('CommandLog')).Count -gt 0) { @($State.Runtime.CommandLog).Count } else { 0 }
+    $filteredCount = if (($State.Derived.PSObject.Properties.Match('VisibleCommandIds')).Count -gt 0) { $State.Derived.VisibleCommandIds.Count } else { 0 }
+    $statusText    = "[Commands] Showing: $filteredCount/$totalCount | [F1] Help [1/2/3] View [Tab] Pane [Space] Filter [E] Expand [→] Output [F5] Reload [Q] Quit"
+    $statusWidth   = [Math]::Max(0, $Layout.StatusPane.W - 1)
+
+    $seg  = @{ Text = $statusText; Color = 'DarkGray'; BackgroundColor = '' }
+    $segs = Write-ColorSegments -Segments @($seg) -Width $statusWidth
+    $segs = foreach ($s in @($segs)) {
+        @{ Text = [string](Get-PropertyValueOrDefault -Object $s -Name 'Text' -Default '')
+           Color = [string](Get-PropertyValueOrDefault -Object $s -Name 'Color' -Default 'Gray')
+           BackgroundColor = '' }
+    }
+    $merged    = Merge-AdjacentSegments -Segments $segs
+    $signature = Get-FrameRowSignature   -Segments $merged
+
+    return [pscustomobject]@{ Y = $Layout.StatusPane.Y; Segments = $merged; Signature = $signature }
+}
+
+function Build-CommandLogFrame {
+    <#
+    .SYNOPSIS
+        Builds the terminal frame for the CommandLog view (ViewMode = 'CommandLog').
+    .DESCRIPTION
+        Left pane: command status/type filters.
+        Top-right pane: command list (one row per command, oldest at top).
+        Bottom-right pane: command detail + output preview.
+    #>
+    param([Parameter(Mandatory)]$State)
+
+    $layout        = $State.Ui.Layout
+    $filterBorder  = Get-PaneBorderColor -PaneName 'Filters'     -State $State
+    $listBorder    = Get-PaneBorderColor -PaneName 'Changelists'  -State $State
+    $detailBorder  = 'DarkGray'
+
+    $filterViewRows = [Math]::Max(1, $layout.FilterPane.H - 2)
+    $changeViewRows = [Math]::Max(1, $layout.ListPane.H - 2)
+    $detailRows     = [Math]::Max(0, $layout.DetailPane.H - 2)
+
+    $visibleCommandIds = if (($State.Derived.PSObject.Properties.Match('VisibleCommandIds')).Count -gt 0) { @($State.Derived.VisibleCommandIds) } else { @() }
+    $commandCount      = $visibleCommandIds.Count
+
+    # Build the expanded-commands set
+    $expandedSet = $null
+    $expProp = $State.Ui.PSObject.Properties['ExpandedCommands']
+    if ($null -ne $expProp) { $expandedSet = $expProp.Value }
+
+    # Build command entry lookup (newest-first storage → look up by CommandId)
+    $cmdLogMap  = @{}
+    $clProp     = $State.Runtime.PSObject.Properties['CommandLog']
+    if ($null -ne $clProp -and $null -ne $clProp.Value) {
+        foreach ($entry in @($clProp.Value)) {
+            $cmdLogMap[[string]$entry.CommandId] = $entry
+        }
+    }
+
+    $FilterThumb   = Get-ScrollThumb -TotalItems $State.Derived.VisibleFilters.Count -ViewRows $filterViewRows  -ScrollTop $State.Cursor.FilterScrollTop
+    $commandThumb  = Get-ScrollThumb -TotalItems $commandCount                        -ViewRows $changeViewRows  -ScrollTop $State.Cursor.CommandScrollTop
+
+    $detailContent = Build-CommandDetailContent -State $State
+
+    $rows = [System.Collections.Generic.List[object]]::new($layout.Height)
+
+    for ($globalRow = 0; $globalRow -lt $layout.FilterPane.H; $globalRow++) {
+        # ── Left pane (filters) ────────────────────────────────────────────────
+        $leftSegments = @()
+        if ($globalRow -eq 0) {
+            $leftSegments = Build-BoxTopSegments -Title '[Filters]' -Width $layout.FilterPane.W -BorderColor $filterBorder -TitleColor $filterBorder
+        } elseif ($globalRow -eq ($layout.FilterPane.H - 1)) {
+            $leftSegments = Build-BoxBottomSegments -Width $layout.FilterPane.W -BorderColor $filterBorder
+        } else {
+            $filterInnerRow  = $globalRow - 1
+            $FilterIndex     = $State.Cursor.FilterScrollTop + $filterInnerRow
+            $filterRow       = Get-FilterRowModel -State $State -FilterIndex $FilterIndex -FilterRowOffset $filterInnerRow -FilterThumb $FilterThumb
+            $filterInnerSegs = Build-FilterSegments -FilterText $filterRow.Text -FilterMarker $filterRow.Marker -FilterColor $filterRow.Color
+            $leftSegments    = Build-BorderedRowSegments -InnerSegments $filterInnerSegs -Width $layout.FilterPane.W -BorderColor $filterBorder
+        }
+
+        # ── Right pane ─────────────────────────────────────────────────────────
+        $rightSegments        = @()
+        $rightBackgroundColor = ''
+
+        if ($globalRow -lt $layout.ListPane.H) {
+            if ($globalRow -eq 0) {
+                $rightSegments = Build-BoxTopSegments -Title '[Command Log]' -Width $layout.ListPane.W -BorderColor $listBorder -TitleColor $listBorder
+            } elseif ($globalRow -eq ($layout.ListPane.H - 1)) {
+                $rightSegments = Build-BoxBottomSegments -Width $layout.ListPane.W -BorderColor $listBorder
+            } else {
+                $cmdInnerRow = $globalRow - 1
+                $cmdClIdx    = $State.Cursor.CommandScrollTop + $cmdInnerRow
+                $cmdId       = if ($cmdClIdx -lt $commandCount) { [string]$visibleCommandIds[$cmdClIdx] } else { $null }
+                $entry       = if ($null -ne $cmdId) { $cmdLogMap[$cmdId] } else { $null }
+
+                $isSelected = ($cmdClIdx -lt $commandCount -and $State.Cursor.CommandIndex -eq $cmdClIdx -and $null -ne $entry)
+                $cmdMarker  = ' '
+                if ($null -ne $entry) {
+                    if ($isSelected) {
+                        $cmdMarker = $CURSOR_GLYPH
+                    } elseif ($null -ne $commandThumb) {
+                        if ($cmdInnerRow -ge $commandThumb.Start -and $cmdInnerRow -le $commandThumb.End) {
+                            $cmdMarker = $SCROLLBAR_THUMB_GLYPH
+                        } else {
+                            $cmdMarker = $SCROLLBAR_TRACK_GLYPH
+                        }
+                    }
+                } elseif ($cmdClIdx -eq 0 -and $commandCount -eq 0 -and $cmdInnerRow -eq 0) {
+                    $inner         = @(@{ Text = '(no commands yet)'; Color = 'DarkGray' })
+                    $rightSegments = Build-BorderedRowSegments -InnerSegments $inner -Width $layout.ListPane.W -BorderColor $listBorder
+                    $row = Compose-FrameRow -Y $globalRow -LeftSegments $leftSegments -LeftWidth $layout.FilterPane.W -RightSegments $rightSegments -RightWidth $layout.ListPane.W -RightBackgroundColor '' -TotalWidth $layout.Width -IsLastRow $false
+                    $rows.Add($row)
+                    continue
+                } elseif ($null -ne $commandThumb) {
+                    $cmdMarker = if ($cmdInnerRow -ge $commandThumb.Start -and $cmdInnerRow -le $commandThumb.End) { $SCROLLBAR_THUMB_GLYPH } else { $SCROLLBAR_TRACK_GLYPH }
+                }
+
+                if ($null -eq $entry) {
+                    # Trailing row beyond the command list — show scrollbar track only
+                    $inner = @(@{ Text = $cmdMarker; Color = (Get-MarkerColor -Marker $cmdMarker) })
+                    $rightSegments = Build-BorderedRowSegments -InnerSegments $inner -Width $layout.ListPane.W -BorderColor $listBorder
+                } else {
+                    $inner         = Build-CommandLogRowSegments -Entry $entry -IsSelected $isSelected -Marker $cmdMarker
+                    $rightSegments = Build-BorderedRowSegments -InnerSegments $inner -Width $layout.ListPane.W -BorderColor $listBorder
+                    if ($isSelected) { $rightBackgroundColor = 'DarkCyan' }
+                }
+            }
+        } elseif ($globalRow -eq $layout.ListPane.H) {
+            $rightSegments = @(@{ Text = (' ' * $layout.DetailPane.W); Color = 'DarkGray' })
+        } else {
+            $detailLocalRow = $globalRow - $layout.ListPane.H - 1
+            if ($detailLocalRow -eq 0) {
+                $rightSegments = Build-BoxTopSegments -Title '[Command Details]' -Width $layout.DetailPane.W -BorderColor $detailBorder -TitleColor $detailBorder
+            } elseif ($detailLocalRow -eq ($layout.DetailPane.H - 1)) {
+                $rightSegments = Build-BoxBottomSegments -Width $layout.DetailPane.W -BorderColor $detailBorder
+            } else {
+                $detailContentRow = $detailLocalRow - 1
+                $inner = if ($detailContentRow -lt $detailContent.Count) {
+                    @($detailContent[$detailContentRow])
+                } else {
+                    @(@{ Text = ''; Color = 'Gray' })
+                }
+                $rightSegments = Build-BorderedRowSegments -InnerSegments $inner -Width $layout.DetailPane.W -BorderColor $detailBorder
+            }
+        }
+
+        $row = Compose-FrameRow -Y $globalRow -LeftSegments $leftSegments -LeftWidth $layout.FilterPane.W -RightSegments $rightSegments -RightWidth $layout.ListPane.W -RightBackgroundColor $rightBackgroundColor -TotalWidth $layout.Width -IsLastRow $false
+        $rows.Add($row)
+    }
+
+    $rows.Add((Build-CommandLogStatusBarRow -State $State -Layout $layout))
+
+    return [pscustomobject]@{
+        Width  = $layout.Width
+        Height = $layout.Height
+        Rows   = $rows.ToArray()
+    }
+}
+
+function Build-CommandOutputStatusBarRow {
+    param(
+        [Parameter(Mandatory)]$State,
+        [Parameter(Mandatory)]$Layout
+    )
+
+    $cmdId     = ''
+    $cidProp   = $State.Runtime.PSObject.Properties['CommandOutputCommandId']
+    if ($null -ne $cidProp -and $null -ne $cidProp.Value) { $cmdId = [string]$cidProp.Value }
+
+    $outputCount = 0
+    $cache = $State.Data.PSObject.Properties['CommandOutputCache']?.Value
+    if ($null -ne $cache -and $cache.ContainsKey($cmdId)) { $outputCount = @($cache[$cmdId]).Count }
+
+    $posIdx    = if (($State.Cursor.PSObject.Properties.Match('OutputIndex')).Count -gt 0) { $State.Cursor.OutputIndex } else { 0 }
+    $lineNum   = if ($outputCount -gt 0) { $posIdx + 1 } else { 0 }
+
+    $statusText  = "[Output] Line $lineNum of $outputCount | [← / Esc] Back  [↑↓ PgUp/PgDn Home/End] Scroll  [F1] Help  [Q] Quit"
+    $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
+
+    $seg  = @{ Text = $statusText; Color = 'DarkGray'; BackgroundColor = '' }
+    $segs = Write-ColorSegments -Segments @($seg) -Width $statusWidth
+    $segs = foreach ($s in @($segs)) {
+        @{ Text = [string](Get-PropertyValueOrDefault -Object $s -Name 'Text' -Default '')
+           Color = [string](Get-PropertyValueOrDefault -Object $s -Name 'Color' -Default 'Gray')
+           BackgroundColor = '' }
+    }
+    $merged    = Merge-AdjacentSegments -Segments $segs
+    $signature = Get-FrameRowSignature   -Segments $merged
+
+    return [pscustomobject]@{ Y = $Layout.StatusPane.Y; Segments = $merged; Signature = $signature }
+}
+
+function Build-CommandOutputFrame {
+    <#
+    .SYNOPSIS
+        Builds the terminal frame for the CommandOutput screen.
+    .DESCRIPTION
+        Left pane: blank (output filters are a future extension).
+        Right pane: scrollable list of formatted output lines.
+        Status bar: [← Back]  Line X of Y.
+    #>
+    param([Parameter(Mandatory)]$State)
+
+    $layout       = $State.Ui.Layout
+    $filterBorder = Get-PaneBorderColor -PaneName 'Filters'     -State $State
+    $listBorder   = Get-PaneBorderColor -PaneName 'Changelists'  -State $State
+
+    $cmdId = ''
+    $cidProp = $State.Runtime.PSObject.Properties['CommandOutputCommandId']
+    if ($null -ne $cidProp -and $null -ne $cidProp.Value) { $cmdId = [string]$cidProp.Value }
+
+    $outputLines = @()
+    $cache = $State.Data.PSObject.Properties['CommandOutputCache']?.Value
+    if ($null -ne $cache -and $cache.ContainsKey($cmdId)) { $outputLines = @($cache[$cmdId]) }
+
+    $outputCount  = $outputLines.Count
+    $scrollTop    = if (($State.Cursor.PSObject.Properties.Match('OutputScrollTop')).Count -gt 0) { [int]$State.Cursor.OutputScrollTop } else { 0 }
+    $viewRows     = [Math]::Max(1, $layout.FilterPane.H - 2)   # FilterPane.H = ListPane.H in current layout
+    $outputThumb  = Get-ScrollThumb -TotalItems $outputCount -ViewRows $viewRows -ScrollTop $scrollTop
+
+    # Build a short title from the command line
+    $cmdTitle   = ''
+    $cmdLogProp = $State.Runtime.PSObject.Properties['CommandLog']
+    if ($null -ne $cmdLogProp -and $null -ne $cmdLogProp.Value) {
+        $entry = @($cmdLogProp.Value) | Where-Object { [string]$_.CommandId -eq $cmdId } | Select-Object -First 1
+        if ($null -ne $entry) {
+            $cl = [string]$entry.CommandLine
+            $cmdTitle = if ($cl.Length -gt 40) { $cl.Substring(0, 37) + '...' } else { $cl }
+        }
+    }
+    $listPaneTitle = "[Output: $cmdTitle]"
+
+    $rows = [System.Collections.Generic.List[object]]::new($layout.Height)
+
+    for ($globalRow = 0; $globalRow -lt $layout.FilterPane.H; $globalRow++) {
+        # ── Left pane (blank) ─────────────────────────────────────────────────
+        $leftSegments = @()
+        if ($globalRow -eq 0) {
+            $leftSegments = Build-BoxTopSegments -Title '[Filter]' -Width $layout.FilterPane.W -BorderColor $filterBorder -TitleColor $filterBorder
+        } elseif ($globalRow -eq ($layout.FilterPane.H - 1)) {
+            $leftSegments = Build-BoxBottomSegments -Width $layout.FilterPane.W -BorderColor $filterBorder
+        } else {
+            $leftSegments = Build-BorderedRowSegments -InnerSegments @(@{ Text = ''; Color = 'Gray' }) -Width $layout.FilterPane.W -BorderColor $filterBorder
+        }
+
+        # ── Right pane (output lines) ─────────────────────────────────────────
+        $rightSegments        = @()
+        $rightBackgroundColor = ''
+
+        if ($globalRow -lt $layout.ListPane.H) {
+            if ($globalRow -eq 0) {
+                $rightSegments = Build-BoxTopSegments -Title $listPaneTitle -Width $layout.ListPane.W -BorderColor $listBorder -TitleColor $listBorder
+            } elseif ($globalRow -eq ($layout.ListPane.H - 1)) {
+                $rightSegments = Build-BoxBottomSegments -Width $layout.ListPane.W -BorderColor $listBorder
+            } else {
+                $innerRow  = $globalRow - 1
+                $lineIdx   = $scrollTop + $innerRow
+                $marker    = ' '
+                if ($outputCount -gt 0 -and $null -ne $outputThumb) {
+                    $marker = if ($innerRow -ge $outputThumb.Start -and $innerRow -le $outputThumb.End) { $SCROLLBAR_THUMB_GLYPH } else { $SCROLLBAR_TRACK_GLYPH }
+                }
+
+                if ($outputCount -eq 0 -and $innerRow -eq 0) {
+                    $inner = @(@{ Text = '(no output)'; Color = 'DarkGray' })
+                } elseif ($lineIdx -lt $outputCount) {
+                    $cursorOutputIndex = if (($State.Cursor.PSObject.Properties.Match('OutputIndex')).Count -gt 0) { $State.Cursor.OutputIndex } else { 0 }
+                    $isSelected = ($lineIdx -eq $cursorOutputIndex)
+                    $tColor     = if ($isSelected) { 'White' } else { 'Gray' }
+                    $mColor     = if ($isSelected) { 'Cyan' } else { Get-MarkerColor -Marker $marker }
+                    $line       = [string]$outputLines[$lineIdx]
+                    $inner      = @(
+                        @{ Text = $marker; Color = $mColor },
+                        @{ Text = " $line"; Color = $tColor }
+                    )
+                    if ($isSelected) { $rightBackgroundColor = 'DarkCyan' }
+                } else {
+                    $inner = @(@{ Text = $marker; Color = (Get-MarkerColor -Marker $marker) })
+                }
+                $rightSegments = Build-BorderedRowSegments -InnerSegments $inner -Width $layout.ListPane.W -BorderColor $listBorder
+            }
+        } elseif ($globalRow -eq $layout.ListPane.H) {
+            $rightSegments = @(@{ Text = (' ' * $layout.DetailPane.W); Color = 'DarkGray' })
+        } else {
+            # Detail pane — show command metadata
+            $detailBorder   = 'DarkGray'
+            $detailLocalRow = $globalRow - $layout.ListPane.H - 1
+            if ($detailLocalRow -eq 0) {
+                $rightSegments = Build-BoxTopSegments -Title '[Inspector]' -Width $layout.DetailPane.W -BorderColor $detailBorder -TitleColor $detailBorder
+            } elseif ($detailLocalRow -eq ($layout.DetailPane.H - 1)) {
+                $rightSegments = Build-BoxBottomSegments -Width $layout.DetailPane.W -BorderColor $detailBorder
+            } else {
+                $rightSegments = Build-BorderedRowSegments -InnerSegments @(@{ Text = ''; Color = 'Gray' }) -Width $layout.DetailPane.W -BorderColor $detailBorder
+            }
+        }
+
+        $row = Compose-FrameRow -Y $globalRow -LeftSegments $leftSegments -LeftWidth $layout.FilterPane.W -RightSegments $rightSegments -RightWidth $layout.ListPane.W -RightBackgroundColor $rightBackgroundColor -TotalWidth $layout.Width -IsLastRow $false
+        $rows.Add($row)
+    }
+
+    $rows.Add((Build-CommandOutputStatusBarRow -State $State -Layout $layout))
+
+    return [pscustomobject]@{
+        Width  = $layout.Width
+        Height = $layout.Height
+        Rows   = $rows.ToArray()
+    }
+}
+
 function Build-FrameFromState {
     param(
         [Parameter(Mandatory = $true)]$State
@@ -1368,8 +1820,14 @@ function Render-BrowserState {
     $screenStackProp = $State.Ui.PSObject.Properties['ScreenStack']
     $activeScreen    = if ($null -ne $screenStackProp -and $screenStackProp.Value.Count -gt 0) { $screenStackProp.Value[-1] } else { 'Changelists' }
 
+    $viewMode = Get-PropertyValueOrDefault -Object $State.Ui -Name 'ViewMode' -Default 'Pending'
+
     $nextFrame = if ($activeScreen -eq 'Files') {
         Build-FilesScreenFrame -State $State
+    } elseif ($activeScreen -eq 'CommandOutput') {
+        Build-CommandOutputFrame -State $State
+    } elseif ($viewMode -eq 'CommandLog') {
+        Build-CommandLogFrame -State $State
     } else {
         Build-FrameFromState -State $State
     }
@@ -1389,4 +1847,4 @@ function Render-BrowserState {
     }
 }
 
-Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Get-ActiveChangesList, Build-FilesScreenFrame, Build-FilesStatusBarRow
+Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Get-ActiveChangesList, Build-FilesScreenFrame, Build-FilesStatusBarRow, Build-CommandLogFrame, Build-CommandOutputFrame

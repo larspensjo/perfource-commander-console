@@ -684,3 +684,259 @@ Describe 'Files screen reducer — Step 1' {
         $next.Ui.ScreenStack[-1]         | Should -Be 'Files'
     }
 }
+
+# ─── CommandLog feature tests ─────────────────────────────────────────────────
+
+Describe 'CommandLog reducer' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+    }
+
+    BeforeEach {
+        $changes = @(
+            [pscustomobject]@{ Id = '101'; Title = 'One'; HasShelvedFiles = $false; HasOpenedFiles = $true; Captured = [datetime]'2026-02-10' }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+    }
+
+    # ── LogCommandExecution ───────────────────────────────────────────────────
+
+    It 'LogCommandExecution prepends a new entry to CommandLog' {
+        $action = [pscustomobject]@{
+            Type           = 'LogCommandExecution'
+            CommandLine    = 'p4 info'
+            FormattedLines = @('line1')
+            OutputCount    = 1
+            SummaryLine    = ''
+            ExitCode       = 0
+            ErrorText      = ''
+            Succeeded      = $true
+            StartedAt      = (Get-Date)
+            EndedAt        = (Get-Date)
+            DurationMs     = 42
+        }
+        $next = Invoke-BrowserReducer -State $state -Action $action
+        $next.Runtime.CommandLog.Count | Should -Be 1
+        $next.Runtime.CommandLog[0].CommandLine | Should -Be 'p4 info'
+    }
+
+    It 'LogCommandExecution assigns incrementing CommandIds' {
+        $mkAction = { param($cmd)
+            [pscustomobject]@{
+                Type='LogCommandExecution'; CommandLine=$cmd; FormattedLines=@(); OutputCount=0
+                SummaryLine=''; ExitCode=0; ErrorText=''; Succeeded=$true
+                StartedAt=(Get-Date); EndedAt=(Get-Date); DurationMs=1
+            }
+        }
+        $s = Invoke-BrowserReducer -State $state -Action (& $mkAction 'p4 info')
+        $s = Invoke-BrowserReducer -State $s     -Action (& $mkAction 'p4 changes')
+        $s.Runtime.CommandLog[0].CommandId | Should -Not -Be $s.Runtime.CommandLog[1].CommandId
+    }
+
+    It 'LogCommandExecution stores FormattedLines in CommandOutputCache' {
+        $fmtLines = @('Entry A', 'Entry B')
+        $action = [pscustomobject]@{
+            Type='LogCommandExecution'; CommandLine='p4 changes'; FormattedLines=$fmtLines; OutputCount=2
+            SummaryLine=''; ExitCode=0; ErrorText=''; Succeeded=$true
+            StartedAt=(Get-Date); EndedAt=(Get-Date); DurationMs=5
+        }
+        $next  = Invoke-BrowserReducer -State $state -Action $action
+        $cmdId = [string]$next.Runtime.CommandLog[0].CommandId
+        $next.Data.CommandOutputCache.ContainsKey($cmdId) | Should -BeTrue
+        $next.Data.CommandOutputCache[$cmdId][0]          | Should -Be 'Entry A'
+    }
+
+    # ── SwitchView CommandLog ─────────────────────────────────────────────────
+
+    It 'SwitchView CommandLog sets ViewMode to CommandLog' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' })
+        $next.Ui.ViewMode | Should -Be 'CommandLog'
+    }
+
+    It 'SwitchView CommandLog saves and restores CommandLog cursor snapshot' {
+        # Set up some commands so CommandIndex can advance
+        $mkLog = { param($cmd)
+            [pscustomobject]@{
+                Type='LogCommandExecution'; CommandLine=$cmd; FormattedLines=@(); OutputCount=0
+                SummaryLine=''; ExitCode=0; ErrorText=''; Succeeded=$true
+                StartedAt=(Get-Date); EndedAt=(Get-Date); DurationMs=1
+            }
+        }
+        $s = Invoke-BrowserReducer -State $state -Action (& $mkLog 'p4 info')
+        $s = Invoke-BrowserReducer -State $s -Action (& $mkLog 'p4 changes')
+        # Switch to CommandLog
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' })
+        # Move down once
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $indexAfterMove = $s.Cursor.CommandIndex
+        # Switch away
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'Pending' })
+        # Switch back — snapshot should restore
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' })
+        $s.Cursor.CommandIndex | Should -Be $indexAfterMove
+    }
+
+    # ── Navigation in CommandLog mode ─────────────────────────────────────────
+
+    It 'MoveDown advances CommandIndex in CommandLog mode' {
+        $mkLog = { param($cmd)
+            [pscustomobject]@{
+                Type='LogCommandExecution'; CommandLine=$cmd; FormattedLines=@(); OutputCount=0
+                SummaryLine=''; ExitCode=0; ErrorText=''; Succeeded=$true
+                StartedAt=(Get-Date); EndedAt=(Get-Date); DurationMs=1
+            }
+        }
+        $s = Invoke-BrowserReducer -State $state -Action (& $mkLog 'p4 info')
+        $s = Invoke-BrowserReducer -State $s -Action (& $mkLog 'p4 changes')
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $s.Cursor.CommandIndex | Should -Be 1
+    }
+
+    It 'MoveDown clamps at last command' {
+        $mkLog = { param($cmd)
+            [pscustomobject]@{
+                Type='LogCommandExecution'; CommandLine=$cmd; FormattedLines=@(); OutputCount=0
+                SummaryLine=''; ExitCode=0; ErrorText=''; Succeeded=$true
+                StartedAt=(Get-Date); EndedAt=(Get-Date); DurationMs=1
+            }
+        }
+        $s = Invoke-BrowserReducer -State $state -Action (& $mkLog 'p4 a')
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $s.Cursor.CommandIndex | Should -Be 0
+    }
+
+    It 'MoveHome/MoveEnd jump to first/last command' {
+        $mkLog = { param($cmd)
+            [pscustomobject]@{
+                Type='LogCommandExecution'; CommandLine=$cmd; FormattedLines=@(); OutputCount=0
+                SummaryLine=''; ExitCode=0; ErrorText=''; Succeeded=$true
+                StartedAt=(Get-Date); EndedAt=(Get-Date); DurationMs=1
+            }
+        }
+        $s = Invoke-BrowserReducer -State $state -Action (& $mkLog 'p4 a')
+        $s = Invoke-BrowserReducer -State $s -Action (& $mkLog 'p4 b')
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'MoveEnd' })
+        $s.Cursor.CommandIndex | Should -Be 1
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'MoveHome' })
+        $s.Cursor.CommandIndex | Should -Be 0
+    }
+
+    # ── ToggleChangelistView in CommandLog mode ───────────────────────────────
+
+    It 'ToggleChangelistView in CommandLog mode adds CommandId to ExpandedCommands' {
+        $mkLog = { param($cmd)
+            [pscustomobject]@{
+                Type='LogCommandExecution'; CommandLine=$cmd; FormattedLines=@(); OutputCount=0
+                SummaryLine=''; ExitCode=0; ErrorText=''; Succeeded=$true
+                StartedAt=(Get-Date); EndedAt=(Get-Date); DurationMs=1
+            }
+        }
+        $s = Invoke-BrowserReducer -State $state -Action (& $mkLog 'p4 info')
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $cmdId = [string]$s.Derived.VisibleCommandIds[0]
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'ToggleChangelistView' })
+        $s.Ui.ExpandedCommands.Contains($cmdId) | Should -BeTrue
+    }
+
+    It 'ToggleChangelistView in CommandLog mode removes already-expanded CommandId' {
+        $mkLog = { param($cmd)
+            [pscustomobject]@{
+                Type='LogCommandExecution'; CommandLine=$cmd; FormattedLines=@(); OutputCount=0
+                SummaryLine=''; ExitCode=0; ErrorText=''; Succeeded=$true
+                StartedAt=(Get-Date); EndedAt=(Get-Date); DurationMs=1
+            }
+        }
+        $s = Invoke-BrowserReducer -State $state -Action (& $mkLog 'p4 info')
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $cmdId = [string]$s.Derived.VisibleCommandIds[0]
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'ToggleChangelistView' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'ToggleChangelistView' })
+        $s.Ui.ExpandedCommands.Contains($cmdId) | Should -BeFalse
+    }
+
+    # ── Open CommandOutput screen ─────────────────────────────────────────────
+
+    It 'OpenFilesScreen in CommandLog mode pushes CommandOutput onto ScreenStack' {
+        $mkLog = { param($cmd)
+            [pscustomobject]@{
+                Type='LogCommandExecution'; CommandLine=$cmd; FormattedLines=@('line'); OutputCount=1
+                SummaryLine=''; ExitCode=0; ErrorText=''; Succeeded=$true
+                StartedAt=(Get-Date); EndedAt=(Get-Date); DurationMs=1
+            }
+        }
+        $s = Invoke-BrowserReducer -State $state -Action (& $mkLog 'p4 info')
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $s.Ui.ScreenStack[-1] | Should -Be 'CommandOutput'
+    }
+
+    It 'CloseFilesScreen pops CommandOutput back to Changelists' {
+        $mkLog = { param($cmd)
+            [pscustomobject]@{
+                Type='LogCommandExecution'; CommandLine=$cmd; FormattedLines=@('line'); OutputCount=1
+                SummaryLine=''; ExitCode=0; ErrorText=''; Succeeded=$true
+                StartedAt=(Get-Date); EndedAt=(Get-Date); DurationMs=1
+            }
+        }
+        $s = Invoke-BrowserReducer -State $state -Action (& $mkLog 'p4 info')
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'CloseFilesScreen' })
+        $s.Ui.ScreenStack[-1] | Should -Be 'Changelists'
+    }
+
+    # ── CommandLog trim + cache eviction ─────────────────────────────────────
+
+    It 'CommandLog is trimmed when it exceeds CommandLogMaxSize' {
+        $max = InModuleScope Reducer { $script:CommandLogMaxSize }
+        $mkLog = {
+            [pscustomobject]@{
+                Type='LogCommandExecution'; CommandLine='p4 x'; FormattedLines=@(); OutputCount=0
+                SummaryLine=''; ExitCode=0; ErrorText=''; Succeeded=$true
+                StartedAt=(Get-Date); EndedAt=(Get-Date); DurationMs=1
+            }
+        }
+        $s = $state
+        for ($i = 0; $i -lt ($max + 5); $i++) {
+            $s = Invoke-BrowserReducer -State $s -Action (& $mkLog)
+        }
+        $s.Runtime.CommandLog.Count | Should -BeLessOrEqual $max
+    }
+
+    # ── Integration journey ───────────────────────────────────────────────────
+
+    It 'Journey: Pending -> CommandLog -> CommandOutput -> back -> Submitted' {
+        $mkLog = { param($cmd)
+            [pscustomobject]@{
+                Type='LogCommandExecution'; CommandLine=$cmd; FormattedLines=@('x'); OutputCount=1
+                SummaryLine=''; ExitCode=0; ErrorText=''; Succeeded=$true
+                StartedAt=(Get-Date); EndedAt=(Get-Date); DurationMs=1
+            }
+        }
+        $s = Invoke-BrowserReducer -State $state -Action (& $mkLog 'p4 info')
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' })
+        $s.Ui.ViewMode | Should -Be 'CommandLog'
+
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $s.Ui.ScreenStack[-1] | Should -Be 'CommandOutput'
+
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'CloseFilesScreen' })
+        $s.Ui.ScreenStack[-1] | Should -Be 'Changelists'
+
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'Submitted' })
+        $s.Ui.ViewMode | Should -Be 'Submitted'
+    }
+}

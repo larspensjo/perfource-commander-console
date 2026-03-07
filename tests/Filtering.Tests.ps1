@@ -105,3 +105,61 @@ Describe 'Filter predicate helpers' {
         Test-EntryMatchesFilter -FilterName 'Nonexistent' -Entry $entry | Should -BeFalse
     }
 }
+
+Describe 'Get-CommandLogFilterPredicates' {
+    BeforeAll {
+        $modulePath = Join-Path $PSScriptRoot '..\tui\Filtering.psm1'
+        Import-Module $modulePath -Force
+    }
+
+    It 'returns OK predicate that matches Succeeded=true entries' {
+        $entry     = [pscustomobject]@{ Succeeded = $true; CommandLine = 'p4 changes' }
+        $predicates = Get-CommandLogFilterPredicates -CommandLog @($entry)
+        $predicates.Contains('OK') | Should -BeTrue
+        $predicates['OK'].Invoke($entry) | Should -BeTrue
+    }
+
+    It 'returns OK predicate that rejects Succeeded=false entries' {
+        $entry      = [pscustomobject]@{ Succeeded = $false; CommandLine = 'p4 changes' }
+        $predicates = Get-CommandLogFilterPredicates -CommandLog @($entry)
+        $predicates['OK'].Invoke($entry) | Should -BeFalse
+    }
+
+    It 'returns Error predicate matching failed entries' {
+        $entry      = [pscustomobject]@{ Succeeded = $false; CommandLine = 'p4 info' }
+        $predicates = Get-CommandLogFilterPredicates -CommandLog @($entry)
+        $predicates.Contains('Error') | Should -BeTrue
+        $predicates['Error'].Invoke($entry) | Should -BeTrue
+    }
+
+    It 'extracts command-type predicates from CommandLine' {
+        $log = @(
+            [pscustomobject]@{ Succeeded = $true; CommandLine = 'p4 changes -s pending' },
+            [pscustomobject]@{ Succeeded = $true; CommandLine = 'p4 info' }
+        )
+        $predicates = Get-CommandLogFilterPredicates -CommandLog $log
+        $predicates.Contains('cmd:changes') | Should -BeTrue
+        $predicates.Contains('cmd:info')    | Should -BeTrue
+    }
+
+    It 'cmd predicate matches only entries with that subcommand' {
+        $changes = [pscustomobject]@{ Succeeded = $true; CommandLine = 'p4 changes -s pending' }
+        $info    = [pscustomobject]@{ Succeeded = $true; CommandLine = 'p4 info' }
+        $log     = @($changes, $info)
+        $predicates = Get-CommandLogFilterPredicates -CommandLog $log
+        $predicates['cmd:changes'].Invoke($changes) | Should -BeTrue
+        $predicates['cmd:changes'].Invoke($info)    | Should -BeFalse
+    }
+
+    It 'returns empty predicates when CommandLog is empty' {
+        $predicates = Get-CommandLogFilterPredicates -CommandLog @()
+        $predicates.Count | Should -Be 0
+    }
+
+    It 'handles unrecognised command line without error' {
+        $entry      = [pscustomobject]@{ Succeeded = $true; CommandLine = 'something weird' }
+        $predicates = Get-CommandLogFilterPredicates -CommandLog @($entry)
+        # Should at minimum contain OK/Error
+        $predicates.Contains('OK') | Should -BeTrue
+    }
+}

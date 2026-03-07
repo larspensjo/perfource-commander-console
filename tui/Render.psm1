@@ -209,7 +209,7 @@ function Build-BorderedRowSegments {
     }
 
     $innerWidth = [Math]::Max(0, $Width - 2)
-    $inner = Write-ColorSegments -Segments $InnerSegments -Width $innerWidth
+    $inner = @(Resize-SegmentRow -Segments $InnerSegments -Width $innerWidth)
     Write-Output -NoEnumerate @(
         @{ Text = '│'; Color = $BorderColor },
         @($inner),
@@ -220,6 +220,7 @@ function Build-BorderedRowSegments {
 function Resize-SegmentRow {
     # Truncate or pad a row of multi-colored segments to exactly $Width characters,
     # preserving each segment's Color and BackgroundColor.
+    # Nested arrays of segments are flattened recursively (same as Write-ColorSegments).
     param(
         [Parameter(Mandatory = $true)]$Segments,
         [Parameter(Mandatory = $true)][int]$Width
@@ -227,10 +228,29 @@ function Resize-SegmentRow {
 
     if ($Width -le 0) { return @() }
 
+    # Flatten nested arrays recursively, preserving individual segment colors.
+    $flat = [System.Collections.Generic.List[object]]::new()
+    $queue = [System.Collections.Generic.Queue[object]]::new()
+    foreach ($s in @($Segments)) { $queue.Enqueue($s) }
+    while ($queue.Count -gt 0) {
+        $s = $queue.Dequeue()
+        if ($null -eq $s) { continue }
+        if ($s -is [System.Collections.IEnumerable] -and -not ($s -is [string]) -and -not (Test-IsSegmentLike -Value $s)) {
+            foreach ($inner in @($s)) { $queue.Enqueue($inner) }
+            continue
+        }
+        $h = @{
+            Text            = [string](Get-PropertyValueOrDefault -Object $s -Name 'Text'            -Default '')
+            Color           = [string](Get-PropertyValueOrDefault -Object $s -Name 'Color'           -Default 'Gray')
+            BackgroundColor = [string](Get-PropertyValueOrDefault -Object $s -Name 'BackgroundColor' -Default '')
+        }
+        $flat.Add($h)
+    }
+
     $result = [System.Collections.Generic.List[object]]::new()
     $remaining = $Width
 
-    foreach ($seg in @($Segments)) {
+    foreach ($seg in $flat) {
         if ($remaining -le 0) { break }
         $text  = [string](Get-PropertyValueOrDefault -Object $seg -Name 'Text'            -Default '')
         $color = [string](Get-PropertyValueOrDefault -Object $seg -Name 'Color'           -Default 'Gray')
@@ -271,8 +291,8 @@ function Compose-FrameRow {
         [Parameter(Mandatory = $true)][bool]$IsLastRow
     )
 
-    $left = Write-ColorSegments -Segments $LeftSegments -Width ([Math]::Max(0, $LeftWidth))
-    $right = Write-ColorSegments -Segments $RightSegments -Width ([Math]::Max(0, $RightWidth))
+    $left  = @(Resize-SegmentRow -Segments $LeftSegments  -Width ([Math]::Max(0, $LeftWidth)))
+    $right = @(Resize-SegmentRow -Segments $RightSegments -Width ([Math]::Max(0, $RightWidth)))
 
     if (-not [string]::IsNullOrEmpty($RightBackgroundColor)) {
         $right = @($right | ForEach-Object {
@@ -1191,8 +1211,9 @@ function Build-CommandLogRowSegments {
     .SYNOPSIS
         Builds render segments for a single command log row.
     .DESCRIPTION
-        Primary row: HH:mm:ss  [OK]  1234ms  p4 changes ...
-        If the command is in ExpandedCommands, an extra summary row is emitted below.
+        Primary row: HH:mm:ss  ✓  p4 changes ...
+        Duration and output count are shown in the expanded row (E key).
+        The p4 global metadata flags (-ztag -Mj) are stripped from the display.
     #>
     param(
         [Parameter(Mandatory)]$Entry,           # CommandLog metadata item
@@ -1209,21 +1230,21 @@ function Build-CommandLogRowSegments {
         return
     }
 
-    $timeStr    = ([datetime]$Entry.StartedAt).ToString('HH:mm:ss')
-    $succeeded  = [bool]$Entry.Succeeded
-    $tag        = if ($succeeded) { '[OK] ' } else { '[ERR]' }
-    $tagColor   = if ($succeeded) { 'Green' } else { 'Red' }
-    $durationMs = [int]$Entry.DurationMs
-    $cmdLine    = [string]$Entry.CommandLine
-    $mColor     = if ($IsSelected) { 'Cyan' } else { Get-MarkerColor -Marker $Marker }
-    $textColor  = if ($IsSelected) { 'White' } else { 'Gray' }
+    $timeStr   = ([datetime]$Entry.StartedAt).ToString('HH:mm:ss')
+    $succeeded = [bool]$Entry.Succeeded
+    $tag       = if ($succeeded) { [char]0x2713 } else { [char]0x2717 }  # ✓ / ✗
+    $tagColor  = if ($succeeded) { 'Green' } else { 'Red' }
+    # Strip p4 global metadata flags added by Invoke-P4 (-ztag -Mj) so the user
+    # sees only the meaningful subcommand and its arguments.
+    $cmdLine   = ([string]$Entry.CommandLine) -replace ' -ztag -Mj', ''
+    $mColor    = if ($IsSelected) { 'Cyan' } else { Get-MarkerColor -Marker $Marker }
+    $textColor = if ($IsSelected) { 'White' } else { 'Gray' }
 
     Write-Output -NoEnumerate @(
-        @{ Text = $Marker;               Color = $mColor     },
-        @{ Text = " $timeStr ";          Color = 'DarkGray'  },
-        @{ Text = $tag;                  Color = $tagColor   },
-        @{ Text = " ${durationMs}ms  ";  Color = 'DarkGray'  },
-        @{ Text = $cmdLine;              Color = $textColor  }
+        @{ Text = $Marker;         Color = $mColor    },
+        @{ Text = " $timeStr ";    Color = 'DarkGray' },
+        @{ Text = " $tag ";        Color = $tagColor  },
+        @{ Text = $cmdLine;        Color = $textColor }
     )
 }
 
@@ -1242,8 +1263,9 @@ function Build-CommandExpandedRowSegments {
         return
     }
 
-    $mColor  = Get-MarkerColor -Marker $Marker
-    $summary = [string]$Entry.SummaryLine
+    $mColor     = Get-MarkerColor -Marker $Marker
+    $durationMs = [int]$Entry.DurationMs
+    $summary    = [string]$Entry.SummaryLine
 
     if ([string]::IsNullOrWhiteSpace($summary)) {
         $outputCount = [int]$Entry.OutputCount
@@ -1251,15 +1273,16 @@ function Build-CommandExpandedRowSegments {
         $errText     = [string]$Entry.ErrorText
         if (-not $succeeded -and -not [string]::IsNullOrWhiteSpace($errText)) {
             $firstLine = ($errText -split '\r?\n' | Where-Object { $_ -ne '' } | Select-Object -First 1)
-            $summary   = "  Error: $firstLine"
+            $summary   = "Error: $firstLine"
         } else {
-            $summary = "  $outputCount entries"
+            $summary = "$outputCount entries"
         }
     }
 
     Write-Output -NoEnumerate @(
-        @{ Text = $Marker;   Color = $mColor     },
-        @{ Text = $summary;  Color = 'DarkGray'  }
+        @{ Text = $Marker;              Color = $mColor     },
+        @{ Text = "  ${durationMs}ms";  Color = 'Gray'      },
+        @{ Text = "  $summary";         Color = 'DarkGray'  }
     )
 }
 

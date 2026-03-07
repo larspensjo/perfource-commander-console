@@ -940,3 +940,37 @@ Describe 'CommandLog reducer' {
         $s.Ui.ViewMode | Should -Be 'Submitted'
     }
 }
+
+Describe 'Reducer performance guard' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+    }
+
+    It 'processes a representative navigation loop within a reasonable time budget' {
+        $changes = 1..20 | ForEach-Object {
+            [pscustomobject]@{
+                Id              = (1000 + $_).ToString()
+                Title           = "Change $_"
+                HasShelvedFiles = (($_ % 2) -eq 0)
+                HasOpenedFiles  = (($_ % 3) -ne 0)
+                Captured        = ([datetime]'2026-03-07').AddDays(-$_)
+            }
+        }
+
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+
+        # Benchmark a reducer path that exercises full derived-state recalculation
+        # over a moderately sized changelist set, while keeping the guard cheap.
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        1..40 | ForEach-Object {
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        }
+        $sw.Stop()
+
+        # Keep this budget intentionally generous. The goal is to catch large
+        # regressions in the reducer hot path, not tiny machine-to-machine noise.
+        $sw.ElapsedMilliseconds | Should -BeLessThan 2200
+    }
+}

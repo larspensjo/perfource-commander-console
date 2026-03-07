@@ -78,20 +78,22 @@ function Copy-StateObject {
         return $Obj
     }
 
-    # Array — new array, each element recursively copied.
+    # Array — shallow-copy the array container.
+    # State arrays hold immutable scalars or reference objects that are replaced
+    # wholesale rather than mutated in-place, so cloning each element is wasted
+    # work on the reducer hot path.
     # Use Write-Output -NoEnumerate to prevent an empty array from being unrolled to $null.
     if ($Obj -is [array]) {
-        $result = [object[]]::new($Obj.Length)
-        for ($i = 0; $i -lt $Obj.Length; $i++) {
-            $result[$i] = Copy-StateObject -Obj $Obj[$i]
-        }
-        Write-Output -NoEnumerate $result
+        Write-Output -NoEnumerate ($Obj.Clone())
         return
     }
 
-    # PSCustomObject — new object with all NoteProperty values recursively copied
+    # PSCustomObject — new object with all NoteProperty values recursively copied.
+    # Build a single ordered hashtable and cast once; this is substantially
+    # faster than creating an empty PSCustomObject and appending properties with
+    # Add-Member on every reducer action.
     if ($Obj -is [pscustomobject]) {
-        $copy = [pscustomobject]@{}
+        $copyMap = [ordered]@{}
         foreach ($prop in $Obj.PSObject.Properties) {
             if ($prop.MemberType -eq 'NoteProperty') {
                 $propCopy = Copy-StateObject -Obj $prop.Value
@@ -101,11 +103,10 @@ function Copy-StateObject {
                 if ($prop.Value -is [array] -and $propCopy -isnot [array]) {
                     $propCopy = [object[]] @($propCopy)
                 }
-                $copy | Add-Member -NotePropertyName $prop.Name `
-                                   -NotePropertyValue $propCopy
+                $copyMap[$prop.Name] = $propCopy
             }
         }
-        return $copy
+        return [pscustomobject]$copyMap
     }
 
     # Fallback — return as-is for unknown reference types

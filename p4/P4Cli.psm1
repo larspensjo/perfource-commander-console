@@ -290,6 +290,52 @@ function Get-P4ChangelistEntries {
     }
 }
 
+function ConvertFrom-P4DescribeRecordToFiles {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Record
+    )
+
+    $files = [System.Collections.Generic.List[object]]::new()
+
+    $indexedDepotProps = @(
+        $Record.PSObject.Properties |
+            Where-Object { $_.Name -match '^depotFile(\d+)$' } |
+            Sort-Object { [int]$_.Name.Substring('depotFile'.Length) }
+    )
+
+    if ($indexedDepotProps.Count -gt 0) {
+        foreach ($prop in $indexedDepotProps) {
+            $index = [int]$prop.Name.Substring('depotFile'.Length)
+            $actionProp = $Record.PSObject.Properties["action$index"]
+            $typeProp   = $Record.PSObject.Properties["type$index"]
+            $files.Add([pscustomobject]@{
+                DepotPath = [string]$prop.Value
+                Action    = if ($null -ne $actionProp) { [string]$actionProp.Value } else { '' }
+                Type      = if ($null -ne $typeProp)   { [string]$typeProp.Value }   else { '' }
+            }) | Out-Null
+        }
+
+        return @($files.ToArray())
+    }
+
+    if ($null -ne ($Record.PSObject.Properties['depotFile'])) {
+        $depotFiles = @($Record.depotFile)
+        $actions    = if ($null -ne ($Record.PSObject.Properties['action'])) { @($Record.action) } else { @() }
+        $types      = if ($null -ne ($Record.PSObject.Properties['type']))   { @($Record.type)   } else { @() }
+
+        for ($i = 0; $i -lt $depotFiles.Count; $i++) {
+            $files.Add([pscustomobject]@{
+                DepotPath = [string]$depotFiles[$i]
+                Action    = if ($i -lt $actions.Count) { [string]$actions[$i] } else { '' }
+                Type      = if ($i -lt $types.Count)   { [string]$types[$i]   } else { '' }
+            }) | Out-Null
+        }
+    }
+
+    return @($files.ToArray())
+}
+
 function Get-P4Describe {
     [CmdletBinding()]
     param(
@@ -307,20 +353,7 @@ function Get-P4Describe {
         ([datetime]'1970-01-01T00:00:00Z').AddSeconds([double]$record.time).ToLocalTime()
     } else { Get-Date }
 
-    # With -Mj, depotFile/action/type are JSON arrays; @() wraps single values for safety.
-    $files = @()
-    if ($null -ne ($record.PSObject.Properties['depotFile'])) {
-        $depotFiles = @($record.depotFile)
-        $actions    = @($record.action)
-        $types      = if ($null -ne ($record.PSObject.Properties['type'])) { @($record.type) } else { @() }
-        for ($i = 0; $i -lt $depotFiles.Count; $i++) {
-            $files += [pscustomobject]@{
-                DepotPath = [string]$depotFiles[$i]
-                Action    = if ($i -lt $actions.Count) { [string]$actions[$i] } else { '' }
-                Type      = if ($i -lt $types.Count)   { [string]$types[$i]   } else { '' }
-            }
-        }
-    }
+    $files = @(ConvertFrom-P4DescribeRecordToFiles -Record $record)
 
     $descLines = @([string]$record.desc -split "`r?`n" | Where-Object { $_ -ne '' })
 

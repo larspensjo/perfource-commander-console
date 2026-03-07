@@ -1110,6 +1110,17 @@ function Build-FilesScreenFrame {
     $filterText    = Get-PropertyValueOrDefault -Object $State.Query -Name 'FileFilterText'    -Default ''
     $fileCount     = if (($State.Derived.PSObject.Properties.Match('VisibleFileIndices')).Count -gt 0) { $State.Derived.VisibleFileIndices.Count } else { 0 }
     $isLoading     = [bool](Get-PropertyValueOrDefault -Object $State.Runtime -Name 'LoadFilesRequested' -Default $false)
+    $cacheKey      = "${sourceChange}:${sourceKind}"
+    $fileCache     = Get-PropertyValueOrDefault -Object $State.Data -Name 'FileCache' -Default $null
+    [object[]]$allFiles = if ($null -ne $fileCache -and $fileCache.ContainsKey($cacheKey)) { @($fileCache[$cacheKey]) } else { @() }
+
+    $selectedFile = $null
+    if ($fileCount -gt 0 -and $State.Cursor.FileIndex -ge 0 -and $State.Cursor.FileIndex -lt $fileCount) {
+        $selectedVisibleIndex = [int]$State.Derived.VisibleFileIndices[$State.Cursor.FileIndex]
+        if ($selectedVisibleIndex -ge 0 -and $selectedVisibleIndex -lt $allFiles.Count) {
+            $selectedFile = $allFiles[$selectedVisibleIndex]
+        }
+    }
 
     $listPaneTitle = "[Files — CL $sourceChange ($sourceKind)]"
     $rows          = [System.Collections.Generic.List[object]]::new($layout.Height)
@@ -1160,15 +1171,31 @@ function Build-FilesScreenFrame {
                     $msg   = if ($isLoading) { 'Loading…' } else { '(no files loaded)' }
                     $inner = @(@{ Text = $msg; Color = 'DarkGray' })
                 } elseif ($fileIdx -lt $fileCount) {
-                    # Placeholder until Step 2 supplies actual FileEntry rendering.
+                    $visibleIndex = [int]$State.Derived.VisibleFileIndices[$fileIdx]
+                    $file         = if ($visibleIndex -ge 0 -and $visibleIndex -lt $allFiles.Count) { $allFiles[$visibleIndex] } else { $null }
                     $isSelected = ($fileIdx -eq $State.Cursor.FileIndex)
                     $marker     = if ($isSelected) { $CURSOR_GLYPH } else { ' ' }
                     $mColor     = if ($isSelected) { 'Cyan' } else { 'DarkGray' }
                     $tColor     = if ($isSelected) { 'White' } else { 'Gray' }
-                    $inner      = @(
-                        @{ Text = $marker;           Color = $mColor },
-                        @{ Text = " (file $fileIdx)"; Color = $tColor }
-                    )
+
+                    if ($null -ne $file) {
+                        $action   = [string](Get-PropertyValueOrDefault -Object $file -Name 'Action' -Default '')
+                        $fileName = [string](Get-PropertyValueOrDefault -Object $file -Name 'FileName' -Default '')
+                        $depot    = [string](Get-PropertyValueOrDefault -Object $file -Name 'DepotPath' -Default '')
+                        if ([string]::IsNullOrWhiteSpace($fileName)) { $fileName = $depot }
+                        $inner = @(
+                            @{ Text = $marker;                   Color = $mColor },
+                            @{ Text = ' ';                      Color = $tColor },
+                            @{ Text = ('{0,-10}' -f $action);   Color = 'DarkYellow' },
+                            @{ Text = $fileName;                Color = $tColor }
+                        )
+                    } else {
+                        $inner = @(
+                            @{ Text = $marker; Color = $mColor },
+                            @{ Text = ' (missing file entry)'; Color = 'Red' }
+                        )
+                    }
+
                     if ($isSelected) { $rightBackgroundColor = 'DarkCyan' }
                 } else {
                     $inner = @(@{ Text = ''; Color = 'Gray' })
@@ -1188,11 +1215,28 @@ function Build-FilesScreenFrame {
                 $rightSegs = Build-BoxBottomSegments -Width $layout.DetailPane.W -BorderColor $detailBorder
             } else {
                 $detailContentRow = $detailLocalRow - 1
-                $inner = if ($detailContentRow -eq 0 -and $fileCount -gt 0) {
-                    $visIdx = $State.Derived.VisibleFileIndices[$State.Cursor.FileIndex]
-                    @(@{ Text = "Index: $visIdx"; Color = 'DarkGray' })
+                $inner = if ($null -eq $selectedFile) {
+                    if ($detailContentRow -eq 0) {
+                        @(@{ Text = if ($isLoading) { 'Loading…' } else { '(no file selected)' }; Color = 'DarkGray' })
+                    } else {
+                        @(@{ Text = ''; Color = 'Gray' })
+                    }
                 } else {
-                    @(@{ Text = ''; Color = 'Gray' })
+                    $selectedFileName = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'FileName' -Default '')
+                    $selectedDepot    = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'DepotPath' -Default '')
+                    $selectedAction   = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'Action' -Default '')
+                    $selectedType     = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'FileType' -Default '')
+                    $selectedChange   = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'Change' -Default '')
+                    switch ($detailContentRow) {
+                        0 { @(@{ Text = "File: $selectedFileName"; Color = 'White' }) }
+                        1 { @(@{ Text = "Action: $selectedAction"; Color = 'DarkYellow' }) }
+                        2 { @(@{ Text = "Type: $selectedType"; Color = 'Gray' }) }
+                        3 { @(@{ Text = "Change: $selectedChange"; Color = 'DarkGray' }) }
+                        4 { @(@{ Text = "Source: $sourceKind"; Color = 'DarkGray' }) }
+                        5 { @(@{ Text = ''; Color = 'Gray' }) }
+                        6 { @(@{ Text = $selectedDepot; Color = 'Gray' }) }
+                        default { @(@{ Text = ''; Color = 'Gray' }) }
+                    }
                 }
                 $rightSegs = Build-BorderedRowSegments -InnerSegments $inner -Width $layout.DetailPane.W -BorderColor $detailBorder
             }

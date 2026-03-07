@@ -63,15 +63,18 @@ Describe 'Get-P4Describe' {
     It 'parses a describe record with indexed file keys' {
         Mock Invoke-P4 -ModuleName P4Cli {
             return @([pscustomobject]@{
-                change    = '12345'
-                user      = 'testuser'
-                client    = 'testclient'
-                status    = 'pending'
-                time      = '1700000000'
-                desc      = 'Line one'
-                depotFile = @('//depot/a.txt', '//depot/b.txt')
-                action    = @('edit', 'add')
-                type      = @('text', 'binary')
+                change     = '12345'
+                user       = 'testuser'
+                client     = 'testclient'
+                status     = 'submitted'
+                time       = '1700000000'
+                desc       = 'Line one'
+                depotFile0 = '//depot/a.txt'
+                action0    = 'edit'
+                type0      = 'text'
+                depotFile1 = '//depot/b.txt'
+                action1    = 'add'
+                type1      = 'binary'
             })
         }
 
@@ -79,7 +82,7 @@ Describe 'Get-P4Describe' {
         $result.Change      | Should -Be 12345
         $result.User        | Should -Be 'testuser'
         $result.Client      | Should -Be 'testclient'
-        $result.Status      | Should -Be 'pending'
+        $result.Status      | Should -Be 'submitted'
         $result.Files.Count | Should -Be 2
         $result.Files[0].DepotPath | Should -Be '//depot/a.txt'
         $result.Files[0].Action    | Should -Be 'edit'
@@ -87,6 +90,31 @@ Describe 'Get-P4Describe' {
         $result.Files[1].DepotPath | Should -Be '//depot/b.txt'
         $result.Files[1].Action    | Should -Be 'add'
         $result.Files[1].Type      | Should -Be 'binary'
+    }
+
+    It 'still parses array-shaped file properties when present' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @([pscustomobject]@{
+                change    = '12346'
+                user      = 'testuser'
+                client    = 'testclient'
+                status    = 'pending'
+                time      = '1700000000'
+                desc      = 'Line one'
+                depotFile = @('//depot/c.txt', '//depot/d.txt')
+                action    = @('branch', 'integrate')
+                type      = @('text+C', 'text')
+            })
+        }
+
+        $result = Get-P4Describe -Change 12346
+        $result.Files.Count | Should -Be 2
+        $result.Files[0].DepotPath | Should -Be '//depot/c.txt'
+        $result.Files[0].Action    | Should -Be 'branch'
+        $result.Files[0].Type      | Should -Be 'text+C'
+        $result.Files[1].DepotPath | Should -Be '//depot/d.txt'
+        $result.Files[1].Action    | Should -Be 'integrate'
+        $result.Files[1].Type      | Should -Be 'text'
     }
 
     It 'parses a multi-line description' {

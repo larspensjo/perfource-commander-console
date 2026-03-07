@@ -883,3 +883,117 @@ Describe 'Expanded changelist frame rendering' {
         }
     }
 }
+
+Describe 'Files screen rendering' {
+    BeforeAll {
+        function New-FilesRenderState {
+            param(
+                [int]$Width = 120,
+                [int]$Height = 20
+            )
+
+            $contentHeight = $Height - 1
+            $listHeight = 9
+            $detailHeight = $contentHeight - $listHeight - 1
+            $layout = [pscustomobject]@{
+                Mode = 'Normal'
+                Width = $Width
+                Height = $Height
+                FilterPane = [pscustomobject]@{ X = 0; Y = 0; W = 24; H = $contentHeight }
+                ListPane = [pscustomobject]@{ X = 25; Y = 0; W = 55; H = $listHeight }
+                DetailPane = [pscustomobject]@{ X = 25; Y = ($listHeight + 1); W = 55; H = $detailHeight }
+                StatusPane = [pscustomobject]@{ X = 0; Y = $contentHeight; W = $Width; H = 1 }
+            }
+
+            return [pscustomobject]@{
+                Data = [pscustomobject]@{
+                    AllChanges = @()
+                    AllFilters = @()
+                }
+                Ui = [pscustomobject]@{
+                    ActivePane = 'Changelists'
+                    IsMaximized = $false
+                    HideUnavailableFilters = $false
+                    ExpandedChangelists = $false
+                    Layout = $layout
+                }
+                Query = [pscustomobject]@{
+                    SelectedFilters = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                    SearchText = ''
+                    SearchMode = 'None'
+                    SortMode = 'Default'
+                }
+                Derived = [pscustomobject]@{
+                    VisibleChangeIds = @()
+                    VisibleFilters = @()
+                }
+                Cursor = [pscustomobject]@{
+                    FilterIndex = 0
+                    FilterScrollTop = 0
+                    ChangeIndex = 0
+                    ChangeScrollTop = 0
+                }
+                Runtime = [pscustomobject]@{
+                    IsRunning = $true
+                    LastError = $null
+                    DeleteChangeId = $null
+                    ModalPrompt = [pscustomobject]@{
+                        IsOpen         = $false
+                        IsBusy         = $false
+                        Purpose        = 'Command'
+                        CurrentCommand = ''
+                        History        = @()
+                    }
+                }
+            }
+        }
+    }
+
+    It 'renders actual file names instead of placeholder file indexes' {
+        $state = New-FilesRenderState -Width 120 -Height 20
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '27079887:Submitted' = @(
+                [pscustomobject]@{ FileName = 'FX_BD_Smoke_Vista_LowBlending.dbx'; DepotPath = '//bf/.../FX_BD_Smoke_Vista_LowBlending.dbx'; Action = 'branch';    FileType = 'text+C'; Change = 27079887; SourceKind = 'Submitted' },
+                [pscustomobject]@{ FileName = 'FX_MP_Mirage_SmokeColumn_Vista_Fire_L.dbx'; DepotPath = '//bf/.../FX_MP_Mirage_SmokeColumn_Vista_Fire_L.dbx'; Action = 'integrate'; FileType = 'text';   Change = 27079887; SourceKind = 'Submitted' }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 27079887
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Submitted'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0, 1)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+        $state.Runtime | Add-Member -NotePropertyName LoadFilesRequested -NotePropertyValue $false
+
+        $frame = Build-FilesScreenFrame -State $state
+        $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+
+        $allText | Should -Match 'FX_BD_Smoke_Vista_LowBlending\.dbx'
+        $allText | Should -Match 'branch'
+        $allText | Should -Not -Match '\(file 0\)'
+    }
+
+    It 'renders inspector details for the selected file' {
+        $state = New-FilesRenderState -Width 120 -Height 20
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '27079887:Submitted' = @(
+                [pscustomobject]@{ FileName = 'FX_Global.dbx'; DepotPath = '//bf/CH1/CH1-to-trunk/bfdata/.../FX_Global.dbx'; Action = 'integrate'; FileType = 'text'; Change = 27079887; SourceKind = 'Submitted' }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 27079887
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Submitted'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+        $state.Runtime | Add-Member -NotePropertyName LoadFilesRequested -NotePropertyValue $false
+
+        $frame = Build-FilesScreenFrame -State $state
+        $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+
+        $allText | Should -Match 'File: FX_Global\.dbx'
+        $allText | Should -Match 'Action: integrate'
+        $allText | Should -Match 'Type: text'
+        $allText | Should -Match 'Source: Submitted'
+    }
+}

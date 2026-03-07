@@ -367,6 +367,10 @@ function Flush-FrameDiff {
                     try { [Console]::BackgroundColor = [System.ConsoleColor]::$bg } catch { [Console]::BackgroundColor = [System.ConsoleColor]::Black }
                 }
 
+                # Strip control characters (U+0000–U+001F, U+007F) before writing.
+                # Any embedded newline, carriage-return, tab, etc. from raw p4 output
+                # would move the terminal cursor and corrupt the layout.
+                $text = $text -replace '[\x00-\x1F\x7F]', ' '
                 [Console]::Write($text)
             }
         }

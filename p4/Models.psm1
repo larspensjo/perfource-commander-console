@@ -29,7 +29,7 @@ function ConvertTo-ChangelistEntry {
         [Parameter(Mandatory = $false)][int]$ShelvedFileCount = 0
     )
 
-    $title = [string]$Changelist.Description
+    $title = ([string]$Changelist.Description -split "`r?`n" | Where-Object { $_ -match '\S' } | Select-Object -First 1)
     if ([string]::IsNullOrWhiteSpace($title)) { $title = '(no description)' }
 
     [pscustomobject]@{
@@ -49,7 +49,7 @@ function ConvertTo-SubmittedChangelistEntry {
         [Parameter(Mandatory)][object]$Changelist
     )
 
-    $title = [string]$Changelist.Description
+    $title = ([string]$Changelist.Description -split "`r?`n" | Where-Object { $_ -match '\S' } | Select-Object -First 1)
     if ([string]::IsNullOrWhiteSpace($title)) { $title = '(no description)' }
 
     [pscustomobject]@{

@@ -114,4 +114,24 @@ Describe 'ConvertFrom-KeyInfoToAction' {
         $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key F1)
         $action.Type | Should -Be 'ToggleHelpOverlay'
     }
-}
+
+    It 'Insert maps to ToggleMarkCurrent' {
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key Insert)
+        $action.Type | Should -Be 'ToggleMarkCurrent'
+    }
+
+    It 'M maps to ToggleMarkCurrent' {
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key M)
+        $action.Type | Should -Be 'ToggleMarkCurrent'
+    }
+
+    It 'Shift+M maps to MarkAllVisible' {
+        $keyInfo = [System.ConsoleKeyInfo]::new([char][System.ConsoleKey]::M, [System.ConsoleKey]::M, $true, $false, $false)
+        $action  = ConvertFrom-KeyInfoToAction -KeyInfo $keyInfo
+        $action.Type | Should -Be 'MarkAllVisible'
+    }
+
+    It 'C maps to ClearMarks' {
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key C)
+        $action.Type | Should -Be 'ClearMarks'
+    }}

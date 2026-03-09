@@ -1018,3 +1018,99 @@ Describe 'Reducer performance guard' {
         $sw.ElapsedMilliseconds | Should -BeLessThan 2200
     }
 }
+Describe 'Mark actions — MarkedChangeIds' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+    }
+
+    BeforeEach {
+        $changes = @(
+            [pscustomobject]@{ Id = '101'; Title = 'One';   HasShelvedFiles = $false; HasOpenedFiles = $true;  Captured = [datetime]'2026-02-10' },
+            [pscustomobject]@{ Id = '102'; Title = 'Two';   HasShelvedFiles = $true;  HasOpenedFiles = $true;  Captured = [datetime]'2026-02-09' },
+            [pscustomobject]@{ Id = '103'; Title = 'Three'; HasShelvedFiles = $false; HasOpenedFiles = $false; Captured = [datetime]'2026-02-08' }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+    }
+
+    It 'New-BrowserState includes MarkedChangeIds as an empty HashSet' {
+        ($state.Query.MarkedChangeIds -is [System.Collections.Generic.HashSet[string]]) | Should -BeTrue
+        $state.Query.MarkedChangeIds.Count | Should -Be 0
+    }
+
+    It 'ToggleMarkCurrent marks the currently focused changelist' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        # Focused CL is now index 1 = '102'
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $next.Query.MarkedChangeIds.Contains('102') | Should -BeTrue
+        $next.Query.MarkedChangeIds.Count            | Should -Be 1
+    }
+
+    It 'ToggleMarkCurrent unmarks an already-marked changelist' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        # '101' is now marked; toggle again to unmark
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $next.Query.MarkedChangeIds.Contains('101') | Should -BeFalse
+        $next.Query.MarkedChangeIds.Count            | Should -Be 0
+    }
+
+    It 'ToggleMarkCurrent on empty list is a no-op' {
+        $emptyState = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
+        $next = Invoke-BrowserReducer -State $emptyState -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $next.Query.MarkedChangeIds.Count | Should -Be 0
+    }
+
+    It 'MarkAllVisible unions all visible IDs into MarkedChangeIds' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MarkAllVisible' })
+        $next.Query.MarkedChangeIds.Count | Should -Be 3
+        $next.Query.MarkedChangeIds.Contains('101') | Should -BeTrue
+        $next.Query.MarkedChangeIds.Contains('102') | Should -BeTrue
+        $next.Query.MarkedChangeIds.Contains('103') | Should -BeTrue
+    }
+
+    It 'MarkAllVisible does not discard previously marked hidden items' {
+        # Mark 102 first (it will become hidden after filter)
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        # Apply filter: only 101 and 103 visible (no shelved files)
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleFilter'; Filter = 'No shelved files' })
+        # Now MarkAllVisible — should union 101 and 103 but keep 102
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MarkAllVisible' })
+        $next.Query.MarkedChangeIds.Contains('101') | Should -BeTrue
+        $next.Query.MarkedChangeIds.Contains('102') | Should -BeTrue  # hidden but still marked
+        $next.Query.MarkedChangeIds.Contains('103') | Should -BeTrue
+    }
+
+    It 'ClearMarks empties MarkedChangeIds' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MarkAllVisible' })
+        $state.Query.MarkedChangeIds.Count | Should -Be 3
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ClearMarks' })
+        $next.Query.MarkedChangeIds.Count | Should -Be 0
+    }
+
+    It 'marks persist across SwitchView' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MarkAllVisible' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'Submitted' })
+        $next.Query.MarkedChangeIds.Count | Should -Be 3
+        $next.Query.MarkedChangeIds.Contains('101') | Should -BeTrue
+    }
+
+    It 'marks persist across filter change' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        # Toggle filter
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleFilter'; Filter = 'No shelved files' })
+        $next.Query.MarkedChangeIds.Contains('101') | Should -BeTrue
+    }
+
+    It 'Copy-BrowserState preserves MarkedChangeIds as an independent copy' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MarkAllVisible' })
+        $copy  = Copy-BrowserState -State $state
+        $copy.Query.MarkedChangeIds.Count | Should -Be 3
+        # Mutating original does not affect copy
+        [void]$state.Query.MarkedChangeIds.Remove('101')
+        $copy.Query.MarkedChangeIds.Contains('101') | Should -BeTrue
+    }
+}

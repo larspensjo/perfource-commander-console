@@ -3,6 +3,7 @@
 $SCROLLBAR_THUMB_GLYPH = [char]0x2591
 $SCROLLBAR_TRACK_GLYPH = [char]0x2502
 $CURSOR_GLYPH          = [char]0x25B6  # ▶
+$MARK_GLYPH            = [char]0x25CF  # ●
 
 # Set to $true via Enable-FrameIntegrityTest to activate the runtime border checker.
 $script:IntegrityTestEnabled = $false
@@ -575,8 +576,12 @@ function Build-ChangeSegments {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Marker,
         [AllowNull()]$Change,
-        [Parameter(Mandatory = $true)][bool]$IsSelected
+        [Parameter(Mandatory = $true)][bool]$IsSelected,
+        [bool]$IsMarked = $false
     )
+
+    $markBadge      = if ($IsMarked) { $MARK_GLYPH } else { ' ' }
+    $markBadgeColor = if ($IsMarked) { 'Yellow' } else { 'Gray' }
 
     if ($null -eq $Change) {
         if ([string]::IsNullOrEmpty($Marker) -or $Marker -eq ' ') {
@@ -584,7 +589,8 @@ function Build-ChangeSegments {
             return
         }
         Write-Output -NoEnumerate @(
-            @{ Text = $Marker; Color = (Get-MarkerColor -Marker $Marker) }
+            @{ Text = $Marker;    Color = (Get-MarkerColor -Marker $Marker) },
+            @{ Text = $markBadge; Color = $markBadgeColor }
         )
         return
     }
@@ -598,8 +604,9 @@ function Build-ChangeSegments {
     $titleColor  = if ($IsSelected) { 'White' } else { 'Gray' }
 
     $segments = @(
-        @{ Text = $Marker;      Color = $markerColor },
-        @{ Text = " $changeId"; Color = 'DarkGray'   }
+        @{ Text = $Marker;    Color = $markerColor  },
+        @{ Text = $markBadge; Color = $markBadgeColor },
+        @{ Text = " $changeId"; Color = 'DarkGray'  }
     )
 
     # Show user column for submitted entries
@@ -800,8 +807,15 @@ function Build-StatusBarRow {
         $State.Data.AllChanges.Count
     }
 
+    $markedCount = 0
+    $markedProp  = $State.Query.PSObject.Properties['MarkedChangeIds']
+    if ($null -ne $markedProp -and $null -ne $markedProp.Value) {
+        $markedCount = $markedProp.Value.Count
+    }
+    $markBadge = if ($markedCount -gt 0) { " $([char]0x25CF) Marked: $markedCount |" } else { '' }
+
     $expandHint  = if ((Get-PropertyValueOrDefault -Object $State.Ui -Name 'ExpandedChangelists' -Default $false)) { '[E] Collapse' } else { '[E] Expand' }
-    $statusText  = "$viewBadge Filtered: $filteredCount/$totalCount | [F1] Help [1/2/3] View [Tab] Pane [Space] Filter [Enter] Describe $expandHint [F5] Reload [Q] Quit"
+    $statusText  = "$viewBadge Filtered: $filteredCount/$totalCount |$markBadge [F1] Help [1/2/3] View [Tab] Pane [Space] Filter [Enter] Describe $expandHint [F5] Reload [Q] Quit"
     $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
 
     $segments = Write-ColorSegments -Segments @(@{
@@ -1826,6 +1840,13 @@ function Build-FrameFromState {
 
                 if (-not $changeRendered) {
                     $isSelectedChange = ($changeClIdx -lt $State.Derived.VisibleChangeIds.Count -and $State.Cursor.ChangeIndex -eq $changeClIdx -and $null -ne $cl)
+                    $isMarkedChange   = $false
+                    if ($null -ne $cl) {
+                        $markedProp = $State.Query.PSObject.Properties['MarkedChangeIds']
+                        if ($null -ne $markedProp -and $null -ne $markedProp.Value) {
+                            $isMarkedChange = $markedProp.Value.Contains([string]$cl.Id)
+                        }
+                    }
                     if ($changeRowType -eq 1) {
                         # Detail row (expanded mode): marker + details
                         $markerSeg = @{ Text = $changeMarker; Color = (Get-MarkerColor -Marker $changeMarker) }
@@ -1835,7 +1856,7 @@ function Build-FrameFromState {
                             $changeInnerSegments = @($markerSeg) + @(Build-ChangeDetailSegments -Change $cl)
                         }
                     } else {
-                        $changeInnerSegments = Build-ChangeSegments -Marker $changeMarker -Change $cl -IsSelected $isSelectedChange
+                        $changeInnerSegments = Build-ChangeSegments -Marker $changeMarker -Change $cl -IsSelected $isSelectedChange -IsMarked $isMarkedChange
                     }
                     $rightSegments = Build-BorderedRowSegments -InnerSegments $changeInnerSegments -Width $layout.ListPane.W -BorderColor $changeBorderColor
                     if ($isSelectedChange) {

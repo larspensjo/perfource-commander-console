@@ -158,6 +158,7 @@ function New-BrowserState {
         }
         Query = [pscustomobject]@{
             SelectedFilters  = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            MarkedChangeIds  = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
             SearchText       = ''
             SearchMode       = 'None'
             SortMode         = 'Default'
@@ -855,6 +856,38 @@ function Invoke-ChangelistReducer {
                                                $next.Derived.VisibleChangeIds.Count - 1))
             $next.Runtime.DeleteChangeId = $next.Derived.VisibleChangeIds[$idx]
             return Update-BrowserDerivedState -State $next
+        }
+        'ToggleMarkCurrent' {
+            if ($next.Derived.VisibleChangeIds.Count -eq 0) { return $next }
+            $idx     = [Math]::Max(0, [Math]::Min($next.Cursor.ChangeIndex, $next.Derived.VisibleChangeIds.Count - 1))
+            $changeId = [string]$next.Derived.VisibleChangeIds[$idx]
+            $markedProp = $next.Query.PSObject.Properties['MarkedChangeIds']
+            if ($null -ne $markedProp -and $null -ne $markedProp.Value) {
+                $marked = $markedProp.Value
+                if ($marked.Contains($changeId)) {
+                    [void]$marked.Remove($changeId)
+                } else {
+                    [void]$marked.Add($changeId)
+                }
+            }
+            return $next
+        }
+        'MarkAllVisible' {
+            $markedProp = $next.Query.PSObject.Properties['MarkedChangeIds']
+            if ($null -ne $markedProp -and $null -ne $markedProp.Value) {
+                $marked = $markedProp.Value
+                foreach ($id in $next.Derived.VisibleChangeIds) {
+                    [void]$marked.Add([string]$id)
+                }
+            }
+            return $next
+        }
+        'ClearMarks' {
+            $markedProp = $next.Query.PSObject.Properties['MarkedChangeIds']
+            if ($null -ne $markedProp -and $null -ne $markedProp.Value) {
+                $next.Query.MarkedChangeIds.Clear()
+            }
+            return $next
         }
         'Reload' {
             $currentViewMode = if (($next.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$next.Ui.ViewMode } else { 'Pending' }

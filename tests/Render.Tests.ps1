@@ -657,24 +657,41 @@ Describe 'Segment builders' {
         It 'builds unselected changelist segments with semantic colors' {
             $cl = [pscustomobject]@{ Id = 'FI-1'; Title = 'Title' }
             $segments = Build-ChangeSegments -Marker '│' -Change $cl -IsSelected $false
-            $segments.Count | Should -Be 3
-            $segments[0].Color | Should -Be 'DarkGray'
-            $segments[1].Color | Should -Be 'DarkGray'
-            $segments[2].Color | Should -Be 'Gray'
+            $segments.Count | Should -Be 4
+            $segments[0].Color | Should -Be 'DarkGray'  # marker
+            $segments[1].Color | Should -Be 'Gray'       # mark badge (unmarked = space)
+            $segments[2].Color | Should -Be 'DarkGray'  # changeId
+            $segments[3].Color | Should -Be 'Gray'       # title
         }
 
         It 'builds selected changelist segments with focus colors' {
             $cl = [pscustomobject]@{ Id = 'FI-2'; Title = 'Chosen' }
             $segments = Build-ChangeSegments -Marker '>' -Change $cl -IsSelected $true
-            $segments[0].Color | Should -Be 'Cyan'
-            $segments[1].Color | Should -Be 'DarkGray'
-            $segments[2].Color | Should -Be 'White'
+            $segments[0].Color | Should -Be 'Cyan'      # marker (selected)
+            $segments[1].Color | Should -Be 'Gray'       # mark badge (unmarked)
+            $segments[2].Color | Should -Be 'DarkGray'  # changeId
+            $segments[3].Color | Should -Be 'White'     # title (selected)
         }
 
-        It 'builds scrollbar-only row as marker segment' {
+        It 'builds scrollbar-only row as marker + badge segments when Change is null' {
             $segments = Build-ChangeSegments -Marker '░' -Change $null -IsSelected $false
-            $segments.Count | Should -Be 1
-            $segments[0].Color | Should -Be 'Gray'
+            $segments.Count | Should -Be 2
+            $segments[0].Color | Should -Be 'Gray'   # scrollbar thumb color
+        }
+
+        It 'builds marked changelist segment with yellow badge' {
+            $cl = [pscustomobject]@{ Id = 'FI-3'; Title = 'Marked CL' }
+            $segments = Build-ChangeSegments -Marker ' ' -Change $cl -IsSelected $false -IsMarked $true
+            $badgeSeg = $segments | Where-Object { $_.Text -eq [string][char]0x25CF } | Select-Object -First 1
+            $badgeSeg | Should -Not -BeNullOrEmpty
+            $badgeSeg.Color | Should -Be 'Yellow'
+        }
+
+        It 'builds marked+focused changelist segment with both cursor and yellow badge' {
+            $cl = [pscustomobject]@{ Id = 'FI-4'; Title = 'Active Marked' }
+            $segments = Build-ChangeSegments -Marker ([string][char]0x25B6) -Change $cl -IsSelected $true -IsMarked $true
+            $segments[0].Color | Should -Be 'Cyan'    # cursor glyph color (selected)
+            $segments[1].Color | Should -Be 'Yellow'  # marked badge
         }
 
         It 'builds detail rows with label and value colors' {
@@ -880,6 +897,26 @@ Describe 'Expanded changelist frame rendering' {
             $frame = Build-FrameFromState -State $state
             $statusText = ($frame.Rows[-1].Segments | ForEach-Object { $_.Text }) -join ''
             $statusText | Should -Match '\[E\] Collapse'
+        }
+
+        It 'status bar shows marked count when marks are present' {
+            $state = New-ExpandedStateFixture -Expanded $false
+            $marked = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            [void]$marked.Add('CL-1')
+            [void]$marked.Add('CL-2')
+            $state.Query | Add-Member -NotePropertyName MarkedChangeIds -NotePropertyValue $marked -Force
+            $frame = Build-FrameFromState -State $state
+            $statusText = ($frame.Rows[-1].Segments | ForEach-Object { $_.Text }) -join ''
+            $statusText | Should -Match 'Marked: 2'
+        }
+
+        It 'status bar omits marked count when no marks' {
+            $state = New-ExpandedStateFixture -Expanded $false
+            $empty = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $state.Query | Add-Member -NotePropertyName MarkedChangeIds -NotePropertyValue $empty -Force
+            $frame = Build-FrameFromState -State $state
+            $statusText = ($frame.Rows[-1].Segments | ForEach-Object { $_.Text }) -join ''
+            $statusText | Should -Not -Match 'Marked:'
         }
     }
 }

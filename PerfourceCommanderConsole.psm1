@@ -408,6 +408,11 @@ function Start-P4Browser {
                             $deletedId = "$change"
                             $s.Data.AllChanges = @($s.Data.AllChanges | Where-Object { $_.Id -ne $deletedId })
                             $s.Data.DescribeCache.Remove($change) | Out-Null
+                            # Remove from mark set so deleted CLs don't linger in selection
+                            $markedProp = $s.Query.PSObject.Properties['MarkedChangeIds']
+                            if ($null -ne $markedProp -and $null -ne $markedProp.Value) {
+                                [void]$markedProp.Value.Remove($deletedId)
+                            }
                             $s.Runtime.LastError = $null
                             return Update-BrowserDerivedState -State $s
                         }

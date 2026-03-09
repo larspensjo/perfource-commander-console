@@ -5,6 +5,16 @@ function ConvertFrom-KeyInfoToAction {
         [Parameter(Mandatory = $true)][System.ConsoleKeyInfo]$KeyInfo
     )
 
+    # Modifier-aware chords (checked before the plain-key switch)
+    $isAlt   = ($KeyInfo.Modifiers -band [System.ConsoleModifiers]::Alt)   -ne 0
+    $isShift = ($KeyInfo.Modifiers -band [System.ConsoleModifiers]::Shift) -ne 0
+
+    if ($isShift -and -not $isAlt) {
+        switch ($KeyInfo.Key) {
+            'M' { return [pscustomobject]@{ Type = 'MarkAllVisible' } }
+        }
+    }
+
     switch ($KeyInfo.Key) {
         'Q' { return [pscustomobject]@{ Type = 'Quit' } }
         'H' { return [pscustomobject]@{ Type = 'ToggleHideUnavailableFilters' } }
@@ -21,6 +31,9 @@ function ConvertFrom-KeyInfoToAction {
         'E' { return [pscustomobject]@{ Type = 'ToggleChangelistView' } }
         'Delete' { return [pscustomobject]@{ Type = 'DeleteChange' } }
         'X' { return [pscustomobject]@{ Type = 'DeleteChange' } }
+        'Insert' { return [pscustomobject]@{ Type = 'ToggleMarkCurrent' } }
+        'M' { return [pscustomobject]@{ Type = 'ToggleMarkCurrent' } }
+        'C' { return [pscustomobject]@{ Type = 'ClearMarks' } }
         'F1' { return [pscustomobject]@{ Type = 'ToggleHelpOverlay' } }
         'F5' { return [pscustomobject]@{ Type = 'Reload' } }
         'F12' { return [pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' } }

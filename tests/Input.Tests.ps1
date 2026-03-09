@@ -144,4 +144,68 @@ Describe 'ConvertFrom-KeyInfoToAction' {
     It 'N maps to CancelDialog' {
         $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key N)
         $action.Type | Should -Be 'CancelDialog'
-    }}
+    }
+
+    It 'Alt+F maps to OpenMenu File' {
+        $keyInfo = [System.ConsoleKeyInfo]::new([char][System.ConsoleKey]::F, [System.ConsoleKey]::F, $false, $true, $false)
+        $action  = ConvertFrom-KeyInfoToAction -KeyInfo $keyInfo
+        $action.Type | Should -Be 'OpenMenu'
+        $action.Menu | Should -Be 'File'
+    }
+
+    It 'Alt+V maps to OpenMenu View' {
+        $keyInfo = [System.ConsoleKeyInfo]::new([char][System.ConsoleKey]::V, [System.ConsoleKey]::V, $false, $true, $false)
+        $action  = ConvertFrom-KeyInfoToAction -KeyInfo $keyInfo
+        $action.Type | Should -Be 'OpenMenu'
+        $action.Menu | Should -Be 'View'
+    }
+
+    It 'UpArrow maps to MenuMoveUp when menu is open' {
+        $mockState = [pscustomobject]@{ Ui = [pscustomobject]@{ OverlayMode = 'Menu' } }
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key UpArrow) -State $mockState
+        $action.Type | Should -Be 'MenuMoveUp'
+    }
+
+    It 'DownArrow maps to MenuMoveDown when menu is open' {
+        $mockState = [pscustomobject]@{ Ui = [pscustomobject]@{ OverlayMode = 'Menu' } }
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key DownArrow) -State $mockState
+        $action.Type | Should -Be 'MenuMoveDown'
+    }
+
+    It 'Enter maps to MenuSelect when menu is open' {
+        $mockState = [pscustomobject]@{ Ui = [pscustomobject]@{ OverlayMode = 'Menu' } }
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key Enter) -State $mockState
+        $action.Type | Should -Be 'MenuSelect'
+    }
+
+    It 'Escape maps to HideCommandModal when menu is open' {
+        $mockState = [pscustomobject]@{ Ui = [pscustomobject]@{ OverlayMode = 'Menu' } }
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key Escape) -State $mockState
+        $action.Type | Should -Be 'HideCommandModal'
+    }
+
+    It 'LeftArrow maps to MenuSwitchLeft when menu is open' {
+        $mockState = [pscustomobject]@{ Ui = [pscustomobject]@{ OverlayMode = 'Menu' } }
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key LeftArrow) -State $mockState
+        $action.Type | Should -Be 'MenuSwitchLeft'
+    }
+
+    It 'RightArrow maps to MenuSwitchRight when menu is open' {
+        $mockState = [pscustomobject]@{ Ui = [pscustomobject]@{ OverlayMode = 'Menu' } }
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key RightArrow) -State $mockState
+        $action.Type | Should -Be 'MenuSwitchRight'
+    }
+
+    It 'Char key dispatches MenuAccelerator when menu is open' {
+        $mockState = [pscustomobject]@{ Ui = [pscustomobject]@{ OverlayMode = 'Menu' } }
+        $keyInfo   = [System.ConsoleKeyInfo]::new([char]'r', [System.ConsoleKey]::R, $false, $false, $false)
+        $action    = ConvertFrom-KeyInfoToAction -KeyInfo $keyInfo -State $mockState
+        $action.Type | Should -Be 'MenuAccelerator'
+        $action.Key  | Should -Be 'R'
+    }
+
+    It 'UpArrow maps to MoveUp when no overlay is active (State is null)' {
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key UpArrow)
+        $action.Type | Should -Be 'MoveUp'
+    }
+}

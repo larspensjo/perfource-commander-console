@@ -2,8 +2,31 @@ Set-StrictMode -Version Latest
 
 function ConvertFrom-KeyInfoToAction {
     param(
-        [Parameter(Mandatory = $true)][System.ConsoleKeyInfo]$KeyInfo
+        [Parameter(Mandatory = $true)][System.ConsoleKeyInfo]$KeyInfo,
+        $State = $null
     )
+
+    # When a menu is open, route all keys through the menu key handler
+    if ($null -ne $State) {
+        $overlayModeProp = $State.Ui.PSObject.Properties['OverlayMode']
+        if ($null -ne $overlayModeProp -and [string]$overlayModeProp.Value -eq 'Menu') {
+            switch ($KeyInfo.Key) {
+                'UpArrow'   { return [pscustomobject]@{ Type = 'MenuMoveUp' } }
+                'DownArrow' { return [pscustomobject]@{ Type = 'MenuMoveDown' } }
+                'Enter'     { return [pscustomobject]@{ Type = 'MenuSelect' } }
+                'Escape'    { return [pscustomobject]@{ Type = 'HideCommandModal' } }
+                'LeftArrow' { return [pscustomobject]@{ Type = 'MenuSwitchLeft' } }
+                'RightArrow'{ return [pscustomobject]@{ Type = 'MenuSwitchRight' } }
+                default {
+                    $char = $KeyInfo.KeyChar
+                    if ($char -ne [char]0) {
+                        return [pscustomobject]@{ Type = 'MenuAccelerator'; Key = $char.ToString().ToUpper() }
+                    }
+                    return $null
+                }
+            }
+        }
+    }
 
     # Modifier-aware chords (checked before the plain-key switch)
     $isAlt   = ($KeyInfo.Modifiers -band [System.ConsoleModifiers]::Alt)   -ne 0
@@ -12,6 +35,13 @@ function ConvertFrom-KeyInfoToAction {
     if ($isShift -and -not $isAlt) {
         switch ($KeyInfo.Key) {
             'M' { return [pscustomobject]@{ Type = 'MarkAllVisible' } }
+        }
+    }
+
+    if ($isAlt -and -not $isShift) {
+        switch ([string]$KeyInfo.Key) {
+            'F' { return [pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' } }
+            'V' { return [pscustomobject]@{ Type = 'OpenMenu'; Menu = 'View' } }
         }
     }
 

@@ -289,7 +289,7 @@ function Start-P4Browser {
                 }
             }
 
-            $action  = ConvertFrom-KeyInfoToAction -KeyInfo $keyInfo
+            $action  = ConvertFrom-KeyInfoToAction -KeyInfo $keyInfo -State $state
             if ($null -ne $action) {
                 $state = Invoke-BrowserReducer -State $state -Action $action
 

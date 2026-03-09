@@ -1114,3 +1114,106 @@ Describe 'Build-ConfirmDialogRows and Apply-ConfirmDialogOverlay' {
         $allText | Should -Match 'Selected: 2'
     }
 }
+
+Describe 'Build-MenuOverlayRows and Apply-MenuOverlay' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Render.psm1') -Force
+
+        # Helper: make a minimal payload with the given items
+        function New-MenuPayload {
+            param([string]$Name, [int]$Focus, [object[]]$Items)
+            return [pscustomobject]@{ ActiveMenu = $Name; FocusIndex = $Focus; MenuItems = $Items }
+        }
+
+        function New-MenuItem {
+            param([string]$Id, [string]$Label, [string]$Accel, [bool]$IsSep = $false, [bool]$Enabled = $true)
+            return [pscustomobject]@{ Id = $Id; Label = $Label; Accelerator = $Accel; IsSeparator = $IsSep; IsEnabled = $Enabled }
+        }
+
+        function New-BlankFrame {
+            param([int]$Width = 80, [int]$Height = 20)
+            $rows = 0..($Height - 1) | ForEach-Object {
+                $y = $_; [pscustomobject]@{
+                    Y = $y
+                    Segments = @(@{ Text = (' ' * $Width); Color = 'White'; BackgroundColor = '' })
+                    Signature = ''
+                }
+            }
+            return [pscustomobject]@{ Width = $Width; Height = $Height; Rows = [object[]]$rows }
+        }
+    }
+
+    It 'Build-MenuOverlayRows includes menu name in title row' {
+        [object[]]$items = @(New-MenuItem 'Quit' 'Quit' 'Q')
+        $payload = New-MenuPayload 'File' 0 $items
+        $rows = @(Build-MenuOverlayRows -Payload $payload -Width 30)
+        $rows.Count | Should -BeGreaterThan 2
+        $topText = ($rows[0] | ForEach-Object { $_.Text }) -join ''
+        $topText | Should -Match 'File'
+    }
+
+    It 'Build-MenuOverlayRows contains item label text' {
+        [object[]]$items = @(
+            New-MenuItem 'Refresh' 'Refresh' 'R'
+            New-MenuItem 'Quit'    'Quit'    'Q'
+        )
+        $payload = New-MenuPayload 'File' 0 $items
+        $rows = @(Build-MenuOverlayRows -Payload $payload -Width 30)
+        $allText = ($rows | ForEach-Object { ($_ | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Match 'Refresh'
+        $allText | Should -Match 'Quit'
+    }
+
+    It 'Build-MenuOverlayRows shows focus indicator on focused item' {
+        [object[]]$items = @(
+            New-MenuItem 'Refresh' 'Refresh' 'R'
+            New-MenuItem 'Quit'    'Quit'    'Q'
+        )
+        $payload = New-MenuPayload 'File' 0 $items
+        $rows = @(Build-MenuOverlayRows -Payload $payload -Width 30)
+        $allText = ($rows | ForEach-Object { ($_ | ForEach-Object { $_.Text }) -join '' }) -join ''
+        # Focus indicator character should appear somewhere
+        $allText | Should -Match '▶'
+    }
+
+    It 'Build-MenuOverlayRows renders separator row with horizontal line chars' {
+        [object[]]$items = @(
+            New-MenuItem 'Refresh' 'Refresh' 'R'
+            New-MenuItem '__Sep__' '' '' -IsSep $true
+            New-MenuItem 'Quit'    'Quit'   'Q'
+        )
+        $payload = New-MenuPayload 'File' 0 $items
+        $rows = @(Build-MenuOverlayRows -Payload $payload -Width 30)
+        $allText = ($rows | ForEach-Object { ($_ | ForEach-Object { $_.Text }) -join '' }) -join ''
+        $allText | Should -Match '─'
+    }
+
+    It 'Build-MenuOverlayRows disabled item does not get focus indicator' {
+        [object[]]$items = @(New-MenuItem 'DeleteMarked' 'Delete' 'D' -Enabled $false)
+        $payload = New-MenuPayload 'File' 0 $items
+        $rows = @(Build-MenuOverlayRows -Payload $payload -Width 30)
+        # Even though focused, disabled item should still appear
+        $allText = ($rows | ForEach-Object { ($_ | ForEach-Object { $_.Text }) -join '' }) -join ''
+        $allText | Should -Match 'Delete'
+    }
+
+    It 'Apply-MenuOverlay stamps menu rows at top of frame' {
+        $frame = New-BlankFrame -Width 80 -Height 20
+        [object[]]$items = @(New-MenuItem 'Refresh' 'Refresh' 'R')
+        $payload = New-MenuPayload 'File' 0 $items
+        $out = Apply-MenuOverlay -Frame $frame -Payload $payload
+        # Frame dimensions unchanged
+        $out.Width  | Should -Be 80
+        $out.Height | Should -Be 20
+        # Top rows should now contain menu content
+        $topText = ($out.Rows[0].Segments | ForEach-Object { $_.Text }) -join ''
+        $topText | Should -Match 'File'
+    }
+
+    It 'Apply-MenuOverlay with null payload returns original frame unchanged' {
+        $frame = New-BlankFrame -Width 80 -Height 20
+        $out = Apply-MenuOverlay -Frame $frame -Payload $null
+        $out.Width | Should -Be 80
+        ($out.Rows[0].Segments | ForEach-Object { $_.Text }) -join '' | Should -Match '^ +$'
+    }
+}

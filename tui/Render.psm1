@@ -1018,6 +1018,131 @@ function Apply-HelpOverlay {
     }
 }
 
+function Build-MenuOverlayRows {
+    <#
+    .SYNOPSIS
+        Builds rows for a menu overlay dropdown.
+        Payload must have ActiveMenu (string), FocusIndex (int), MenuItems (array of computed items).
+        Width is the total column width including border characters.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Payload,
+        [Parameter(Mandatory = $true)][int]$Width
+    )
+
+    $BORDER   = 'DarkCyan'
+    $TITLE    = 'Cyan'
+    $ITEM     = 'White'
+    $FOCUSED  = 'Cyan'
+    $DISABLED = 'DarkGray'
+    $SEP      = 'DarkGray'
+
+    $menuName  = [string]$Payload.ActiveMenu
+    $focusIdx  = [int]$Payload.FocusIndex
+    [object[]]$allItems = @($Payload.MenuItems)
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+    $rows.Add((Build-BoxTopSegments -Title " $menuName " -Width $Width -BorderColor $BORDER -TitleColor $TITLE))
+
+    $innerWidth = [Math]::Max(0, $Width - 2)
+    $navIdx = 0
+    foreach ($item in $allItems) {
+        if ([bool]$item.IsSeparator) {
+            $rows.Add(@(
+                @{ Text = '├'; Color = $BORDER },
+                @{ Text = ('─' * $innerWidth); Color = $SEP },
+                @{ Text = '┤'; Color = $BORDER }
+            ))
+        } else {
+            $isFocused = ($navIdx -eq $focusIdx)
+            $isEnabled = [bool]$item.IsEnabled
+            $label     = [string]$item.Label
+            $accel     = [string]$item.Accelerator
+            $accelStr  = if ([string]::IsNullOrEmpty($accel)) { '  ' } else { $accel + ' ' }
+            $prefix    = if ($isFocused) { '▶ ' } else { '  ' }
+            # innerWidth = prefix(2) + labelArea + accelStr.Length
+            $labelArea = [Math]::Max(1, $innerWidth - 2 - $accelStr.Length)
+            if ($label.Length -gt $labelArea) { $label = $label.Substring(0, $labelArea) }
+            $gap       = $labelArea - $label.Length
+            $innerText = $prefix + $label + (' ' * $gap) + $accelStr
+            $color     = if ($isFocused -and $isEnabled) { $FOCUSED }
+                         elseif (-not $isEnabled)         { $DISABLED }
+                         else                             { $ITEM }
+            $rows.Add(@(
+                @{ Text = '│'; Color = $BORDER },
+                @{ Text = $innerText; Color = $color },
+                @{ Text = '│'; Color = $BORDER }
+            ))
+            $navIdx++
+        }
+    }
+    $rows.Add((Build-BoxBottomSegments -Width $Width -BorderColor $BORDER))
+
+    foreach ($row in $rows) {
+        Write-Output -NoEnumerate $row
+    }
+}
+
+function Apply-MenuOverlay {
+    <#
+    .SYNOPSIS
+        Stamps the menu dropdown overlay onto the frame, anchored at the top of the screen.
+        File menu opens at column 0; View menu opens at column 8.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Frame,
+        $Payload
+    )
+
+    if ($null -eq $Payload) { return $Frame }
+
+    $width    = $Frame.Width
+    $menuName = [string]$Payload.ActiveMenu
+    [object[]]$allItems = @($Payload.MenuItems)
+
+    # Compute dropdown width from longest label: 2(prefix) + label + 1(gap) + 1(accel) + 1(space) + 2(borders)
+    $maxLabelLen = 0
+    foreach ($item in $allItems) {
+        if (-not [bool]$item.IsSeparator) {
+            $len = ([string]$item.Label).Length
+            if ($len -gt $maxLabelLen) { $maxLabelLen = $len }
+        }
+    }
+    $menuWidth = [Math]::Min([Math]::Max(22, $maxLabelLen + 7), $width)
+
+    # Column anchor: File at 0, View at 8 (approximates a menu bar)
+    $leftCol = 0
+    if ($menuName -eq 'View') { $leftCol = [Math]::Min(8, [Math]::Max(0, $width - $menuWidth)) }
+
+    $menuRows = @(Build-MenuOverlayRows -Payload $Payload -Width $menuWidth)
+
+    $newRows = [object[]]::new($Frame.Rows.Count)
+    for ($i = 0; $i -lt $Frame.Rows.Count; $i++) { $newRows[$i] = $Frame.Rows[$i] }
+
+    for ($i = 0; $i -lt $menuRows.Count; $i++) {
+        $ri = $i  # anchor at top row 0
+        if ($ri -ge $Frame.Rows.Count) { break }
+        $rightStart = $leftCol + $menuWidth
+        $leftFill   = @{ Text = (' ' * $leftCol); Color = 'Black'; BackgroundColor = '' }
+        $rightFill  = @{ Text = (' ' * ([Math]::Max(0, $width - $rightStart))); Color = 'Black'; BackgroundColor = '' }
+        $segs = @($leftFill) + @($menuRows[$i]) + @($rightFill)
+        $segs = Merge-AdjacentSegments -Segments $segs
+        $segs = Resize-SegmentRow -Segments $segs -Width $width
+        $segs = Merge-AdjacentSegments -Segments $segs
+        $newRows[$ri] = [pscustomobject]@{
+            Y         = $ri
+            Segments  = $segs
+            Signature = Get-FrameRowSignature -Segments $segs
+        }
+    }
+
+    return [pscustomobject]@{
+        Width  = $Frame.Width
+        Height = $Frame.Height
+        Rows   = $newRows
+    }
+}
+
 function Build-ConfirmDialogRows {
     <#
     .SYNOPSIS
@@ -2157,9 +2282,12 @@ function Render-BrowserState {
     $overlayMode    = [string](Get-PropertyValueOrDefault -Object $State.Ui -Name 'OverlayMode' -Default 'None')
     $overlayPayload = Get-PropertyValueOrDefault -Object $State.Ui -Name 'OverlayPayload' -Default $null
     $commandModal   = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'ModalPrompt' -Default $null
-    # Apply overlays in precedence order: help (lowest) → confirm → command modal (highest)
+    # Apply overlays in precedence order: help (lowest) → menu → confirm → command modal (highest)
     if ($overlayMode -eq 'Help') {
         $nextFrame = Apply-HelpOverlay -Frame $nextFrame -IsOpen $true
+    }
+    if ($overlayMode -eq 'Menu') {
+        $nextFrame = Apply-MenuOverlay -Frame $nextFrame -Payload $overlayPayload
     }
     if ($overlayMode -eq 'Confirm') {
         $nextFrame = Apply-ConfirmDialogOverlay -Frame $nextFrame -Payload $overlayPayload
@@ -2175,4 +2303,4 @@ function Render-BrowserState {
     }
 }
 
-Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Build-ConfirmDialogRows, Apply-ConfirmDialogOverlay, Get-ActiveChangesList, Build-FilesScreenFrame, Build-FilesStatusBarRow, Build-CommandLogFrame, Build-CommandOutputFrame, Test-FrameIntegrity, Enable-FrameIntegrityTest
+Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Build-ConfirmDialogRows, Apply-ConfirmDialogOverlay, Build-MenuOverlayRows, Apply-MenuOverlay, Get-ActiveChangesList, Build-FilesScreenFrame, Build-FilesStatusBarRow, Build-CommandLogFrame, Build-CommandOutputFrame, Test-FrameIntegrity, Enable-FrameIntegrityTest

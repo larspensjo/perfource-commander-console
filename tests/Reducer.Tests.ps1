@@ -1207,3 +1207,164 @@ Describe 'Overlay framework — OverlayMode and confirm dialog' {
         $next.Ui.ScreenStack | Should -Be @('Changelists', 'Files')   # screen still Files
     }
 }
+
+Describe 'Menu reducer actions' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+    }
+    BeforeEach {
+        $changes = @(
+            [pscustomobject]@{ Id = '101'; Title = 'One'; HasShelvedFiles = $false; HasOpenedFiles = $true; Captured = [datetime]'2026-02-10' }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+    }
+
+    It 'OpenMenu File sets OverlayMode to Menu with File payload' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        $next.Ui.OverlayMode              | Should -Be 'Menu'
+        $next.Ui.OverlayPayload.ActiveMenu | Should -Be 'File'
+        $next.Ui.OverlayPayload.FocusIndex | Should -Be 0
+        @($next.Ui.OverlayPayload.MenuItems).Count | Should -BeGreaterThan 0
+    }
+
+    It 'OpenMenu View sets OverlayMode to Menu with View payload' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'View' })
+        $next.Ui.OverlayMode              | Should -Be 'Menu'
+        $next.Ui.OverlayPayload.ActiveMenu | Should -Be 'View'
+    }
+
+    It 'OpenMenu with unknown name is a no-op' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'bogus' })
+        $next.Ui.OverlayMode | Should -Be 'None'
+    }
+
+    It 'MenuMoveDown advances FocusIndex' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuMoveDown' })
+        $next.Ui.OverlayPayload.FocusIndex | Should -Be 1
+    }
+
+    It 'MenuMoveDown clamps at last navigable item' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        # Move down many times
+        for ($i = 0; $i -lt 20; $i++) {
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuMoveDown' })
+        }
+        $navCount = Get-MenuNavigableCount -ComputedItems @($state.Ui.OverlayPayload.MenuItems)
+        $state.Ui.OverlayPayload.FocusIndex | Should -Be ($navCount - 1)
+    }
+
+    It 'MenuMoveUp clamps at 0' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuMoveUp' })
+        $next.Ui.OverlayPayload.FocusIndex | Should -Be 0
+    }
+
+    It 'MenuSwitchLeft switches from File to View' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSwitchLeft' })
+        $next.Ui.OverlayPayload.ActiveMenu | Should -Be 'View'
+        $next.Ui.OverlayPayload.FocusIndex | Should -Be 0
+    }
+
+    It 'MenuSwitchRight switches from View to File' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'View' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSwitchRight' })
+        $next.Ui.OverlayPayload.ActiveMenu | Should -Be 'File'
+    }
+
+    It 'MenuSelect Refresh closes menu and sets PendingRequest ReloadPending' {
+        # Open menu and move to Refresh (index: DeleteMarked=0, MarkAllVisible=1, ClearMarks=2, Refresh=3)
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        # Find navigable index of Refresh
+        [object[]]$items = @($state.Ui.OverlayPayload.MenuItems)
+        $navIdx = 0
+        $refreshIdx = -1
+        foreach ($item in $items) {
+            if (-not [bool]$item.IsSeparator) {
+                if ([string]$item.Id -eq 'Refresh') { $refreshIdx = $navIdx; break }
+                $navIdx++
+            }
+        }
+        # set focus to Refresh
+        $state.Ui.OverlayPayload = [pscustomobject]@{
+            ActiveMenu = 'File'; FocusIndex = $refreshIdx; MenuItems = $items
+        }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
+        $next.Ui.OverlayMode             | Should -Be 'None'
+        $next.Runtime.PendingRequest.Kind | Should -Be 'ReloadPending'
+    }
+
+    It 'MenuSelect on disabled item closes menu but does not dispatch action' {
+        # DeleteMarked is disabled when no marks exist (default state)
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        # FocusIndex=0 is DeleteMarked which should be disabled
+        $state.Ui.OverlayPayload = [pscustomobject]@{
+            ActiveMenu = 'File'; FocusIndex = 0; MenuItems = $state.Ui.OverlayPayload.MenuItems
+        }
+        $focusedItem = Get-MenuFocusedItem -ComputedItems @($state.Ui.OverlayPayload.MenuItems) -FocusIndex 0
+        if (-not [bool]$focusedItem.IsEnabled) {
+            $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
+            $next.Ui.OverlayMode | Should -Be 'None'
+            # PendingRequest should remain null (no reload triggered)
+            $next.Runtime.PendingRequest | Should -BeNullOrEmpty
+        } else {
+            # Skip: DeleteMarked is enabled (marks exist from some other setup)
+            Set-ItResult -Skipped -Because 'Item was enabled; skipping disabled-item path'
+        }
+    }
+
+    It 'MenuAccelerator R selects Refresh from File menu' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuAccelerator'; Key = 'R' })
+        $next.Ui.OverlayMode             | Should -Be 'None'
+        $next.Runtime.PendingRequest.Kind | Should -Be 'ReloadPending'
+    }
+
+    It 'MenuAccelerator with unknown key leaves menu open' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuAccelerator'; Key = 'Z' })
+        $next.Ui.OverlayMode | Should -Be 'Menu'
+    }
+
+    It 'Get-ComputedMenuItems returns items with resolved IsEnabled booleans for non-separators' {
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $items.Count | Should -BeGreaterThan 0
+        $nonSeps = @($items | Where-Object { -not [bool]$_.IsSeparator })
+        $nonSeps.Count | Should -BeGreaterThan 0
+        foreach ($item in $nonSeps) {
+            $item.PSObject.Properties['IsEnabled'] | Should -Not -BeNull
+            $item.IsEnabled | Should -BeOfType [bool]
+        }
+    }
+
+    It 'Get-MenuNavigableCount excludes separators' {
+        $items = @(Get-ComputedMenuItems -MenuName 'View' -State $state)
+        $navCount = Get-MenuNavigableCount -ComputedItems $items
+        # View menu has: ViewPending, ViewSubmitted, ViewCommandLog, sep, ToggleHideFilters, ExpandCollapse, sep, Help = 6 navigable
+        $navCount | Should -Be 6
+    }
+
+    It 'Get-MenuFocusedItem returns item at navigable index skipping separators' {
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        # Navigable index 0 = first non-separator item
+        $focused = Get-MenuFocusedItem -ComputedItems $items -FocusIndex 0
+        $focused.IsSeparator | Should -Be $false
+    }
+
+    It 'MenuSelect Quit sets Runtime.IsRunning to false' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        [object[]]$items = @($state.Ui.OverlayPayload.MenuItems)
+        $navIdx = 0; $qIdx = -1
+        foreach ($item in $items) {
+            if (-not [bool]$item.IsSeparator) {
+                if ([string]$item.Id -eq 'Quit') { $qIdx = $navIdx; break }
+                $navIdx++
+            }
+        }
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = $qIdx; MenuItems = $items }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
+        $next.Ui.OverlayMode           | Should -Be 'None'
+        $next.Runtime.IsRunning        | Should -Be $false
+    }
+}

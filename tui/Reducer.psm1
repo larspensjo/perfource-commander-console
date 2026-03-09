@@ -9,8 +9,76 @@ $script:BrowserGlobalActionTypes = @(
     'Quit', 'Resize',
     'ToggleHelpOverlay', 'HideHelpOverlay',
     'OpenConfirmDialog', 'AcceptDialog', 'CancelDialog',
+    'OpenMenu', 'MenuMoveUp', 'MenuMoveDown', 'MenuSwitchLeft', 'MenuSwitchRight', 'MenuSelect', 'MenuAccelerator',
     'LogCommandExecution'
 )
+
+# ── Menu definitions ─────────────────────────────────────────────────────────
+# Each item: Id, Label, Accelerator, IsSeparator, IsEnabled (scriptblock: param($s))
+# Separators have IsSeparator=$true and are skipped during navigation.
+
+$script:MenuDefinitions = @{
+    'File' = @(
+        [pscustomobject]@{
+            Id         = 'DeleteMarked'
+            Label      = 'Delete marked changelists'
+            Accelerator = 'D'
+            IsSeparator = $false
+            IsEnabled   = { param($s)
+                $mcProp = $s.Query.PSObject.Properties['MarkedChangeIds']
+                ($null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0) -and
+                ([string](if ($s.Ui.PSObject.Properties['ViewMode']) { $s.Ui.ViewMode } else { 'Pending' }) -ne 'Submitted')
+            }
+        },
+        [pscustomobject]@{ Id = '__FileSep1__'; Label = ''; Accelerator = ''; IsSeparator = $true;  IsEnabled = { $true } },
+        [pscustomobject]@{
+            Id         = 'MarkAllVisible'
+            Label      = 'Mark all visible'
+            Accelerator = 'V'
+            IsSeparator = $false
+            IsEnabled   = { param($s)
+                $vcProp = $s.Derived.PSObject.Properties['VisibleChangeIds']
+                $null -ne $vcProp -and $null -ne $vcProp.Value -and $vcProp.Value.Count -gt 0
+            }
+        },
+        [pscustomobject]@{
+            Id         = 'ClearMarks'
+            Label      = 'Clear selection'
+            Accelerator = 'C'
+            IsSeparator = $false
+            IsEnabled   = { param($s)
+                $mcProp = $s.Query.PSObject.Properties['MarkedChangeIds']
+                ($null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0)
+            }
+        },
+        [pscustomobject]@{ Id = '__FileSep2__'; Label = ''; Accelerator = ''; IsSeparator = $true;  IsEnabled = { $true } },
+        [pscustomobject]@{ Id = 'Refresh'; Label = 'Refresh';       Accelerator = 'R'; IsSeparator = $false; IsEnabled = { $true } },
+        [pscustomobject]@{ Id = '__FileSep3__'; Label = ''; Accelerator = ''; IsSeparator = $true;  IsEnabled = { $true } },
+        [pscustomobject]@{ Id = 'Quit';    Label = 'Quit';           Accelerator = 'Q'; IsSeparator = $false; IsEnabled = { $true } }
+    )
+    'View' = @(
+        [pscustomobject]@{
+            Id         = 'ViewPending'
+            Label      = 'Pending changelists'
+            Accelerator = 'P'
+            IsSeparator = $false
+            IsEnabled   = { param($s) [string](if ($s.Ui.PSObject.Properties['ViewMode']) { $s.Ui.ViewMode } else { 'Pending' }) -ne 'Pending' }
+        },
+        [pscustomobject]@{
+            Id         = 'ViewSubmitted'
+            Label      = 'Submitted changelists'
+            Accelerator = 'S'
+            IsSeparator = $false
+            IsEnabled   = { param($s) [string](if ($s.Ui.PSObject.Properties['ViewMode']) { $s.Ui.ViewMode } else { 'Pending' }) -ne 'Submitted' }
+        },
+        [pscustomobject]@{ Id = 'ViewCommandLog'; Label = 'Command log';              Accelerator = 'L'; IsSeparator = $false; IsEnabled = { $true } },
+        [pscustomobject]@{ Id = '__ViewSep1__'; Label = ''; Accelerator = ''; IsSeparator = $true;  IsEnabled = { $true } },
+        [pscustomobject]@{ Id = 'ToggleHideFilters'; Label = 'Hide unavailable filters';  Accelerator = 'H'; IsSeparator = $false; IsEnabled = { $true } },
+        [pscustomobject]@{ Id = 'ExpandCollapse';    Label = 'Expand / collapse details'; Accelerator = 'E'; IsSeparator = $false; IsEnabled = { $true } },
+        [pscustomobject]@{ Id = '__ViewSep2__'; Label = ''; Accelerator = ''; IsSeparator = $true;  IsEnabled = { $true } },
+        [pscustomobject]@{ Id = 'Help';          Label = 'Help';                       Accelerator = '?'; IsSeparator = $false; IsEnabled = { $true } }
+    )
+}
 
 Import-Module (Join-Path $PSScriptRoot 'Filtering.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Layout.psm1') -Force
@@ -226,6 +294,73 @@ function Copy-BrowserState {
     param([Parameter(Mandatory = $true)]$State)
     return Copy-StateObject -Obj $State
 }
+
+# ── Menu helpers ──────────────────────────────────────────────────────────────
+
+function Get-ComputedMenuItems {
+    <#
+    .SYNOPSIS
+        Returns the menu items for a named top-level menu with IsEnabled resolved
+        against the supplied state.  Used by OpenMenu and navigation actions.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$MenuName,
+        [Parameter(Mandatory = $true)]$State
+    )
+    $rawItems = $script:MenuDefinitions[$MenuName]
+    if ($null -eq $rawItems) { return @() }
+    $result = [System.Collections.Generic.List[object]]::new()
+    foreach ($item in $rawItems) {
+        if ([bool]$item.IsSeparator) {
+            $result.Add($item)
+        } else {
+            $enabled = try { [bool](& $item.IsEnabled $State) } catch { $false }
+            $result.Add([pscustomobject]@{
+                Id          = [string]$item.Id
+                Label       = [string]$item.Label
+                Accelerator = [string]$item.Accelerator
+                IsSeparator = $false
+                IsEnabled   = $enabled
+            })
+        }
+    }
+    return $result.ToArray()
+}
+
+function Get-MenuFocusedItem {
+    <#
+    .SYNOPSIS
+        Returns the menu item at the given navigable index (0-based, separators excluded).
+        Returns $null if the index is out of range.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][object[]]$ComputedItems,
+        [Parameter(Mandatory = $true)][int]$FocusIndex
+    )
+    $navIdx = 0
+    foreach ($item in $ComputedItems) {
+        if (-not [bool]$item.IsSeparator) {
+            if ($navIdx -eq $FocusIndex) { return $item }
+            $navIdx++
+        }
+    }
+    return $null
+}
+
+function Get-MenuNavigableCount {
+    <#
+    .SYNOPSIS
+        Returns the number of non-separator items in a computed menu item array.
+    #>
+    param([Parameter(Mandatory = $true)][object[]]$ComputedItems)
+    $count = 0
+    foreach ($item in $ComputedItems) {
+        if (-not [bool]$item.IsSeparator) { $count++ }
+    }
+    return $count
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 function Get-CommandOutputCount {
     <#
@@ -685,6 +820,120 @@ function Invoke-ChangelistReducer {
         'CancelDialog' {
             $next.Ui.OverlayMode    = 'None'
             $next.Ui.OverlayPayload = $null
+            return $next
+        }
+        'OpenMenu' {
+            $menuNameProp = $Action.PSObject.Properties['Menu']
+            $menuName     = if ($null -ne $menuNameProp) { [string]$menuNameProp.Value } else { '' }
+            if ($menuName -ne 'File' -and $menuName -ne 'View') { return $next }
+            # Do not open a menu if another overlay is already showing
+            $currentOverlay = if (($next.Ui.PSObject.Properties.Match('OverlayMode')).Count -gt 0) { [string]$next.Ui.OverlayMode } else { 'None' }
+            if ($currentOverlay -ne 'None' -and $currentOverlay -ne 'Menu') { return $next }
+            $next.Ui.OverlayMode    = 'Menu'
+            $next.Ui.OverlayPayload = [pscustomobject]@{
+                ActiveMenu = $menuName
+                FocusIndex = 0
+                MenuItems  = @(Get-ComputedMenuItems -MenuName $menuName -State $next)
+            }
+            return $next
+        }
+        'MenuMoveUp' {
+            if ([string]$next.Ui.OverlayMode -ne 'Menu') { return $next }
+            $payload   = $next.Ui.OverlayPayload
+            [object[]]$items    = @($payload.MenuItems)
+            $navCount  = Get-MenuNavigableCount -ComputedItems $items
+            $newFocus  = [Math]::Max(0, [int]$payload.FocusIndex - 1)
+            $next.Ui.OverlayPayload = [pscustomobject]@{
+                ActiveMenu = [string]$payload.ActiveMenu
+                FocusIndex = $newFocus
+                MenuItems  = $items
+            }
+            return $next
+        }
+        'MenuMoveDown' {
+            if ([string]$next.Ui.OverlayMode -ne 'Menu') { return $next }
+            $payload   = $next.Ui.OverlayPayload
+            [object[]]$items    = @($payload.MenuItems)
+            $navCount  = Get-MenuNavigableCount -ComputedItems $items
+            $newFocus  = [Math]::Min([int]$payload.FocusIndex + 1, [Math]::Max(0, $navCount - 1))
+            $next.Ui.OverlayPayload = [pscustomobject]@{
+                ActiveMenu = [string]$payload.ActiveMenu
+                FocusIndex = $newFocus
+                MenuItems  = $items
+            }
+            return $next
+        }
+        'MenuSwitchLeft' {
+            if ([string]$next.Ui.OverlayMode -ne 'Menu') { return $next }
+            $current = [string]$next.Ui.OverlayPayload.ActiveMenu
+            $newMenu = if ($current -eq 'File') { 'View' } else { 'File' }
+            $next.Ui.OverlayPayload = [pscustomobject]@{
+                ActiveMenu = $newMenu
+                FocusIndex = 0
+                MenuItems  = @(Get-ComputedMenuItems -MenuName $newMenu -State $next)
+            }
+            return $next
+        }
+        'MenuSwitchRight' {
+            # Only 2 menus; switch in either direction wraps the same way
+            return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'MenuSwitchLeft' })
+        }
+        'MenuSelect' {
+            if ([string]$next.Ui.OverlayMode -ne 'Menu') { return $next }
+            $payload    = $next.Ui.OverlayPayload
+            [object[]]$items     = @($payload.MenuItems)
+            $item       = Get-MenuFocusedItem -ComputedItems $items -FocusIndex ([int]$payload.FocusIndex)
+            # Close menu regardless
+            $next.Ui.OverlayMode    = 'None'
+            $next.Ui.OverlayPayload = $null
+            if ($null -eq $item -or -not [bool]$item.IsEnabled) { return $next }
+            # Dispatch the underlying action
+            $itemId = [string]$item.Id
+            switch ($itemId) {
+                'MarkAllVisible'    { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'MarkAllVisible' }) }
+                'ClearMarks'        { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ClearMarks' }) }
+                'Refresh'           { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'Reload' }) }
+                'Quit'              { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'Quit' }) }
+                'ViewPending'       { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'Pending' }) }
+                'ViewSubmitted'     { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'Submitted' }) }
+                'ViewCommandLog'    { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' }) }
+                'ToggleHideFilters' { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleHideUnavailableFilters' }) }
+                'ExpandCollapse'    { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleChangelistView' }) }
+                'Help'              { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleHelpOverlay' }) }
+                'DeleteMarked'      { <# Phase 5: open confirm dialog + workflow dispatch #> }
+                default             { }
+            }
+            return Update-BrowserDerivedState -State $next
+        }
+        'MenuAccelerator' {
+            if ([string]$next.Ui.OverlayMode -ne 'Menu') { return $next }
+            $keyChar = [string]$Action.Key  # already uppercase from input mapper
+            $payload = $next.Ui.OverlayPayload
+            [object[]]$items  = @($payload.MenuItems)
+            $navIdx = 0
+            $matchedNavIdx = -1
+            $matchedItem   = $null
+            foreach ($item in $items) {
+                if (-not [bool]$item.IsSeparator) {
+                    if ([string]::Equals([string]$item.Accelerator, $keyChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $matchedNavIdx = $navIdx
+                        $matchedItem   = $item
+                        break
+                    }
+                    $navIdx++
+                }
+            }
+            if ($null -eq $matchedItem) { return $next }
+            # Move focus to matched item
+            $next.Ui.OverlayPayload = [pscustomobject]@{
+                ActiveMenu = [string]$payload.ActiveMenu
+                FocusIndex = $matchedNavIdx
+                MenuItems  = $items
+            }
+            # If enabled, immediately select it 
+            if ([bool]$matchedItem.IsEnabled) {
+                return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'MenuSelect' })
+            }
             return $next
         }
         'Quit' {
@@ -1376,4 +1625,5 @@ Export-ModuleMember -Function New-BrowserState, Copy-BrowserState, Copy-StateObj
     Test-IsBrowserGlobalAction, `
     ConvertTo-ChangeNumberFromId, `
     Get-ChangeInnerViewRows, Get-ChangeRowsPerItem, Get-ChangeViewCapacity, `
-    Get-CommandOutputCount, Get-OutputViewportSize
+    Get-CommandOutputCount, Get-OutputViewportSize, `
+    Get-ComputedMenuItems, Get-MenuFocusedItem, Get-MenuNavigableCount

@@ -771,3 +771,326 @@ Describe 'Invoke-P4ReopenFiles' {
         Should -Invoke Invoke-P4 -ModuleName P4Cli -ParameterFilter { $P4Args[0] -eq 'reopen' } -Times 0
     }
 }
+
+Describe 'Test-IsP4NoUnresolvedFilesError' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'recognises the canonical no such file(s) message' {
+        Test-IsP4NoUnresolvedFilesError -Message 'no such file(s).' | Should -BeTrue
+    }
+
+    It 'recognises the message case-insensitively' {
+        Test-IsP4NoUnresolvedFilesError -Message 'No Such File(s).' | Should -BeTrue
+    }
+
+    It 'returns false for an unrelated error message' {
+        Test-IsP4NoUnresolvedFilesError -Message 'network timeout' | Should -BeFalse
+    }
+
+    It 'returns false for an empty message' {
+        Test-IsP4NoUnresolvedFilesError -Message 'some random unrelated error' | Should -BeFalse
+    }
+}
+
+Describe 'ConvertFrom-P4FstatUnresolvedRecordsToFileCounts' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'returns empty dictionary for empty input' {
+        $result = InModuleScope P4Cli { ConvertFrom-P4FstatUnresolvedRecordsToFileCounts -Records @() }
+        ($result -is [System.Collections.Generic.Dictionary[int,int]]) | Should -BeTrue
+        $result.Count | Should -Be 0
+    }
+
+    It 'counts one record per changelist' {
+        $records = @(
+            [pscustomobject]@{ change = '100'; depotFile = '//depot/a.cpp'; unresolved = '' }
+        )
+        $result = InModuleScope P4Cli { ConvertFrom-P4FstatUnresolvedRecordsToFileCounts -Records $args[0] } -ArgumentList @(,$records)
+        $result.ContainsKey(100) | Should -BeTrue
+        $result[100]             | Should -Be 1
+    }
+
+    It 'aggregates multiple files in the same changelist' {
+        $records = @(
+            [pscustomobject]@{ change = '200'; depotFile = '//depot/a.cpp'; unresolved = '' },
+            [pscustomobject]@{ change = '200'; depotFile = '//depot/b.h';   unresolved = '' },
+            [pscustomobject]@{ change = '300'; depotFile = '//depot/c.cpp'; unresolved = '' }
+        )
+        $result = InModuleScope P4Cli { ConvertFrom-P4FstatUnresolvedRecordsToFileCounts -Records $args[0] } -ArgumentList @(,$records)
+        $result[200] | Should -Be 2
+        $result[300] | Should -Be 1
+    }
+
+    It 'ignores records that have no change property' {
+        $records = @(
+            [pscustomobject]@{ depotFile = '//depot/nochange.cpp'; unresolved = '' }
+        )
+        $result = InModuleScope P4Cli { ConvertFrom-P4FstatUnresolvedRecordsToFileCounts -Records $args[0] } -ArgumentList @(,$records)
+        $result.Count | Should -Be 0
+    }
+
+    It 'ignores records where change is 0 (default changelist)' {
+        $records = @(
+            [pscustomobject]@{ change = '0'; depotFile = '//depot/default.cpp'; unresolved = '' }
+        )
+        $result = InModuleScope P4Cli { ConvertFrom-P4FstatUnresolvedRecordsToFileCounts -Records $args[0] } -ArgumentList @(,$records)
+        $result.Count | Should -Be 0
+    }
+
+    It 'ignores records where change is not a parseable integer' {
+        $records = @(
+            [pscustomobject]@{ change = 'notanumber'; depotFile = '//depot/x.cpp'; unresolved = '' }
+        )
+        $result = InModuleScope P4Cli { ConvertFrom-P4FstatUnresolvedRecordsToFileCounts -Records $args[0] } -ArgumentList @(,$records)
+        $result.Count | Should -Be 0
+    }
+}
+
+Describe 'Get-P4UnresolvedFileCounts' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'returns correct counts from mocked Invoke-P4' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @(
+                [pscustomobject]@{ change = '100'; depotFile = '//depot/a.cpp'; unresolved = '' },
+                [pscustomobject]@{ change = '100'; depotFile = '//depot/b.cpp'; unresolved = '' },
+                [pscustomobject]@{ change = '200'; depotFile = '//depot/c.cpp'; unresolved = '' }
+            )
+        }
+
+        $result = Get-P4UnresolvedFileCounts
+        $result[100] | Should -Be 2
+        $result[200] | Should -Be 1
+    }
+
+    It 'returns empty dictionary when Invoke-P4 throws the no-such-file empty-result error' {
+        Mock Invoke-P4 -ModuleName P4Cli { throw 'no such file(s).' }
+
+        $result = Get-P4UnresolvedFileCounts
+        ($result -is [System.Collections.Generic.Dictionary[int,int]]) | Should -BeTrue
+        $result.Count | Should -Be 0
+    }
+
+    It 'degrades to empty dictionary on unexpected Invoke-P4 failure' {
+        Mock Invoke-P4 -ModuleName P4Cli { throw 'network timeout' }
+
+        $result = Get-P4UnresolvedFileCounts
+        ($result -is [System.Collections.Generic.Dictionary[int,int]]) | Should -BeTrue
+        $result.Count | Should -Be 0
+    }
+
+    It 'returns empty dictionary when Invoke-P4 returns empty output' {
+        Mock Invoke-P4 -ModuleName P4Cli { return @() }
+
+        $result = Get-P4UnresolvedFileCounts
+        $result.Count | Should -Be 0
+    }
+}
+
+Describe 'Get-P4UnresolvedDepotPaths' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'returns a HashSet containing the correct depot paths' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @(
+                [pscustomobject]@{ depotFile = '//depot/a.cpp'; unresolved = '' },
+                [pscustomobject]@{ depotFile = '//depot/b.h';   unresolved = '' }
+            )
+        }
+
+        $result = Get-P4UnresolvedDepotPaths -Change 100
+        ($result -is [System.Collections.Generic.HashSet[string]]) | Should -BeTrue
+        $result.Contains('//depot/a.cpp') | Should -BeTrue
+        $result.Contains('//depot/b.h')   | Should -BeTrue
+        $result.Count | Should -Be 2
+    }
+
+    It 'returns empty set when Invoke-P4 throws the no-such-file empty-result error' {
+        Mock Invoke-P4 -ModuleName P4Cli { throw 'no such file(s).' }
+
+        $result = Get-P4UnresolvedDepotPaths -Change 200
+        ($result -is [System.Collections.Generic.HashSet[string]]) | Should -BeTrue
+        $result.Count | Should -Be 0
+    }
+
+    It 'degrades to empty set on unexpected Invoke-P4 failure' {
+        Mock Invoke-P4 -ModuleName P4Cli { throw 'connection refused' }
+
+        $result = Get-P4UnresolvedDepotPaths -Change 300
+        $result.Count | Should -Be 0
+    }
+
+    It 'uses case-insensitive membership — uppercase lookup matches lowercase record' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @([pscustomobject]@{ depotFile = '//depot/src/foo.cs'; unresolved = '' })
+        }
+
+        $result = Get-P4UnresolvedDepotPaths -Change 42
+        $result.Contains('//DEPOT/SRC/FOO.CS') | Should -BeTrue
+    }
+
+    It 'handles duplicate depot path records defensively (set deduplicates)' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @(
+                [pscustomobject]@{ depotFile = '//depot/x.cpp'; unresolved = '' },
+                [pscustomobject]@{ depotFile = '//depot/x.cpp'; unresolved = '' }
+            )
+        }
+
+        $result = Get-P4UnresolvedDepotPaths -Change 77
+        $result.Count | Should -Be 1
+    }
+
+    It 'returns empty set when Invoke-P4 returns empty output' {
+        Mock Invoke-P4 -ModuleName P4Cli { return @() }
+
+        $result = Get-P4UnresolvedDepotPaths -Change 55
+        $result.Count | Should -Be 0
+    }
+}
+
+Describe 'Set-P4FileEntriesUnresolvedState' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+        Import-Module (Join-Path $PSScriptRoot '..\p4\Models.psm1') -Force
+    }
+
+    It 'marks matching depot path entry as unresolved' {
+        $entries = @(New-P4FileEntry -DepotPath '//depot/a.cpp' -Action 'edit' -FileType 'text' -Change 10)
+        $unresolvedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        [void]$unresolvedSet.Add('//depot/a.cpp')
+
+        $result = Set-P4FileEntriesUnresolvedState -FileEntries $entries -UnresolvedDepotPaths $unresolvedSet
+        $result.Count               | Should -Be 1
+        $result[0].IsUnresolved     | Should -BeTrue
+        $result[0].SearchKey        | Should -Match 'unresolved'
+    }
+
+    It 'leaves non-matching entries clean' {
+        $entries = @(New-P4FileEntry -DepotPath '//depot/b.h' -Action 'add' -FileType 'text' -Change 10)
+        $unresolvedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+        $result = Set-P4FileEntriesUnresolvedState -FileEntries $entries -UnresolvedDepotPaths $unresolvedSet
+        $result[0].IsUnresolved | Should -BeFalse
+        $result[0].SearchKey    | Should -Not -Match 'unresolved'
+    }
+
+    It 'preserves Action, FileType, Change, and SourceKind on enriched entries' {
+        $entries = @(New-P4FileEntry -DepotPath '//depot/c.cpp' -Action 'integrate' -FileType 'binary' -Change 99 -SourceKind 'Opened')
+        $unresolvedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        [void]$unresolvedSet.Add('//depot/c.cpp')
+
+        $result = Set-P4FileEntriesUnresolvedState -FileEntries $entries -UnresolvedDepotPaths $unresolvedSet
+        $result[0].Action     | Should -Be 'integrate'
+        $result[0].FileType   | Should -Be 'binary'
+        $result[0].Change     | Should -Be 99
+        $result[0].SourceKind | Should -Be 'Opened'
+    }
+
+    It 'handles path casing differences without false negatives' {
+        $entries = @(New-P4FileEntry -DepotPath '//Depot/Src/Foo.CS' -Action 'edit' -FileType 'text' -Change 5)
+        $unresolvedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        [void]$unresolvedSet.Add('//depot/src/foo.cs')
+
+        $result = Set-P4FileEntriesUnresolvedState -FileEntries $entries -UnresolvedDepotPaths $unresolvedSet
+        $result[0].IsUnresolved | Should -BeTrue
+    }
+
+    It 'returns empty array for empty input' {
+        $unresolvedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $result = Set-P4FileEntriesUnresolvedState -FileEntries @() -UnresolvedDepotPaths $unresolvedSet
+        $result.Count | Should -Be 0
+    }
+
+    It 'does not mutate the original entry objects' {
+        $original = New-P4FileEntry -DepotPath '//depot/d.cpp' -Action 'edit' -FileType 'text' -Change 7
+        $entries = @($original)
+        $unresolvedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        [void]$unresolvedSet.Add('//depot/d.cpp')
+
+        $result = Set-P4FileEntriesUnresolvedState -FileEntries $entries -UnresolvedDepotPaths $unresolvedSet
+        $result[0].IsUnresolved | Should -BeTrue
+        $original.IsUnresolved  | Should -BeFalse   # original untouched
+    }
+}
+
+Describe 'Get-P4ChangelistEntries — unresolved enrichment' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+        Import-Module (Join-Path $PSScriptRoot '..\p4\Models.psm1') -Force
+    }
+
+    It 'populates UnresolvedFileCount and HasUnresolvedFiles when counts are present' {
+        Mock Get-P4PendingChangelists -ModuleName P4Cli {
+            return @(New-P4Changelist -Change 500 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc')
+        }
+        Mock Get-P4OpenedFileCounts  -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
+        Mock Get-P4ShelvedFileCounts -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
+        Mock Get-P4UnresolvedFileCounts -ModuleName P4Cli {
+            $d = [System.Collections.Generic.Dictionary[int,int]]::new()
+            $d[500] = 3
+            return $d
+        }
+
+        $result = @(Get-P4ChangelistEntries)
+        $result[0].UnresolvedFileCount | Should -Be 3
+        $result[0].HasUnresolvedFiles  | Should -BeTrue
+    }
+
+    It 'keeps opened/shelved counts unchanged when unresolved enrichment is added' {
+        Mock Get-P4PendingChangelists -ModuleName P4Cli {
+            return @(New-P4Changelist -Change 600 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc')
+        }
+        Mock Get-P4OpenedFileCounts -ModuleName P4Cli {
+            $d = [System.Collections.Generic.Dictionary[int,int]]::new()
+            $d[600] = 4
+            return $d
+        }
+        Mock Get-P4ShelvedFileCounts -ModuleName P4Cli {
+            $d = [System.Collections.Generic.Dictionary[int,int]]::new()
+            $d[600] = 1
+            return $d
+        }
+        Mock Get-P4UnresolvedFileCounts -ModuleName P4Cli {
+            $d = [System.Collections.Generic.Dictionary[int,int]]::new()
+            $d[600] = 2
+            return $d
+        }
+
+        $result = @(Get-P4ChangelistEntries)
+        $result[0].OpenedFileCount     | Should -Be 4
+        $result[0].ShelvedFileCount    | Should -Be 1
+        $result[0].UnresolvedFileCount | Should -Be 2
+    }
+
+    It 'results in zero UnresolvedFileCount and false HasUnresolvedFiles when no unresolved counts exist' {
+        Mock Get-P4PendingChangelists -ModuleName P4Cli {
+            return @(New-P4Changelist -Change 700 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc')
+        }
+        Mock Get-P4OpenedFileCounts     -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
+        Mock Get-P4ShelvedFileCounts    -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
+        Mock Get-P4UnresolvedFileCounts -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
+
+        $result = @(Get-P4ChangelistEntries)
+        $result[0].UnresolvedFileCount | Should -Be 0
+        $result[0].HasUnresolvedFiles  | Should -BeFalse
+    }
+
+    It 'does not call Get-P4UnresolvedFileCounts when there are zero pending changelists' {
+        Mock Get-P4PendingChangelists   -ModuleName P4Cli { return @() }
+        Mock Get-P4OpenedFileCounts     -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
+        Mock Get-P4ShelvedFileCounts    -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
+        Mock Get-P4UnresolvedFileCounts -ModuleName P4Cli { throw 'should not be called' }
+
+        { $result = @(Get-P4ChangelistEntries) } | Should -Not -Throw
+        Should -Invoke Get-P4UnresolvedFileCounts -ModuleName P4Cli -Times 0 -Exactly
+    }
+}

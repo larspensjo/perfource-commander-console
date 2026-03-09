@@ -26,20 +26,23 @@ function ConvertTo-ChangelistEntry {
     param(
         [Parameter(Mandatory)][object]$Changelist,
         [Parameter(Mandatory = $false)][int]$OpenedFileCount = 0,
-        [Parameter(Mandatory = $false)][int]$ShelvedFileCount = 0
+        [Parameter(Mandatory = $false)][int]$ShelvedFileCount = 0,
+        [Parameter(Mandatory = $false)][int]$UnresolvedFileCount = 0
     )
 
     $title = ([string]$Changelist.Description -split "`r?`n" | Where-Object { $_ -match '\S' } | Select-Object -First 1)
     if ([string]::IsNullOrWhiteSpace($title)) { $title = '(no description)' }
 
     [pscustomobject]@{
-        Id               = "$($Changelist.Change)"
-        Title            = $title
-        HasShelvedFiles  = ($ShelvedFileCount -gt 0)
-        HasOpenedFiles   = ($OpenedFileCount -gt 0)
-        OpenedFileCount  = $OpenedFileCount
-        ShelvedFileCount = $ShelvedFileCount
-        Captured         = $Changelist.Time
+        Id                   = "$($Changelist.Change)"
+        Title                = $title
+        HasShelvedFiles      = ($ShelvedFileCount -gt 0)
+        HasOpenedFiles       = ($OpenedFileCount -gt 0)
+        HasUnresolvedFiles   = [bool]($UnresolvedFileCount -gt 0)
+        OpenedFileCount      = $OpenedFileCount
+        ShelvedFileCount     = $ShelvedFileCount
+        UnresolvedFileCount  = $UnresolvedFileCount
+        Captured             = $Changelist.Time
     }
 }
 
@@ -75,10 +78,11 @@ function New-P4FileEntry {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$DepotPath,
-        [Parameter(Mandatory = $false)][string]$Action     = '',
-        [Parameter(Mandatory = $false)][string]$FileType   = '',
-        [Parameter(Mandatory = $false)][int]$Change        = 0,
-        [Parameter(Mandatory = $false)][string]$SourceKind = 'Opened'
+        [Parameter(Mandatory = $false)][string]$Action       = '',
+        [Parameter(Mandatory = $false)][string]$FileType     = '',
+        [Parameter(Mandatory = $false)][int]$Change          = 0,
+        [Parameter(Mandatory = $false)][string]$SourceKind   = 'Opened',
+        [Parameter(Mandatory = $false)][bool]$IsUnresolved   = $false
     )
 
     # Derive FileName: last path segment after the final '/'
@@ -86,16 +90,20 @@ function New-P4FileEntry {
 
     # Precompute SearchKey once to avoid repeated allocations in the filter hot-path.
     # Includes FileType so future 'type:' facets work without cache invalidation.
+    # Appends 'unresolved' token when the file is unresolved so future file-level
+    # filtering can match without cache invalidation.
     $searchKey = ($DepotPath + ' ' + $Action + ' ' + $FileType).ToLowerInvariant()
+    if ($IsUnresolved) { $searchKey = $searchKey + ' unresolved' }
 
     [pscustomobject]@{
-        DepotPath  = $DepotPath
-        FileName   = $fileName
-        Action     = $Action
-        FileType   = $FileType
-        Change     = $Change
-        SourceKind = $SourceKind
-        SearchKey  = $searchKey
+        DepotPath    = $DepotPath
+        FileName     = $fileName
+        Action       = $Action
+        FileType     = $FileType
+        Change       = $Change
+        SourceKind   = $SourceKind
+        IsUnresolved = $IsUnresolved
+        SearchKey    = $searchKey
     }
 }
 

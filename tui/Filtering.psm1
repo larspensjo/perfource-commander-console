@@ -1,9 +1,18 @@
 Set-StrictMode -Version Latest
 
+Import-Module (Join-Path $PSScriptRoot 'Theme.psm1') -Force
+
 # Predicate registry for pending changelists
 $script:PendingFilterPredicates = [ordered]@{
-    'No shelved files' = { param($entry) -not [bool]$entry.HasShelvedFiles }
-    'No opened files'  = { param($entry) -not [bool]$entry.HasOpenedFiles  }
+    'No shelved files'                                   = { param($entry) -not [bool]$entry.HasShelvedFiles }
+    'No opened files'                                    = { param($entry) -not [bool]$entry.HasOpenedFiles  }
+    (Get-BrowserUiTheme).Labels.FilterPendingUnresolved  = {
+        param($entry)
+        # Guard against legacy entry objects that pre-date the HasUnresolvedFiles field.
+        $match = $entry.PSObject.Properties.Match('HasUnresolvedFiles')
+        if ($match.Count -eq 0) { return $false }
+        [bool]$match[0].Value
+    }
 }
 
 # Build the predicate registry for submitted changelists, capturing the current user.

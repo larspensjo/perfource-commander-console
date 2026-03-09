@@ -655,11 +655,12 @@ Describe 'Segment builders' {
         It 'builds unselected changelist segments with semantic colors' {
             $cl = [pscustomobject]@{ Id = 'FI-1'; Title = 'Title' }
             $segments = Build-ChangeSegments -Marker '│' -Change $cl -IsSelected $false
-            $segments.Count | Should -Be 4
+            $segments.Count | Should -Be 5
             $segments[0].Color | Should -Be 'DarkGray'  # marker
             $segments[1].Color | Should -Be 'Gray'       # mark badge (unmarked = space)
-            $segments[2].Color | Should -Be 'DarkGray'  # changeId
-            $segments[3].Color | Should -Be 'Gray'       # title
+            $segments[2].Color | Should -Be 'DarkGray'  # unresolved badge (absent = placeholder)
+            $segments[3].Color | Should -Be 'DarkGray'  # changeId
+            $segments[4].Color | Should -Be 'Gray'       # title
         }
 
         It 'builds selected changelist segments with focus colors' {
@@ -667,8 +668,9 @@ Describe 'Segment builders' {
             $segments = Build-ChangeSegments -Marker '>' -Change $cl -IsSelected $true
             $segments[0].Color | Should -Be 'Cyan'      # marker (selected)
             $segments[1].Color | Should -Be 'Gray'       # mark badge (unmarked)
-            $segments[2].Color | Should -Be 'DarkGray'  # changeId
-            $segments[3].Color | Should -Be 'White'     # title (selected)
+            $segments[2].Color | Should -Be 'DarkGray'  # unresolved badge (absent = placeholder)
+            $segments[3].Color | Should -Be 'DarkGray'  # changeId
+            $segments[4].Color | Should -Be 'White'     # title (selected)
         }
 
         It 'builds scrollbar-only row as marker + badge segments when Change is null' {
@@ -690,6 +692,36 @@ Describe 'Segment builders' {
             $segments = Build-ChangeSegments -Marker ([string][char]0x25B6) -Change $cl -IsSelected $true -IsMarked $true
             $segments[0].Color | Should -Be 'Cyan'    # cursor glyph color (selected)
             $segments[1].Color | Should -Be 'Yellow'  # marked badge
+        }
+
+        It 'builds unresolved changelist row with Yellow ⚠ badge' {
+            $cl = [pscustomobject]@{ Id = 'FI-5'; Title = 'Has conflicts'; HasUnresolvedFiles = $true }
+            $segments = Build-ChangeSegments -Marker ' ' -Change $cl -IsSelected $false
+            # segment[2] is the unresolved badge slot
+            $segments[2].Text  | Should -Be ([string]([char]0x26A0) + ' ')  # ⚠ + space
+            $segments[2].Color | Should -Be 'Yellow'
+        }
+
+        It 'clean changelist row reserves unresolved column without glyph' {
+            $cl = [pscustomobject]@{ Id = 'FI-6'; Title = 'Clean CL'; HasUnresolvedFiles = $false }
+            $segments = Build-ChangeSegments -Marker ' ' -Change $cl -IsSelected $false
+            $segments[2].Text  | Should -Be '  '    # two spaces placeholder
+            $segments[2].Color | Should -Be 'DarkGray'
+        }
+
+        It 'focused unresolved changelist row still shows ⚠ in Yellow' {
+            $cl = [pscustomobject]@{ Id = 'FI-7'; Title = 'Focused Unresolved'; HasUnresolvedFiles = $true }
+            $segments = Build-ChangeSegments -Marker ([string][char]0x25B6) -Change $cl -IsSelected $true
+            $segments[2].Text  | Should -Be ([string]([char]0x26A0) + ' ')  # ⚠ + space
+            $segments[2].Color | Should -Be 'Yellow'
+        }
+
+        It 'marked + unresolved row shows both mark badge and ⚠ badge' {
+            $cl = [pscustomobject]@{ Id = 'FI-8'; Title = 'Marked Unresolved'; HasUnresolvedFiles = $true }
+            $segments = Build-ChangeSegments -Marker ' ' -Change $cl -IsSelected $false -IsMarked $true
+            # segment[1] = mark badge (●, Yellow), segment[2] = unresolved badge (⚠, Yellow)
+            $segments[1].Color | Should -Be 'Yellow'  # marked badge
+            $segments[2].Color | Should -Be 'Yellow'  # unresolved badge
         }
 
         It 'builds detail rows with label and value colors' {
@@ -781,6 +813,41 @@ Describe 'Build-ChangeDetailSegments' {
         It 'returns empty array for null change' {
             $result = Build-ChangeDetailSegments -Change $null
             @($result).Count | Should -Be 0
+        }
+
+        It 'shows unresolved count with ⚠ glyph in Yellow when UnresolvedFileCount is positive' {
+            $cl = [pscustomobject]@{
+                Id                   = '123'
+                Title                = 'Conflict CL'
+                OpenedFileCount      = 3
+                ShelvedFileCount     = 0
+                UnresolvedFileCount  = 2
+                Captured             = [datetime]'2026-01-15'
+            }
+            $segments = Build-ChangeDetailSegments -Change $cl
+            $allText = ($segments | ForEach-Object { $_.Text }) -join ''
+            $allText | Should -Match '2'
+            # ⚠ glyph must appear
+            $unresolvedGlyph = [string][char]0x26A0
+            $allText | Should -Match $unresolvedGlyph
+            # one Yellow segment for the glyph
+            (@($segments | Where-Object { $_.Color -eq 'Yellow' })).Count | Should -BeGreaterThan 0
+        }
+
+        It 'omits unresolved glyph and count when UnresolvedFileCount is zero' {
+            $cl = [pscustomobject]@{
+                Id                   = '456'
+                Title                = 'Clean CL'
+                OpenedFileCount      = 1
+                ShelvedFileCount     = 0
+                UnresolvedFileCount  = 0
+                Captured             = [datetime]'2026-01-15'
+            }
+            $segments = Build-ChangeDetailSegments -Change $cl
+            $allText = ($segments | ForEach-Object { $_.Text }) -join ''
+            $unresolvedGlyph = [string][char]0x26A0
+            $allText | Should -Not -Match $unresolvedGlyph
+            (@($segments | Where-Object { $_.Color -eq 'Yellow' })).Count | Should -Be 0
         }
     }
 }
@@ -1026,6 +1093,86 @@ Describe 'Files screen rendering' {
         $allText | Should -Match 'Action: integrate'
         $allText | Should -Match 'Type: text'
         $allText | Should -Match 'Source: Submitted'
+    }
+
+    It 'inspector shows Resolve: clean for a clean file' {
+        $state = New-FilesRenderState -Width 120 -Height 20
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '100:Opened' = @(
+                [pscustomobject]@{ FileName = 'Clean.cs'; DepotPath = '//depot/Clean.cs'; Action = 'edit'; FileType = 'text'; Change = 100; SourceKind = 'Opened'; IsUnresolved = $false }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 100
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Match 'Resolve: clean'
+    }
+
+    It 'inspector shows Resolve: unresolved for an unresolved file' {
+        $state = New-FilesRenderState -Width 120 -Height 20
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '200:Opened' = @(
+                [pscustomobject]@{ FileName = 'Conflict.cs'; DepotPath = '//depot/Conflict.cs'; Action = 'integrate'; FileType = 'text'; Change = 200; SourceKind = 'Opened'; IsUnresolved = $true }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 200
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Match 'Resolve: unresolved'
+    }
+
+    It 'unresolved file row shows ⚠ glyph' {
+        $state = New-FilesRenderState -Width 120 -Height 20
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '300:Opened' = @(
+                [pscustomobject]@{ FileName = 'Merge.cs'; DepotPath = '//depot/Merge.cs'; Action = 'integrate'; FileType = 'text'; Change = 300; SourceKind = 'Opened'; IsUnresolved = $true }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 300
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $unresolvedGlyph = [string][char]0x26A0
+        $allText | Should -Match $unresolvedGlyph
+    }
+
+    It 'clean file row does not show ⚠ glyph in the file list' {
+        $state = New-FilesRenderState -Width 120 -Height 20
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '400:Opened' = @(
+                [pscustomobject]@{ FileName = 'Normal.cs'; DepotPath = '//depot/Normal.cs'; Action = 'edit'; FileType = 'text'; Change = 400; SourceKind = 'Opened'; IsUnresolved = $false }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 400
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        # The ⚠ glyph must NOT be present anywhere in the list rows (inspect rows are separate)
+        $listRows = $frame.Rows | Select-Object -First 10
+        $listText = ($listRows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $unresolvedGlyph = [string][char]0x26A0
+        $listText | Should -Not -Match $unresolvedGlyph
     }
 }
 # ─── Confirm dialog overlay ───────────────────────────────────────────────────

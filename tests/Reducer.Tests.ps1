@@ -46,7 +46,7 @@ Describe 'Browser reducer' {
 
     It 'supports Home/End in filters pane' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveEnd' })
-        $state.Cursor.FilterIndex | Should -Be 1
+        $state.Cursor.FilterIndex | Should -Be 2
 
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveHome' })
         $state.Cursor.FilterIndex | Should -Be 0

@@ -277,16 +277,26 @@ function Get-P4ChangelistEntries {
         [int]$Max = 200
     )
 
-    $changelists  = Get-P4PendingChangelists -Max $Max
-    $openedCounts = Get-P4OpenedFileCounts
-    $changeNumbers = @($changelists | ForEach-Object { [int]$_.Change })
-    $shelvedCounts = Get-P4ShelvedFileCounts -ChangeNumbers $changeNumbers
+    $changelists     = Get-P4PendingChangelists -Max $Max
+    $openedCounts    = Get-P4OpenedFileCounts
+    $changeNumbers   = @($changelists | ForEach-Object { [int]$_.Change })
+    $shelvedCounts   = Get-P4ShelvedFileCounts -ChangeNumbers $changeNumbers
+
+    # Workspace-wide unresolved enrichment — degrades gracefully on failure.
+    # Short-circuit when there are no pending changelists to avoid unnecessary p4 fstat calls.
+    $unresolvedCounts = if ($changeNumbers.Count -gt 0) {
+        Get-P4UnresolvedFileCounts
+    } else {
+        [System.Collections.Generic.Dictionary[int,int]]::new()
+    }
 
     $changelists | ForEach-Object {
-        $changeNum    = [int]$_.Change
-        $openedCount  = if ($openedCounts.ContainsKey($changeNum))  { $openedCounts[$changeNum]  } else { 0 }
-        $shelvedCount = if ($shelvedCounts.ContainsKey($changeNum)) { $shelvedCounts[$changeNum] } else { 0 }
-        ConvertTo-ChangelistEntry -Changelist $_ -OpenedFileCount $openedCount -ShelvedFileCount $shelvedCount
+        $changeNum        = [int]$_.Change
+        $openedCount      = if ($openedCounts.ContainsKey($changeNum))    { $openedCounts[$changeNum]    } else { 0 }
+        $shelvedCount     = if ($shelvedCounts.ContainsKey($changeNum))   { $shelvedCounts[$changeNum]   } else { 0 }
+        $unresolvedCount  = if ($unresolvedCounts.ContainsKey($changeNum)) { $unresolvedCounts[$changeNum] } else { 0 }
+        ConvertTo-ChangelistEntry -Changelist $_ -OpenedFileCount $openedCount `
+            -ShelvedFileCount $shelvedCount -UnresolvedFileCount $unresolvedCount
     }
 }
 
@@ -576,6 +586,149 @@ function Get-P4OpenedFiles {
     return @($result)
 }
 
+function Test-IsP4NoUnresolvedFilesError {
+    <#
+    .SYNOPSIS
+        Returns $true when the p4 error message indicates no unresolved files exist.
+    .DESCRIPTION
+        'p4 fstat -Ru' exits non-zero with a 'no such file(s)' message when the
+        workspace has no unresolved open files.  This should be treated as a normal
+        empty result rather than an error.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Message
+    )
+
+    return ($Message -match '(?i)no\s+such\s+file\(s\)')
+}
+
+# Pure helper: convert 'p4 fstat -Ro -Ru' records into a per-changelist unresolved file count.
+# Each record represents one unresolved open file; 'change' identifies the CL.
+function ConvertFrom-P4FstatUnresolvedRecordsToFileCounts {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Records
+    )
+
+    $result = [System.Collections.Generic.Dictionary[int,int]]::new()
+    foreach ($record in $Records) {
+        if ($null -eq ($record.PSObject.Properties['change'])) { continue }
+        $changeVal = $record.change
+        $changeInt = 0
+        if (-not [int]::TryParse([string]$changeVal, [ref]$changeInt)) { continue }
+        if ($changeInt -eq 0) { continue }  # ignore default changelist (change: 0)
+        if ($result.ContainsKey($changeInt)) { $result[$changeInt]++ } else { $result[$changeInt] = 1 }
+    }
+    return $result
+}
+
+function Get-P4UnresolvedFileCounts {
+    <#
+    .SYNOPSIS
+        Returns a dictionary mapping changelist number to its unresolved open-file count.
+    .DESCRIPTION
+        Uses one workspace-wide 'p4 fstat -Ro -Ru' query to enumerate all unresolved
+        open files and aggregates counts per changelist.
+        Returns an empty dictionary when there are no unresolved files.
+        Degrades gracefully to an empty dictionary on unexpected failures so that
+        pending changelist loading is never blocked by unresolved enrichment errors.
+    #>
+    [CmdletBinding()]
+    param()
+
+    try {
+        $lines = Invoke-P4 -P4Args @('fstat', '-Ro', '-Ru', '-T', 'change,depotFile,unresolved')
+    }
+    catch {
+        $errorMessage = [string]$_.Exception.Message
+        if (Test-IsP4NoUnresolvedFilesError -Message $errorMessage) {
+            return [System.Collections.Generic.Dictionary[int,int]]::new()
+        }
+        # Degrade gracefully: return empty counts rather than blocking changelist load
+        return [System.Collections.Generic.Dictionary[int,int]]::new()
+    }
+
+    if ($null -eq $lines) { $lines = @() }
+    return ConvertFrom-P4FstatUnresolvedRecordsToFileCounts -Records $lines
+}
+
+function Get-P4UnresolvedDepotPaths {
+    <#
+    .SYNOPSIS
+        Returns a case-insensitive HashSet of depot paths for unresolved files in a changelist.
+    .DESCRIPTION
+        Uses 'p4 fstat -Ro -Ru -e <change>' to retrieve the subset of opened files that
+        are unresolved.  Returns an empty set when the changelist has no unresolved files.
+    .PARAMETER Change
+        The pending changelist number to query.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][int]$Change
+    )
+
+    $result = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    try {
+        $lines = Invoke-P4 -P4Args @('fstat', '-Ro', '-Ru', '-e', "$Change", '-T', 'depotFile,unresolved')
+    }
+    catch {
+        $errorMessage = [string]$_.Exception.Message
+        if (Test-IsP4NoUnresolvedFilesError -Message $errorMessage) {
+            return ,$result
+        }
+        return ,$result
+    }
+
+    if ($null -eq $lines) { return ,$result }
+
+    foreach ($record in $lines) {
+        if ($null -eq ($record.PSObject.Properties['depotFile'])) { continue }
+        [void]$result.Add([string]$record.depotFile)
+    }
+
+    return ,$result
+}
+
+function Set-P4FileEntriesUnresolvedState {
+    <#
+    .SYNOPSIS
+        Returns new FileEntry objects with IsUnresolved set based on membership in the given set of unresolved depot paths.
+    .DESCRIPTION
+        Accepts an array of FileEntry objects and a case-insensitive HashSet of unresolved
+        depot paths.  Returns new FileEntry objects reconstructed via New-P4FileEntry so
+        each entry has a complete and stable shape.  Does not mutate the input objects.
+    .PARAMETER FileEntries
+        Array of FileEntry objects (as returned by Get-P4OpenedFiles).
+    .PARAMETER UnresolvedDepotPaths
+        Case-insensitive HashSet of depot paths that are unresolved.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$FileEntries,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][System.Collections.Generic.HashSet[string]]$UnresolvedDepotPaths
+    )
+
+    if ($null -eq $UnresolvedDepotPaths) {
+        $UnresolvedDepotPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    }
+
+    $result = foreach ($entry in $FileEntries) {
+        $depotPath   = [string]$entry.DepotPath
+        $isUnresolved = [bool]$UnresolvedDepotPaths.Contains($depotPath)
+        New-P4FileEntry `
+            -DepotPath   $depotPath `
+            -Action      ([string]$entry.Action) `
+            -FileType    ([string]$entry.FileType) `
+            -Change      ([int]$entry.Change) `
+            -SourceKind  ([string]$entry.SourceKind) `
+            -IsUnresolved $isUnresolved
+    }
+
+    return @($result)
+}
+
 function Remove-P4Changelist {
     <#
     .SYNOPSIS
@@ -707,4 +860,4 @@ function Invoke-P4ReopenFiles {
     return @{ MovedCount = $depotPaths.Count; Files = $depotPaths }
 }
 
-Export-ModuleMember -Function Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Remove-P4Changelist, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles
+Export-ModuleMember -Function Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Set-P4FileEntriesUnresolvedState, Remove-P4Changelist, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles

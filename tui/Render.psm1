@@ -1,9 +1,14 @@
 ﻿Set-StrictMode -Version Latest
 
+Import-Module (Join-Path $PSScriptRoot 'Theme.psm1') -Force
+
+$_theme                = Get-BrowserUiTheme
 $SCROLLBAR_THUMB_GLYPH = [char]0x2591
 $SCROLLBAR_TRACK_GLYPH = [char]0x2502
-$CURSOR_GLYPH          = [char]0x25B6  # ▶
-$MARK_GLYPH            = [char]0x25CF  # ●
+$CURSOR_GLYPH          = $_theme.Glyphs.Cursor      # ▶
+$MARK_GLYPH            = $_theme.Glyphs.Mark        # ●
+$UNRESOLVED_GLYPH      = $_theme.Glyphs.Unresolved  # ⚠
+$UNRESOLVED_BADGE_WIDTH = 2  # one glyph slot + one trailing space
 
 # Set to $true via Enable-FrameIntegrityTest to activate the runtime border checker.
 $script:IntegrityTestEnabled = $false
@@ -595,18 +600,22 @@ function Build-ChangeSegments {
         return
     }
 
-    $changeId    = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Id'    -Default '')
-    $changeTitle = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Title' -Default '')
-    $changeKind  = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Kind'  -Default '')
-    $changeUser  = [string](Get-PropertyValueOrDefault -Object $Change -Name 'User'  -Default '')
+    $changeId         = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Id'                 -Default '')
+    $changeTitle      = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Title'              -Default '')
+    $changeKind       = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Kind'               -Default '')
+    $changeUser       = [string](Get-PropertyValueOrDefault -Object $Change -Name 'User'               -Default '')
+    $hasUnresolved    = [bool]  (Get-PropertyValueOrDefault -Object $Change -Name 'HasUnresolvedFiles' -Default $false)
 
-    $markerColor = if ($IsSelected) { 'Cyan' } else { Get-MarkerColor -Marker $Marker }
-    $titleColor  = if ($IsSelected) { 'White' } else { 'Gray' }
+    $markerColor      = if ($IsSelected) { 'Cyan' } else { Get-MarkerColor -Marker $Marker }
+    $titleColor       = if ($IsSelected) { 'White' } else { 'Gray' }
+    $unresolvedText   = if ($hasUnresolved) { $UNRESOLVED_GLYPH + ' ' } else { '  ' }
+    $unresolvedColor  = if ($hasUnresolved) { 'Yellow' } else { 'DarkGray' }
 
     $segments = @(
-        @{ Text = $Marker;    Color = $markerColor  },
-        @{ Text = $markBadge; Color = $markBadgeColor },
-        @{ Text = " $changeId"; Color = 'DarkGray'  }
+        @{ Text = $Marker;          Color = $markerColor       },
+        @{ Text = $markBadge;       Color = $markBadgeColor    },
+        @{ Text = $unresolvedText;  Color = $unresolvedColor   },
+        @{ Text = " $changeId";     Color = 'DarkGray'         }
     )
 
     # Show user column for submitted entries
@@ -631,21 +640,30 @@ function Build-ChangeDetailSegments {
         return
     }
 
-    $openedCount  = [int](Get-PropertyValueOrDefault -Object $Change -Name 'OpenedFileCount'  -Default 0)
-    $shelvedCount = [int](Get-PropertyValueOrDefault -Object $Change -Name 'ShelvedFileCount' -Default 0)
-    $capturedRaw  =     Get-PropertyValueOrDefault  -Object $Change -Name 'Captured'         -Default $null
+    $openedCount     = [int]   (Get-PropertyValueOrDefault -Object $Change -Name 'OpenedFileCount'     -Default 0)
+    $shelvedCount    = [int]   (Get-PropertyValueOrDefault -Object $Change -Name 'ShelvedFileCount'    -Default 0)
+    $unresolvedCount = [int]   (Get-PropertyValueOrDefault -Object $Change -Name 'UnresolvedFileCount' -Default 0)
+    $capturedRaw     =          Get-PropertyValueOrDefault  -Object $Change -Name 'Captured'            -Default $null
     $dateStr = ''
     if ($null -ne $capturedRaw) {
         try { $dateStr = ([datetime]$capturedRaw).ToString('yyyy-MM-dd') } catch { $dateStr = '' }
     }
 
-    Write-Output -NoEnumerate @(
+    $segments = @(
         @{ Text = [char]::ConvertFromUtf32(0x1F4C1); Color = 'DarkCyan' },
         @{ Text = " $openedCount  ";                  Color = 'Gray'     },
         @{ Text = [char]::ConvertFromUtf32(0x1F4E6); Color = 'DarkCyan' },
-        @{ Text = " $shelvedCount  ";                 Color = 'Gray'     },
-        @{ Text = $dateStr;                           Color = 'DarkGray' }
+        @{ Text = " $shelvedCount  ";                 Color = 'Gray'     }
     )
+
+    if ($unresolvedCount -gt 0) {
+        $segments += @{ Text = $UNRESOLVED_GLYPH; Color = 'Yellow'   }
+        $segments += @{ Text = " $unresolvedCount  "; Color = 'Gray' }
+    }
+
+    $segments += @{ Text = $dateStr; Color = 'DarkGray' }
+
+    Write-Output -NoEnumerate $segments
 }
 
 function Build-SubmittedChangeDetailSegments {
@@ -1459,15 +1477,18 @@ function Build-FilesScreenFrame {
                     $tColor     = if ($isSelected) { 'White' } else { 'Gray' }
 
                     if ($null -ne $file) {
-                        $action   = [string](Get-PropertyValueOrDefault -Object $file -Name 'Action' -Default '')
-                        $fileName = [string](Get-PropertyValueOrDefault -Object $file -Name 'FileName' -Default '')
-                        $depot    = [string](Get-PropertyValueOrDefault -Object $file -Name 'DepotPath' -Default '')
+                        $action       = [string](Get-PropertyValueOrDefault -Object $file -Name 'Action'       -Default '')
+                        $fileName     = [string](Get-PropertyValueOrDefault -Object $file -Name 'FileName'     -Default '')
+                        $depot        = [string](Get-PropertyValueOrDefault -Object $file -Name 'DepotPath'    -Default '')
+                        $isUnresolved = [bool]  (Get-PropertyValueOrDefault -Object $file -Name 'IsUnresolved' -Default $false)
                         if ([string]::IsNullOrWhiteSpace($fileName)) { $fileName = $depot }
+                        $unresolvedBadge      = if ($isUnresolved) { $UNRESOLVED_GLYPH + ' ' } else { '  ' }
+                        $unresolvedBadgeColor = if ($isUnresolved) { 'Yellow' } else { 'DarkGray' }
                         $inner = @(
-                            @{ Text = $marker;                   Color = $mColor },
-                            @{ Text = ' ';                      Color = $tColor },
-                            @{ Text = ('{0,-10}' -f $action);   Color = 'DarkYellow' },
-                            @{ Text = $fileName;                Color = $tColor }
+                            @{ Text = $marker;              Color = $mColor            },
+                            @{ Text = $unresolvedBadge;     Color = $unresolvedBadgeColor },
+                            @{ Text = ('{0,-10}' -f $action); Color = 'DarkYellow'   },
+                            @{ Text = $fileName;            Color = $tColor            }
                         )
                     } else {
                         $inner = @(
@@ -1502,20 +1523,28 @@ function Build-FilesScreenFrame {
                         @(@{ Text = ''; Color = 'Gray' })
                     }
                 } else {
-                    $selectedFileName = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'FileName' -Default '')
-                    $selectedDepot    = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'DepotPath' -Default '')
-                    $selectedAction   = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'Action' -Default '')
-                    $selectedType     = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'FileType' -Default '')
-                    $selectedChange   = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'Change' -Default '')
-                    switch ($detailContentRow) {
-                        0 { @(@{ Text = "File: $selectedFileName"; Color = 'White' }) }
-                        1 { @(@{ Text = "Action: $selectedAction"; Color = 'DarkYellow' }) }
-                        2 { @(@{ Text = "Type: $selectedType"; Color = 'Gray' }) }
-                        3 { @(@{ Text = "Change: $selectedChange"; Color = 'DarkGray' }) }
-                        4 { @(@{ Text = "Source: $sourceKind"; Color = 'DarkGray' }) }
-                        5 { @(@{ Text = ''; Color = 'Gray' }) }
-                        6 { @(@{ Text = $selectedDepot; Color = 'Gray' }) }
-                        default { @(@{ Text = ''; Color = 'Gray' }) }
+                    $selectedFileName  = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'FileName'     -Default '')
+                    $selectedDepot     = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'DepotPath'    -Default '')
+                    $selectedAction    = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'Action'       -Default '')
+                    $selectedType      = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'FileType'     -Default '')
+                    $selectedChange    = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'Change'       -Default '')
+                    $selectedUnresolvd = [bool]  (Get-PropertyValueOrDefault -Object $selectedFile -Name 'IsUnresolved' -Default $false)
+                    $resolveLabel      = if ($selectedUnresolvd) { 'unresolved' } else { 'clean' }
+                    $resolveColor      = if ($selectedUnresolvd) { 'Yellow' } else { 'DarkGray' }
+                    $inspectorLines = @(
+                        @(@{ Text = "File: $selectedFileName"; Color = 'White'       }),
+                        @(@{ Text = "Action: $selectedAction"; Color = 'DarkYellow' }),
+                        @(@{ Text = "Type: $selectedType";     Color = 'Gray'        }),
+                        @(@{ Text = "Change: $selectedChange"; Color = 'DarkGray'   }),
+                        @(@{ Text = "Source: $sourceKind";     Color = 'DarkGray'   }),
+                        @(@{ Text = "Resolve: $resolveLabel";  Color = $resolveColor }),
+                        @(@{ Text = '';                        Color = 'Gray'        }),
+                        @(@{ Text = $selectedDepot;            Color = 'Gray'        })
+                    )
+                    if ($detailContentRow -lt $inspectorLines.Count) {
+                        $inspectorLines[$detailContentRow]
+                    } else {
+                        @(@{ Text = ''; Color = 'Gray' })
                     }
                 }
                 $rightSegs = Build-BorderedRowSegments -InnerSegments $inner -Width $layout.DetailPane.W -BorderColor $detailBorder

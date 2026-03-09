@@ -4,6 +4,7 @@ Set-StrictMode -Version Latest
 Import-Module (Join-Path $PSScriptRoot 'p4\Models.psm1')    -Force
 Import-Module (Join-Path $PSScriptRoot 'p4\P4Cli.psm1')     -Force
 Import-Module (Join-Path $PSScriptRoot 'tui\Helpers.psm1')  -Force
+Import-Module (Join-Path $PSScriptRoot 'tui\Theme.psm1')    -Force
 Import-Module (Join-Path $PSScriptRoot 'tui\Filtering.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'tui\Layout.psm1')    -Force
 Import-Module (Join-Path $PSScriptRoot 'tui\Reducer.psm1')   -Force
@@ -280,8 +281,10 @@ function Invoke-BrowserFilesLoad {
             $loadFilesCmdLine = Format-P4CommandLine -P4Args @('opened', '-c', "$Change")
             return Invoke-BrowserSideEffect -State $State -CommandLine $loadFilesCmdLine -WorkItem {
                 param($s)
-                $files = Get-P4OpenedFiles -Change $Change
-                $s.Data.FileCache[$CacheKey] = $files
+                $files           = Get-P4OpenedFiles -Change $Change
+                $unresolvedPaths = Get-P4UnresolvedDepotPaths -Change $Change
+                $enrichedFiles   = Set-P4FileEntriesUnresolvedState -FileEntries $files -UnresolvedDepotPaths $unresolvedPaths
+                $s.Data.FileCache[$CacheKey] = $enrichedFiles
                 $s.Runtime.LastError = $null
                 return Update-BrowserDerivedState -State $s
             }

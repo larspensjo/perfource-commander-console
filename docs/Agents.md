@@ -7,7 +7,7 @@
 * Use the principle Correctness by Construction.
 * Avoid repetition.
 * Don't repeat yourself.
-* Avoid "naked constants".
+* Avoid "naked constants". Assign them to a variable, and use the variable instead. Make sure to share the same variable accross file.
 
 ## Workflows
 

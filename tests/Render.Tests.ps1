@@ -1144,8 +1144,8 @@ Describe 'Build-MenuOverlayRows and Apply-MenuOverlay' {
     }
 
     It 'Build-MenuOverlayRows includes menu name in title row' {
-        [object[]]$items = @(New-MenuItem 'Quit' 'Quit' 'Q')
-        $payload = New-MenuPayload 'File' 0 $items
+        [object[]]$items = @(New-MenuItem -Id 'Quit' -Label 'Quit' -Accel 'Q')
+        $payload = New-MenuPayload -Name 'File' -Focus 0 -Items $items
         $rows = @(Build-MenuOverlayRows -Payload $payload -Width 30)
         $rows.Count | Should -BeGreaterThan 2
         $topText = ($rows[0] | ForEach-Object { $_.Text }) -join ''
@@ -1154,10 +1154,10 @@ Describe 'Build-MenuOverlayRows and Apply-MenuOverlay' {
 
     It 'Build-MenuOverlayRows contains item label text' {
         [object[]]$items = @(
-            New-MenuItem 'Refresh' 'Refresh' 'R'
-            New-MenuItem 'Quit'    'Quit'    'Q'
+            New-MenuItem -Id 'Refresh' -Label 'Refresh' -Accel 'R'
+            New-MenuItem -Id 'Quit'    -Label 'Quit'    -Accel 'Q'
         )
-        $payload = New-MenuPayload 'File' 0 $items
+        $payload = New-MenuPayload -Name 'File' -Focus 0 -Items $items
         $rows = @(Build-MenuOverlayRows -Payload $payload -Width 30)
         $allText = ($rows | ForEach-Object { ($_ | ForEach-Object { $_.Text }) -join '' }) -join "`n"
         $allText | Should -Match 'Refresh'
@@ -1166,10 +1166,10 @@ Describe 'Build-MenuOverlayRows and Apply-MenuOverlay' {
 
     It 'Build-MenuOverlayRows shows focus indicator on focused item' {
         [object[]]$items = @(
-            New-MenuItem 'Refresh' 'Refresh' 'R'
-            New-MenuItem 'Quit'    'Quit'    'Q'
+            New-MenuItem -Id 'Refresh' -Label 'Refresh' -Accel 'R'
+            New-MenuItem -Id 'Quit'    -Label 'Quit'    -Accel 'Q'
         )
-        $payload = New-MenuPayload 'File' 0 $items
+        $payload = New-MenuPayload -Name 'File' -Focus 0 -Items $items
         $rows = @(Build-MenuOverlayRows -Payload $payload -Width 30)
         $allText = ($rows | ForEach-Object { ($_ | ForEach-Object { $_.Text }) -join '' }) -join ''
         # Focus indicator character should appear somewhere
@@ -1178,19 +1178,19 @@ Describe 'Build-MenuOverlayRows and Apply-MenuOverlay' {
 
     It 'Build-MenuOverlayRows renders separator row with horizontal line chars' {
         [object[]]$items = @(
-            New-MenuItem 'Refresh' 'Refresh' 'R'
-            New-MenuItem '__Sep__' '' '' -IsSep $true
-            New-MenuItem 'Quit'    'Quit'   'Q'
+            New-MenuItem -Id 'Refresh' -Label 'Refresh' -Accel 'R'
+            New-MenuItem -Id '__Sep__' -Label '' -Accel '' -IsSep $true
+            New-MenuItem -Id 'Quit'    -Label 'Quit'    -Accel 'Q'
         )
-        $payload = New-MenuPayload 'File' 0 $items
+        $payload = New-MenuPayload -Name 'File' -Focus 0 -Items $items
         $rows = @(Build-MenuOverlayRows -Payload $payload -Width 30)
         $allText = ($rows | ForEach-Object { ($_ | ForEach-Object { $_.Text }) -join '' }) -join ''
         $allText | Should -Match '─'
     }
 
     It 'Build-MenuOverlayRows disabled item does not get focus indicator' {
-        [object[]]$items = @(New-MenuItem 'DeleteMarked' 'Delete' 'D' -Enabled $false)
-        $payload = New-MenuPayload 'File' 0 $items
+        [object[]]$items = @(New-MenuItem -Id 'DeleteMarked' -Label 'Delete' -Accel 'D' -Enabled $false)
+        $payload = New-MenuPayload -Name 'File' -Focus 0 -Items $items
         $rows = @(Build-MenuOverlayRows -Payload $payload -Width 30)
         # Even though focused, disabled item should still appear
         $allText = ($rows | ForEach-Object { ($_ | ForEach-Object { $_.Text }) -join '' }) -join ''
@@ -1199,8 +1199,8 @@ Describe 'Build-MenuOverlayRows and Apply-MenuOverlay' {
 
     It 'Apply-MenuOverlay stamps menu rows at top of frame' {
         $frame = New-BlankFrame -Width 80 -Height 20
-        [object[]]$items = @(New-MenuItem 'Refresh' 'Refresh' 'R')
-        $payload = New-MenuPayload 'File' 0 $items
+        [object[]]$items = @(New-MenuItem -Id 'Refresh' -Label 'Refresh' -Accel 'R')
+        $payload = New-MenuPayload -Name 'File' -Focus 0 -Items $items
         $out = Apply-MenuOverlay -Frame $frame -Payload $payload
         # Frame dimensions unchanged
         $out.Width  | Should -Be 80

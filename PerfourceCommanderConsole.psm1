@@ -266,6 +266,8 @@ function ConvertTo-BrowserSubmittedFileEntries {
 }
 
 function Invoke-BrowserFilesLoad {
+    [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'CacheKey',
+        Justification = 'CacheKey is captured by the WorkItem scriptblock closures below.')]
     param(
         [Parameter(Mandatory = $true)]$State,
         [Parameter(Mandatory = $true)][int]$Change,

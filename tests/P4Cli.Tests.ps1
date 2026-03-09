@@ -749,7 +749,6 @@ Describe 'Invoke-P4ReopenFiles' {
             )
         }
         Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter { $P4Args[0] -eq 'reopen' } {
-            param($P4Args)
             # just capture; no output needed (returns $null → Out-Null in caller)
         }
 

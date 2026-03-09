@@ -998,7 +998,7 @@ function Invoke-ChangelistReducer {
                 FocusIndex = $matchedNavIdx
                 MenuItems  = $items
             }
-            # If enabled, immediately select it 
+            # If enabled, immediately select it
             if ([bool]$matchedItem.IsEnabled) {
                 return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'MenuSelect' })
             }

@@ -1637,3 +1637,128 @@ Describe 'Phase 5 — DeleteMarked and MoveMarkedFiles menu actions' {
         $next.Ui.OverlayPayload.OnAccept.WorkflowKind | Should -Be 'DeleteMarked'
     }
 }
+
+# ─── Phase 6: Hardening ───────────────────────────────────────────────────────
+
+Describe 'Phase 6 — LastWorkflowResult and ReconcileMarks' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+    }
+
+    BeforeEach {
+        $changes = @(
+            [pscustomobject]@{ Id = '101'; Title = 'One';   HasShelvedFiles = $false; HasOpenedFiles = $true;  Captured = [datetime]'2026-02-10' },
+            [pscustomobject]@{ Id = '102'; Title = 'Two';   HasShelvedFiles = $false; HasOpenedFiles = $true;  Captured = [datetime]'2026-02-09' },
+            [pscustomobject]@{ Id = '103'; Title = 'Three'; HasShelvedFiles = $false; HasOpenedFiles = $false; Captured = [datetime]'2026-02-08' }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+    }
+
+    # ── LastWorkflowResult ────────────────────────────────────────────────────
+
+    It 'New-BrowserState initialises LastWorkflowResult to null' {
+        $state.Runtime.LastWorkflowResult | Should -BeNullOrEmpty
+    }
+
+    It 'WorkflowEnd stores LastWorkflowResult with DoneCount and FailedCount' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'WorkflowBegin'; Kind = 'DeleteMarked'; TotalCount = 3
+        })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowItemComplete' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowItemComplete' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'WorkflowItemFailed'; ChangeId = '103'
+        })
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowEnd' })
+
+        $next.Runtime.LastWorkflowResult              | Should -Not -BeNullOrEmpty
+        $next.Runtime.LastWorkflowResult.Kind         | Should -Be 'DeleteMarked'
+        $next.Runtime.LastWorkflowResult.DoneCount    | Should -Be 2
+        $next.Runtime.LastWorkflowResult.FailedCount  | Should -Be 1
+        @($next.Runtime.LastWorkflowResult.FailedIds) | Should -Contain '103'
+    }
+
+    It 'WorkflowEnd clears ActiveWorkflow and preserves LastWorkflowResult' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'WorkflowBegin'; Kind = 'DeleteMarked'; TotalCount = 1
+        })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowItemComplete' })
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowEnd' })
+
+        $next.Runtime.ActiveWorkflow     | Should -BeNullOrEmpty
+        $next.Runtime.LastWorkflowResult | Should -Not -BeNullOrEmpty
+    }
+
+    It 'WorkflowBegin clears LastWorkflowResult from previous workflow' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'WorkflowBegin'; Kind = 'DeleteMarked'; TotalCount = 1
+        })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowItemComplete' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowEnd' })
+        # Confirm result was set
+        $state.Runtime.LastWorkflowResult | Should -Not -BeNullOrEmpty
+
+        # Starting a new workflow clears the previous result
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'WorkflowBegin'; Kind = 'MoveMarkedFiles'; TotalCount = 2
+        })
+        $next.Runtime.LastWorkflowResult | Should -BeNullOrEmpty
+    }
+
+    It 'WorkflowEnd when no ActiveWorkflow leaves LastWorkflowResult unchanged' {
+        # Inject a previous result
+        $state.Runtime.LastWorkflowResult = [pscustomobject]@{
+            Kind = 'DeleteMarked'; DoneCount = 5; FailedCount = 0; FailedIds = @()
+        }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowEnd' })
+        $next.Runtime.LastWorkflowResult.DoneCount | Should -Be 5
+    }
+
+    # ── ReconcileMarks ────────────────────────────────────────────────────────
+
+    It 'ReconcileMarks removes IDs that are no longer in AllChangeIds' {
+        # Mark 101, 102, 999 (999 is stale — not in the new list)
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        [void]$state.Query.MarkedChangeIds.Add('999')  # simulate stale ID
+
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type         = 'ReconcileMarks'
+            AllChangeIds = @('101', '102', '103')
+        })
+
+        $next.Query.MarkedChangeIds | Should -Contain '101'
+        $next.Query.MarkedChangeIds | Should -Contain '102'
+        $next.Query.MarkedChangeIds | Should -Not -Contain '999'
+    }
+
+    It 'ReconcileMarks keeps valid IDs intact' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type         = 'ReconcileMarks'
+            AllChangeIds = @('101', '102', '103')
+        })
+
+        $next.Query.MarkedChangeIds | Should -Contain '101'
+    }
+
+    It 'ReconcileMarks with empty AllChangeIds removes all marks' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type         = 'ReconcileMarks'
+            AllChangeIds = @()
+        })
+
+        $next.Query.MarkedChangeIds.Count | Should -Be 0
+    }
+
+    It 'ReconcileMarks is a global action' {
+        (Test-IsBrowserGlobalAction -ActionType 'ReconcileMarks') | Should -BeTrue
+    }
+}

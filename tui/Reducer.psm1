@@ -11,6 +11,7 @@ $script:BrowserGlobalActionTypes = @(
     'OpenConfirmDialog', 'AcceptDialog', 'CancelDialog',
     'OpenMenu', 'MenuMoveUp', 'MenuMoveDown', 'MenuSwitchLeft', 'MenuSwitchRight', 'MenuSelect', 'MenuAccelerator',
     'WorkflowBegin', 'WorkflowItemComplete', 'WorkflowItemFailed', 'WorkflowEnd',
+    'ReconcileMarks',
     'LogCommandExecution'
 )
 
@@ -281,7 +282,8 @@ function New-BrowserState {
             LastError      = $null
             DetailChangeId = $null
             PendingRequest = $null
-            ActiveWorkflow = $null   # null | @{ Kind; TotalCount; DoneCount; FailedCount; FailedIds }
+            ActiveWorkflow       = $null   # null | @{ Kind; TotalCount; DoneCount; FailedCount; FailedIds }
+            LastWorkflowResult  = $null   # null | @{ Kind; DoneCount; FailedCount; FailedIds }
             ConfiguredMax  = 200
             NextCommandId            = 1
             CommandLog               = @()
@@ -1005,6 +1007,7 @@ function Invoke-ChangelistReducer {
         'WorkflowBegin' {
             $wfKind       = if (($Action.PSObject.Properties.Match('Kind')).Count -gt 0) { [string]$Action.Kind } else { '' }
             $wfTotalCount = if (($Action.PSObject.Properties.Match('TotalCount')).Count -gt 0) { [int]$Action.TotalCount } else { 0 }
+            $next.Runtime.LastWorkflowResult = $null
             $next.Runtime.ActiveWorkflow = [pscustomobject]@{
                 Kind        = $wfKind
                 TotalCount  = $wfTotalCount
@@ -1032,7 +1035,29 @@ function Invoke-ChangelistReducer {
             return $next
         }
         'WorkflowEnd' {
+            if ($null -ne $next.Runtime.ActiveWorkflow) {
+                $wf = $next.Runtime.ActiveWorkflow
+                $next.Runtime.LastWorkflowResult = [pscustomobject]@{
+                    Kind        = $wf.Kind
+                    DoneCount   = $wf.DoneCount
+                    FailedCount = $wf.FailedCount
+                    FailedIds   = $wf.FailedIds
+                }
+            }
             $next.Runtime.ActiveWorkflow = $null
+            return $next
+        }
+        'ReconcileMarks' {
+            if (($Action.PSObject.Properties.Match('AllChangeIds')).Count -gt 0) {
+                [string[]]$allIds = @($Action.AllChangeIds | ForEach-Object { [string]$_ })
+                $validSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                foreach ($id in $allIds) { [void]$validSet.Add($id) }
+                $markedProp = $next.Query.PSObject.Properties['MarkedChangeIds']
+                if ($null -ne $markedProp -and $null -ne $markedProp.Value) {
+                    $staleIds = @($markedProp.Value | Where-Object { -not $validSet.Contains([string]$_) })
+                    foreach ($staleId in $staleIds) { [void]$markedProp.Value.Remove($staleId) }
+                }
+            }
             return $next
         }
         'Quit' {

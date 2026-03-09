@@ -420,6 +420,10 @@ function Start-P4Browser {
                                 $fresh = Get-P4ChangelistEntries -Max $s.Runtime.ConfiguredMax
                                 $s.Data.AllChanges = @($fresh)
                                 $s.Runtime.LastError = $null
+                                $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{
+                                    Type         = 'ReconcileMarks'
+                                    AllChangeIds = @($fresh | ForEach-Object { [string]$_.Id })
+                                })
                                 return Update-BrowserDerivedState -State $s
                             }
                         }
@@ -437,6 +441,10 @@ function Start-P4Browser {
                                 $s.Data.SubmittedHasMore  = ($fresh.Count -ge 50)
                                 $s.Data.SubmittedOldestId = if ($fresh.Count -gt 0) { [int]($fresh | ForEach-Object { [int]$_.Id } | Sort-Object | Select-Object -First 1) } else { $null }
                                 $s.Runtime.LastError      = $null
+                                $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{
+                                    Type         = 'ReconcileMarks'
+                                    AllChangeIds = @($fresh | ForEach-Object { [string]$_.Id })
+                                })
                                 return Update-BrowserDerivedState -State $s
                             }
                         }

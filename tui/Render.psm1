@@ -814,8 +814,20 @@ function Build-StatusBarRow {
     }
     $markBadge = if ($markedCount -gt 0) { " $([char]0x25CF) Marked: $markedCount |" } else { '' }
 
+    $workflowBadge = ''
+    $lastResult    = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'LastWorkflowResult' -Default $null
+    if ($null -ne $lastResult) {
+        $wfDone   = [int](Get-PropertyValueOrDefault -Object $lastResult -Name 'DoneCount'   -Default 0)
+        $wfFailed = [int](Get-PropertyValueOrDefault -Object $lastResult -Name 'FailedCount' -Default 0)
+        if ($wfFailed -gt 0) {
+            $workflowBadge = " $([char]0x2717) $wfDone ok, $wfFailed failed |"
+        } else {
+            $workflowBadge = " $([char]0x2713) $wfDone done |"
+        }
+    }
+
     $expandHint  = if ((Get-PropertyValueOrDefault -Object $State.Ui -Name 'ExpandedChangelists' -Default $false)) { '[E] Collapse' } else { '[E] Expand' }
-    $statusText  = "$viewBadge Filtered: $filteredCount/$totalCount |$markBadge [F1] Help [1/2/3] View [Tab] Pane [Space] Filter [Enter] Describe $expandHint [F5] Reload [Q] Quit"
+    $statusText  = "$viewBadge Filtered: $filteredCount/$totalCount |$markBadge$workflowBadge [F1] Help [1/2/3] View [Tab] Pane [Space] Filter [Enter] Describe $expandHint [F5] Reload [Q] Quit"
     $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
 
     $segments = Write-ColorSegments -Segments @(@{

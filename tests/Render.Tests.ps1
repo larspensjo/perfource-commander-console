@@ -1217,3 +1217,123 @@ Describe 'Build-MenuOverlayRows and Apply-MenuOverlay' {
         ($out.Rows[0].Segments | ForEach-Object { $_.Text }) -join '' | Should -Match '^ +$'
     }
 }
+
+# ─── Phase 6: Workflow result badge in status bar ─────────────────────────────
+
+Describe 'Phase 6 — Workflow result badge in status bar' {
+    InModuleScope 'Render' {
+        BeforeAll {
+            Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+
+            function New-WorkflowResultState {
+                param($LastWorkflowResult = $null)
+
+                $SelectedFilters = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                $changes = @(
+                    [pscustomobject]@{
+                        Id = '101'; Title = 'One'; OpenedFileCount = 0; ShelvedFileCount = 0
+                        HasOpenedFiles = $false; HasShelvedFiles = $false; Captured = [datetime]'2025-01-10'
+                    }
+                )
+
+                $contentHeight = 19
+                $listHeight    = 9
+                $detailHeight  = $contentHeight - $listHeight - 1
+                $layout = [pscustomobject]@{
+                    Mode       = 'Normal'
+                    Width      = 200
+                    Height     = 20
+                    FilterPane = [pscustomobject]@{ X = 0; Y = 0; W = 24; H = $contentHeight }
+                    ListPane   = [pscustomobject]@{ X = 25; Y = 0; W = 55; H = $listHeight }
+                    DetailPane = [pscustomobject]@{ X = 25; Y = ($listHeight + 1); W = 55; H = $detailHeight }
+                    StatusPane = [pscustomobject]@{ X = 0; Y = $contentHeight; W = 200; H = 1 }
+                }
+
+                return [pscustomobject]@{
+                    Data    = [pscustomobject]@{ AllChanges = $changes; AllFilters = @() }
+                    Ui      = [pscustomobject]@{
+                        ActivePane             = 'Changelists'
+                        IsMaximized            = $false
+                        HideUnavailableFilters = $false
+                        ExpandedChangelists    = $false
+                        Layout                 = $layout
+                    }
+                    Query   = [pscustomobject]@{
+                        SelectedFilters = $SelectedFilters
+                        SearchText      = ''
+                        SearchMode      = 'None'
+                        SortMode        = 'Default'
+                    }
+                    Derived = [pscustomobject]@{
+                        VisibleChangeIds = @('101')
+                        VisibleFilters   = @()
+                    }
+                    Cursor  = [pscustomobject]@{
+                        FilterIndex     = 0
+                        FilterScrollTop = 0
+                        ChangeIndex     = 0
+                        ChangeScrollTop = 0
+                    }
+                    Runtime = [pscustomobject]@{
+                        IsRunning          = $true
+                        LastError          = $null
+                        LastWorkflowResult = $LastWorkflowResult
+                        CommandModal       = [pscustomobject]@{
+                            IsOpen = $false; IsBusy = $false; CurrentCommand = ''; History = @()
+                        }
+                    }
+                }
+            }
+        }
+
+        It 'status bar shows success badge with done count when workflow succeeded' {
+            $result = [pscustomobject]@{
+                Kind = 'DeleteMarked'; DoneCount = 3; FailedCount = 0; FailedIds = @()
+            }
+            $state = New-WorkflowResultState -LastWorkflowResult $result
+            $frame = Build-FrameFromState -State $state
+            $statusText = ($frame.Rows[-1].Segments | ForEach-Object { $_.Text }) -join ''
+            $statusText | Should -Match '3 done'
+        }
+
+        It 'status bar shows checkmark glyph (✓) in success badge' {
+            $result = [pscustomobject]@{
+                Kind = 'DeleteMarked'; DoneCount = 2; FailedCount = 0; FailedIds = @()
+            }
+            $state = New-WorkflowResultState -LastWorkflowResult $result
+            $frame = Build-FrameFromState -State $state
+            $statusText = ($frame.Rows[-1].Segments | ForEach-Object { $_.Text }) -join ''
+            $statusText | Should -Match ([char]0x2713)
+        }
+
+        It 'status bar shows failure badge with failed count when workflow had failures' {
+            $result = [pscustomobject]@{
+                Kind = 'DeleteMarked'; DoneCount = 1; FailedCount = 2; FailedIds = @('102', '103')
+            }
+            $state = New-WorkflowResultState -LastWorkflowResult $result
+            $frame = Build-FrameFromState -State $state
+            $statusText = ($frame.Rows[-1].Segments | ForEach-Object { $_.Text }) -join ''
+            $statusText | Should -Match '2 failed'
+        }
+
+        It 'status bar shows cross glyph (✗) in failure badge' {
+            $result = [pscustomobject]@{
+                Kind = 'DeleteMarked'; DoneCount = 0; FailedCount = 1; FailedIds = @('101')
+            }
+            $state = New-WorkflowResultState -LastWorkflowResult $result
+            $frame = Build-FrameFromState -State $state
+            $statusText = ($frame.Rows[-1].Segments | ForEach-Object { $_.Text }) -join ''
+            $statusText | Should -Match ([char]0x2717)
+        }
+
+        It 'status bar shows no workflow badge when LastWorkflowResult is null' {
+            $state = New-WorkflowResultState -LastWorkflowResult $null
+            $frame = Build-FrameFromState -State $state
+            $statusText = ($frame.Rows[-1].Segments | ForEach-Object { $_.Text }) -join ''
+            $statusText | Should -Not -Match 'done'
+            $statusText | Should -Not -Match 'failed'
+            $statusText | Should -Not -Match ([char]0x2713)
+            $statusText | Should -Not -Match ([char]0x2717)
+        }
+    }
+}

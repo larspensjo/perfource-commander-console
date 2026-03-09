@@ -42,6 +42,8 @@ function ConvertFrom-KeyInfoToAction {
         'D2' { return [pscustomobject]@{ Type = 'SwitchView'; View = 'Submitted' } }
         'D3' { return [pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' } }
         'L' { return [pscustomobject]@{ Type = 'LoadMore' } }
+        'Y' { return [pscustomobject]@{ Type = 'AcceptDialog' } }
+        'N' { return [pscustomobject]@{ Type = 'CancelDialog' } }
         # Files screen navigation
         'RightArrow' { return [pscustomobject]@{ Type = 'OpenFilesScreen' } }
         'O' { return [pscustomobject]@{ Type = 'OpenFilesScreen' } }

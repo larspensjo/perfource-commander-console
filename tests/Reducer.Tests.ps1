@@ -541,13 +541,13 @@ Describe 'Files screen reducer — Step 1' {
         $next.Ui.ScreenStack | Should -Be @('Changelists')
     }
 
-    It 'HideCommandModal closes help overlay first when overlay is open on Files screen' {
+    It 'HideCommandModal closes active overlay first when overlay is open on Files screen' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
         $state.Runtime.PendingRequest = $null
-        $state.Runtime.HelpOverlayOpen   = $true
+        $state.Ui.OverlayMode   = 'Help'
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'HideCommandModal' })
-        $next.Runtime.HelpOverlayOpen | Should -BeFalse
-        $next.Ui.ScreenStack          | Should -Be @('Changelists', 'Files')  # screen NOT closed
+        $next.Ui.OverlayMode    | Should -Be 'None'
+        $next.Ui.ScreenStack    | Should -Be @('Changelists', 'Files')  # screen NOT closed
     }
 
     It 'LeftArrow action (CloseFilesScreen) on Files screen pops to Changelists' {
@@ -684,8 +684,8 @@ Describe 'Files screen reducer — Step 1' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
         $state.Runtime.PendingRequest = $null
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleHelpOverlay' })
-        $next.Runtime.HelpOverlayOpen    | Should -BeTrue
-        $next.Ui.ScreenStack[-1]         | Should -Be 'Files'
+        $next.Ui.OverlayMode     | Should -Be 'Help'
+        $next.Ui.ScreenStack[-1] | Should -Be 'Files'
     }
 
     It 'LogCommandExecution on Files screen is forwarded into CommandLog' {
@@ -1111,5 +1111,99 @@ Describe 'Mark actions — MarkedChangeIds' {
         # Mutating original does not affect copy
         [void]$state.Query.MarkedChangeIds.Remove('101')
         $copy.Query.MarkedChangeIds.Contains('101') | Should -BeTrue
+    }
+}
+# ─── Overlay framework ────────────────────────────────────────────────────────
+
+Describe 'Overlay framework — OverlayMode and confirm dialog' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+    }
+
+    BeforeEach {
+        $changes = @(
+            [pscustomobject]@{ Id = '101'; Title = 'Alpha'; HasShelvedFiles = $false; HasOpenedFiles = $true; Captured = [datetime]'2025-01-01' },
+            [pscustomobject]@{ Id = '102'; Title = 'Beta';  HasShelvedFiles = $false; HasOpenedFiles = $true; Captured = [datetime]'2025-01-02' }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+    }
+
+    It 'New-BrowserState initialises OverlayMode to None' {
+        $state.Ui.OverlayMode    | Should -Be 'None'
+        $state.Ui.OverlayPayload | Should -BeNullOrEmpty
+    }
+
+    It 'ToggleHelpOverlay sets OverlayMode to Help' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleHelpOverlay' })
+        $next.Ui.OverlayMode | Should -Be 'Help'
+    }
+
+    It 'ToggleHelpOverlay again clears OverlayMode back to None' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleHelpOverlay' })
+        $state.Ui.OverlayMode | Should -Be 'Help'
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleHelpOverlay' })
+        $next.Ui.OverlayMode | Should -Be 'None'
+    }
+
+    It 'HideHelpOverlay clears OverlayMode to None' {
+        $state.Ui.OverlayMode = 'Help'
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'HideHelpOverlay' })
+        $next.Ui.OverlayMode | Should -Be 'None'
+    }
+
+    It 'OpenConfirmDialog sets OverlayMode to Confirm with payload' {
+        $payload = [pscustomobject]@{
+            Title            = 'Delete 2 changelists?'
+            SummaryLines     = @('Selected: 2 changelists')
+            ConsequenceLines = @('Only empty changelists can be deleted')
+            ConfirmLabel     = 'Y = confirm'
+            CancelLabel      = 'N / Esc = cancel'
+        }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenConfirmDialog'; Payload = $payload })
+        $next.Ui.OverlayMode               | Should -Be 'Confirm'
+        $next.Ui.OverlayPayload.Title      | Should -Be 'Delete 2 changelists?'
+        $next.Ui.OverlayPayload.SummaryLines[0] | Should -Be 'Selected: 2 changelists'
+    }
+
+    It 'AcceptDialog clears overlay' {
+        $state.Ui.OverlayMode    = 'Confirm'
+        $state.Ui.OverlayPayload = [pscustomobject]@{ Title = 'Test?'; SummaryLines = @() }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'AcceptDialog' })
+        $next.Ui.OverlayMode    | Should -Be 'None'
+        $next.Ui.OverlayPayload | Should -BeNullOrEmpty
+    }
+
+    It 'CancelDialog clears overlay' {
+        $state.Ui.OverlayMode    = 'Confirm'
+        $state.Ui.OverlayPayload = [pscustomobject]@{ Title = 'Test?'; SummaryLines = @() }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'CancelDialog' })
+        $next.Ui.OverlayMode    | Should -Be 'None'
+        $next.Ui.OverlayPayload | Should -BeNullOrEmpty
+    }
+
+    It 'HideCommandModal (Esc) closes active overlay on Changelists screen' {
+        $state.Ui.OverlayMode = 'Help'
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'HideCommandModal' })
+        $next.Ui.OverlayMode | Should -Be 'None'
+    }
+
+    It 'HideCommandModal (Esc) closes Confirm overlay on Files screen' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.PendingRequest = $null
+        $state.Ui.OverlayMode    = 'Confirm'
+        $state.Ui.OverlayPayload = [pscustomobject]@{ Title = 'Test?'; SummaryLines = @() }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'HideCommandModal' })
+        $next.Ui.OverlayMode    | Should -Be 'None'
+        $next.Ui.ScreenStack    | Should -Be @('Changelists', 'Files')   # screen NOT closed
+    }
+
+    It 'overlay-first routing: AcceptDialog closes overlay even when Files screen is active' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.PendingRequest = $null
+        $state.Ui.OverlayMode    = 'Confirm'
+        $state.Ui.OverlayPayload = [pscustomobject]@{ Title = 'Test?'; SummaryLines = @() }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'AcceptDialog' })
+        $next.Ui.OverlayMode | Should -Be 'None'
+        $next.Ui.ScreenStack | Should -Be @('Changelists', 'Files')   # screen still Files
     }
 }

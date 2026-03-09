@@ -134,4 +134,14 @@ Describe 'ConvertFrom-KeyInfoToAction' {
     It 'C maps to ClearMarks' {
         $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key C)
         $action.Type | Should -Be 'ClearMarks'
+    }
+
+    It 'Y maps to AcceptDialog' {
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key Y)
+        $action.Type | Should -Be 'AcceptDialog'
+    }
+
+    It 'N maps to CancelDialog' {
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key N)
+        $action.Type | Should -Be 'CancelDialog'
     }}

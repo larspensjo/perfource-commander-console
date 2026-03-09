@@ -1018,6 +1018,135 @@ function Apply-HelpOverlay {
     }
 }
 
+function Build-ConfirmDialogRows {
+    <#
+    .SYNOPSIS
+        Builds the row+segment content for a Yes/No confirmation dialog.
+        Returns rows as arrays of segment hashtables, using the same box-drawing
+        helpers as other overlay builders.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][int]$Width,
+        $Payload   # OverlayPayload from state; may be $null for an empty dialog
+    )
+
+    $BORDER  = 'Yellow'
+    $TITLE   = 'Yellow'
+    $TEXT    = 'White'
+    $DIM     = 'Gray'
+    $FOOTER  = 'Cyan'
+
+    # Extract payload fields with safe defaults
+    $titleText    = if ($null -ne $Payload -and ($Payload.PSObject.Properties.Match('Title')).Count -gt 0)        { [string]$Payload.Title }        else { 'Confirm?' }
+    $confirmLabel = if ($null -ne $Payload -and ($Payload.PSObject.Properties.Match('ConfirmLabel')).Count -gt 0) { [string]$Payload.ConfirmLabel } else { 'Y = confirm' }
+    $cancelLabel  = if ($null -ne $Payload -and ($Payload.PSObject.Properties.Match('CancelLabel')).Count -gt 0)  { [string]$Payload.CancelLabel }  else { 'N / Esc = cancel' }
+
+    # Arrays: declare typed so strict mode can't collapse empty results to $null
+    [object[]]$summaryLines     = @()
+    [object[]]$consequenceLines = @()
+    if ($null -ne $Payload -and ($Payload.PSObject.Properties.Match('SummaryLines')).Count -gt 0     -and $null -ne $Payload.SummaryLines)     { $summaryLines     = @($Payload.SummaryLines)     }
+    if ($null -ne $Payload -and ($Payload.PSObject.Properties.Match('ConsequenceLines')).Count -gt 0 -and $null -ne $Payload.ConsequenceLines) { $consequenceLines = @($Payload.ConsequenceLines) }
+
+    $innerWidth = [Math]::Max(2, $Width - 2)
+
+    # Helpers that produce a single segment of exactly innerWidth chars
+    $padLine = {
+        param([string]$text, [string]$color)
+        $padded = if ($text.Length -ge $innerWidth) { $text.Substring(0, $innerWidth) } else { $text + (' ' * ($innerWidth - $text.Length)) }
+        return @{ Text = $padded; Color = $color }
+    }
+    $centerLine = {
+        param([string]$text, [string]$color)
+        if ($text.Length -ge $innerWidth) { return @{ Text = $text.Substring(0, $innerWidth); Color = $color } }
+        $l = [Math]::Floor(($innerWidth - $text.Length) / 2)
+        $r = $innerWidth - $text.Length - $l
+        return @{ Text = (' ' * $l) + $text + (' ' * $r); Color = $color }
+    }
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+
+    # Top border with title
+    $rows.Add((Build-BoxTopSegments -Title "! $titleText" -Width $Width -BorderColor $BORDER -TitleColor $TITLE))
+    # Empty row
+    $rows.Add((Build-BorderedRowSegments -InnerSegments @((& $padLine '' $TEXT)) -Width $Width -BorderColor $BORDER))
+
+    # Summary lines
+    foreach ($line in $summaryLines) {
+        $rows.Add((Build-BorderedRowSegments -InnerSegments @((& $padLine "  $line" $TEXT)) -Width $Width -BorderColor $BORDER))
+    }
+
+    # Consequence lines
+    if ($consequenceLines.Count -gt 0) {
+        $rows.Add((Build-BorderedRowSegments -InnerSegments @((& $padLine '' $TEXT)) -Width $Width -BorderColor $BORDER))
+        foreach ($line in $consequenceLines) {
+            $rows.Add((Build-BorderedRowSegments -InnerSegments @((& $padLine "  $line" $DIM)) -Width $Width -BorderColor $BORDER))
+        }
+    }
+
+    # Empty row before footer
+    $rows.Add((Build-BorderedRowSegments -InnerSegments @((& $padLine '' $TEXT)) -Width $Width -BorderColor $BORDER))
+
+    # Footer: centered confirm + cancel labels
+    $footerText = "$confirmLabel   $cancelLabel"
+    $rows.Add((Build-BorderedRowSegments -InnerSegments @((& $centerLine $footerText $FOOTER)) -Width $Width -BorderColor $BORDER))
+
+    # Bottom border
+    $rows.Add((Build-BoxBottomSegments -Width $Width -BorderColor $BORDER))
+
+    foreach ($row in $rows) {
+        Write-Output -NoEnumerate $row
+    }
+}
+
+function Apply-ConfirmDialogOverlay {
+    <#
+    .SYNOPSIS
+        Overlays the confirmation dialog onto the frame.  Centers it both
+        horizontally and vertically (above the status bar row).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Frame,
+        $Payload   # OverlayPayload; may be $null
+    )
+
+    $width      = $Frame.Width
+    $height     = $Frame.Height
+    $modalWidth = [Math]::Max(20, [Math]::Min(52, $width - 4))
+    $leftPad    = [Math]::Max(0, [Math]::Floor(($width - $modalWidth) / 2))
+    $rightPad   = $width - $leftPad - $modalWidth
+
+    $dialogRows = @(Build-ConfirmDialogRows -Width $modalWidth -Payload $Payload)
+
+    # Center vertically (status bar is the last row, don't overlap it)
+    $modalStart = [Math]::Max(0, [Math]::Floor(($height - 1 - $dialogRows.Count) / 2))
+
+    $newRows = [object[]]::new($Frame.Rows.Count)
+    for ($i = 0; $i -lt $Frame.Rows.Count; $i++) { $newRows[$i] = $Frame.Rows[$i] }
+
+    for ($i = 0; $i -lt $dialogRows.Count; $i++) {
+        $frameRowIndex = $modalStart + $i
+        if ($frameRowIndex -ge 0 -and $frameRowIndex -lt ($height - 1)) {
+            $leftSeg  = @{ Text = (' ' * $leftPad);  Color = 'Black'; BackgroundColor = '' }
+            $rightSeg = @{ Text = (' ' * $rightPad); Color = 'Black'; BackgroundColor = '' }
+            $segs     = @($leftSeg) + @($dialogRows[$i]) + @($rightSeg)
+            $segs     = Merge-AdjacentSegments -Segments $segs
+            $segs     = Resize-SegmentRow -Segments $segs -Width $width
+            $segs     = Merge-AdjacentSegments -Segments $segs
+            $newRows[$frameRowIndex] = [pscustomobject]@{
+                Y         = $frameRowIndex
+                Segments  = $segs
+                Signature = Get-FrameRowSignature -Segments $segs
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Width  = $Frame.Width
+        Height = $Frame.Height
+        Rows   = $newRows
+    }
+}
+
 function Apply-ModalOverlay {
     param(
         [Parameter(Mandatory = $true)]$Frame,
@@ -2025,11 +2154,15 @@ function Render-BrowserState {
     # produce false positives.
     $null = Test-FrameIntegrity -Frame $nextFrame -Layout $layout
 
-    $helpOverlayOpen = [bool](Get-PropertyValueOrDefault -Object $State.Runtime -Name 'HelpOverlayOpen' -Default $false)
-    $commandModal = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'ModalPrompt' -Default $null
-    # Apply help overlay first, then modal prompt on top (modal prompt takes precedence)
-    if ($helpOverlayOpen) {
+    $overlayMode    = [string](Get-PropertyValueOrDefault -Object $State.Ui -Name 'OverlayMode' -Default 'None')
+    $overlayPayload = Get-PropertyValueOrDefault -Object $State.Ui -Name 'OverlayPayload' -Default $null
+    $commandModal   = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'ModalPrompt' -Default $null
+    # Apply overlays in precedence order: help (lowest) → confirm → command modal (highest)
+    if ($overlayMode -eq 'Help') {
         $nextFrame = Apply-HelpOverlay -Frame $nextFrame -IsOpen $true
+    }
+    if ($overlayMode -eq 'Confirm') {
+        $nextFrame = Apply-ConfirmDialogOverlay -Frame $nextFrame -Payload $overlayPayload
     }
     if ($null -ne $commandModal -and [bool](Get-PropertyValueOrDefault -Object $commandModal -Name 'IsOpen' -Default $false)) {
         $nextFrame = Apply-ModalOverlay -Frame $nextFrame -ModalPrompt $commandModal
@@ -2042,4 +2175,4 @@ function Render-BrowserState {
     }
 }
 
-Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Get-ActiveChangesList, Build-FilesScreenFrame, Build-FilesStatusBarRow, Build-CommandLogFrame, Build-CommandOutputFrame, Test-FrameIntegrity, Enable-FrameIntegrityTest
+Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Build-ConfirmDialogRows, Apply-ConfirmDialogOverlay, Get-ActiveChangesList, Build-FilesScreenFrame, Build-FilesStatusBarRow, Build-CommandLogFrame, Build-CommandOutputFrame, Test-FrameIntegrity, Enable-FrameIntegrityTest

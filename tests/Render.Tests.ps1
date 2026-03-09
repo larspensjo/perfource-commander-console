@@ -1028,3 +1028,89 @@ Describe 'Files screen rendering' {
         $allText | Should -Match 'Source: Submitted'
     }
 }
+# ─── Confirm dialog overlay ───────────────────────────────────────────────────
+
+Describe 'Build-ConfirmDialogRows and Apply-ConfirmDialogOverlay' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Render.psm1') -Force
+    }
+
+    It 'Build-ConfirmDialogRows includes title in top row' {
+        $payload = [pscustomobject]@{
+            Title            = 'Delete 3 changelists?'
+            SummaryLines     = @('Selected: 3')
+            ConsequenceLines = @()
+            ConfirmLabel     = 'Y = confirm'
+            CancelLabel      = 'N / Esc = cancel'
+        }
+        $rows = @(Build-ConfirmDialogRows -Width 50 -Payload $payload)
+        $rows.Count | Should -BeGreaterThan 3
+
+        # Top border row should contain the title text
+        $topText = ($rows[0] | ForEach-Object { $_.Text }) -join ''
+        $topText | Should -Match 'Delete 3 changelists'
+    }
+
+    It 'Build-ConfirmDialogRows includes summary line' {
+        $payload = [pscustomobject]@{
+            Title            = 'Test?'
+            SummaryLines     = @('Selected: 7 changelists')
+            ConsequenceLines = @()
+            ConfirmLabel     = 'Y = confirm'
+            CancelLabel      = 'N / Esc = cancel'
+        }
+        $rows = @(Build-ConfirmDialogRows -Width 50 -Payload $payload)
+        $allText = ($rows | ForEach-Object { ($_ | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Match 'Selected: 7 changelists'
+    }
+
+    It 'Build-ConfirmDialogRows includes footer with confirm and cancel labels' {
+        $payload = [pscustomobject]@{
+            Title            = 'Test?'
+            SummaryLines     = @()
+            ConsequenceLines = @()
+            ConfirmLabel     = 'Y = confirm'
+            CancelLabel      = 'N / Esc = cancel'
+        }
+        $rows = @(Build-ConfirmDialogRows -Width 50 -Payload $payload)
+        $allText = ($rows | ForEach-Object { ($_ | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Match 'Y = confirm'
+        $allText | Should -Match 'N / Esc = cancel'
+    }
+
+    It 'Build-ConfirmDialogRows uses defaults when payload is null' {
+        $rows = @(Build-ConfirmDialogRows -Width 50 -Payload $null)
+        $rows.Count | Should -BeGreaterThan 2
+        $allText = ($rows | ForEach-Object { ($_ | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Match 'Confirm'
+    }
+
+    It 'Apply-ConfirmDialogOverlay overlays rows onto an existing frame' {
+        # Build a minimal frame by hand
+        $width  = 80
+        $height = 20
+        $blankRow = {
+            param([int]$y, [int]$w)
+            [pscustomobject]@{
+                Y        = $y
+                Segments = @(@{ Text = (' ' * $w); Color = 'White'; BackgroundColor = '' })
+                Signature = ''
+            }
+        }
+        $rows = 0..($height - 1) | ForEach-Object { & $blankRow $_ $width }
+        $frame = [pscustomobject]@{ Width = $width; Height = $height; Rows = [object[]]$rows }
+
+        $payload = [pscustomobject]@{
+            Title            = 'Confirm delete?'
+            SummaryLines     = @('Selected: 2')
+            ConsequenceLines = @()
+            ConfirmLabel     = 'Y = confirm'
+            CancelLabel      = 'N / Esc = cancel'
+        }
+
+        $outFrame = Apply-ConfirmDialogOverlay -Frame $frame -Payload $payload
+        $allText  = ($outFrame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Match 'Confirm delete'
+        $allText | Should -Match 'Selected: 2'
+    }
+}

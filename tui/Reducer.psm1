@@ -8,6 +8,7 @@ $script:BrowserGlobalActionTypes = @(
     'SwitchView',
     'Quit', 'Resize',
     'ToggleHelpOverlay', 'HideHelpOverlay',
+    'OpenConfirmDialog', 'AcceptDialog', 'CancelDialog',
     'LogCommandExecution'
 )
 
@@ -155,6 +156,8 @@ function New-BrowserState {
             ViewMode               = 'Pending'
             Layout                 = Get-BrowserLayout -Width $InitialWidth -Height $InitialHeight
             ExpandedCommands       = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            OverlayMode            = 'None'   # 'None' | 'Help' | 'Confirm' | 'Menu'
+            OverlayPayload         = $null    # typed payload for the active overlay
         }
         Query = [pscustomobject]@{
             SelectedFilters  = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -195,7 +198,6 @@ function New-BrowserState {
             DetailChangeId = $null
             PendingRequest = $null
             ConfiguredMax  = 200
-            HelpOverlayOpen          = $false
             NextCommandId            = 1
             CommandLog               = @()
             CommandOutputCommandId   = $null
@@ -641,9 +643,11 @@ function Invoke-ChangelistReducer {
             return $next
         }
         'HideCommandModal' {
-            # Escape: close help overlay first; then close modal prompt on second press
-            if ($next.Runtime.HelpOverlayOpen) {
-                $next.Runtime.HelpOverlayOpen = $false
+            # Escape: close any active overlay first; then close modal prompt on second press
+            $overlayMode = if (($next.Ui.PSObject.Properties.Match('OverlayMode')).Count -gt 0) { [string]$next.Ui.OverlayMode } else { 'None' }
+            if ($overlayMode -ne 'None') {
+                $next.Ui.OverlayMode    = 'None'
+                $next.Ui.OverlayPayload = $null
                 return $next
             }
             if (-not $next.Runtime.ModalPrompt.IsBusy) {
@@ -652,11 +656,35 @@ function Invoke-ChangelistReducer {
             return $next
         }
         'ToggleHelpOverlay' {
-            $next.Runtime.HelpOverlayOpen = -not $next.Runtime.HelpOverlayOpen
+            $overlayMode = if (($next.Ui.PSObject.Properties.Match('OverlayMode')).Count -gt 0) { [string]$next.Ui.OverlayMode } else { 'None' }
+            if ($overlayMode -eq 'Help') {
+                $next.Ui.OverlayMode = 'None'
+            } else {
+                $next.Ui.OverlayMode    = 'Help'
+                $next.Ui.OverlayPayload = $null
+            }
             return $next
         }
         'HideHelpOverlay' {
-            $next.Runtime.HelpOverlayOpen = $false
+            $next.Ui.OverlayMode    = 'None'
+            $next.Ui.OverlayPayload = $null
+            return $next
+        }
+        'OpenConfirmDialog' {
+            $payloadProp = $Action.PSObject.Properties['Payload']
+            $next.Ui.OverlayMode    = 'Confirm'
+            $next.Ui.OverlayPayload = if ($null -ne $payloadProp) { $payloadProp.Value } else { $null }
+            return $next
+        }
+        'AcceptDialog' {
+            # Phase 5 will add workflow dispatch here based on OverlayPayload.WorkflowPayload
+            $next.Ui.OverlayMode    = 'None'
+            $next.Ui.OverlayPayload = $null
+            return $next
+        }
+        'CancelDialog' {
+            $next.Ui.OverlayMode    = 'None'
+            $next.Ui.OverlayPayload = $null
             return $next
         }
         'Quit' {
@@ -1104,9 +1132,11 @@ function Invoke-FilesReducer {
 
     switch ($Action.Type) {
         'HideCommandModal' {
-            # Esc priority: help overlay → command modal → close files screen.
-            if ($next.Runtime.HelpOverlayOpen) {
-                $next.Runtime.HelpOverlayOpen = $false
+            # Esc priority: active overlay (help/confirm) → command modal → close files screen.
+            $overlayMode = if (($next.Ui.PSObject.Properties.Match('OverlayMode')).Count -gt 0) { [string]$next.Ui.OverlayMode } else { 'None' }
+            if ($overlayMode -ne 'None') {
+                $next.Ui.OverlayMode    = 'None'
+                $next.Ui.OverlayPayload = $null
                 return $next
             }
             if ($next.Runtime.ModalPrompt.IsOpen -and -not $next.Runtime.ModalPrompt.IsBusy) {
@@ -1234,8 +1264,11 @@ function Invoke-CommandOutputReducer {
 
     switch ($Action.Type) {
         'HideCommandModal' {
-            if ($next.Runtime.HelpOverlayOpen) {
-                $next.Runtime.HelpOverlayOpen = $false
+            # Esc priority: active overlay (help/confirm) → command modal → close screen.
+            $overlayMode = if (($next.Ui.PSObject.Properties.Match('OverlayMode')).Count -gt 0) { [string]$next.Ui.OverlayMode } else { 'None' }
+            if ($overlayMode -ne 'None') {
+                $next.Ui.OverlayMode    = 'None'
+                $next.Ui.OverlayPayload = $null
                 return $next
             }
             if ($next.Runtime.ModalPrompt.IsOpen -and -not $next.Runtime.ModalPrompt.IsBusy) {
@@ -1302,12 +1335,21 @@ function Invoke-BrowserReducer {
     .SYNOPSIS
         Top-level reducer router.  Dispatches to Invoke-ChangelistReducer,
         Invoke-FilesReducer, or Invoke-CommandOutputReducer based on the
-        active screen in Ui.ScreenStack.
+        active screen in Ui.ScreenStack.  When an overlay is active, all
+        input is routed through Invoke-ChangelistReducer so overlay actions
+        are handled regardless of the active screen.
     #>
     param(
         [Parameter(Mandatory = $true)]$State,
         [Parameter(Mandatory = $true)]$Action
     )
+
+    # Overlay-first routing: when an overlay is active route everything through
+    # the changelist reducer (which handles all overlay actions as global actions).
+    $overlayMode = $State.Ui.PSObject.Properties['OverlayMode']?.Value
+    if ($null -ne $overlayMode -and [string]$overlayMode -ne 'None') {
+        return Invoke-ChangelistReducer -State $State -Action $Action
+    }
 
     # Use PSObject.Properties index accessor — returns $null when property absent (safe for legacy test states).
     $screenStack  = $State.Ui.PSObject.Properties['ScreenStack']?.Value

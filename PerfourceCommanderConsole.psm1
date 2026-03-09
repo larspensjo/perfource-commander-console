@@ -33,6 +33,96 @@ function Register-WorkflowKind {
     $script:WorkflowRegistry[$Kind] = $Execute
 }
 
+# ── Built-in workflow executors ───────────────────────────────────────────────
+
+Register-WorkflowKind -Kind 'DeleteMarked' -Execute {
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$State,
+        [Parameter(Mandatory = $true)][pscustomobject]$Request
+    )
+
+    [string[]]$changeIds = @($Request.ChangeIds)
+    $state = Invoke-BrowserReducer -State $State -Action ([pscustomobject]@{
+        Type = 'WorkflowBegin'; Kind = 'DeleteMarked'; TotalCount = $changeIds.Count
+    })
+
+    $successIds = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($changeId in $changeIds) {
+        $changeNum = [int]$changeId
+        try {
+            Remove-P4Changelist -Change $changeNum
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowItemComplete' })
+            [void]$successIds.Add($changeId)
+        } catch {
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                Type = 'WorkflowItemFailed'; ChangeId = $changeId
+            })
+        }
+    }
+
+    # Remove successfully deleted IDs from the mark set immediately (before reload)
+    foreach ($id in $successIds) {
+        [void]$state.Query.MarkedChangeIds.Remove($id)
+    }
+
+    $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowEnd' })
+
+    # Trigger a fresh reload so AllChanges reflects reality
+    $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Reload' })
+
+    return $state
+}
+
+Register-WorkflowKind -Kind 'MoveMarkedFiles' -Execute {
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$State,
+        [Parameter(Mandatory = $true)][pscustomobject]$Request
+    )
+
+    [string[]]$changeIds  = @($Request.ChangeIds)
+    [string]$targetId     = [string]$Request.TargetChangeId
+    [int]$targetChange    = [int]$targetId
+
+    $state = Invoke-BrowserReducer -State $State -Action ([pscustomobject]@{
+        Type = 'WorkflowBegin'; Kind = 'MoveMarkedFiles'; TotalCount = $changeIds.Count
+    })
+
+    $successIds = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($changeId in $changeIds) {
+        # Skip source == target to avoid a no-op p4 reopen call
+        if ($changeId -eq $targetId) {
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowItemComplete' })
+            [void]$successIds.Add($changeId)
+            continue
+        }
+
+        $sourceChange = [int]$changeId
+        try {
+            Invoke-P4ReopenFiles -SourceChange $sourceChange -TargetChange $targetChange | Out-Null
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowItemComplete' })
+            [void]$successIds.Add($changeId)
+        } catch {
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                Type = 'WorkflowItemFailed'; ChangeId = $changeId
+            })
+        }
+    }
+
+    # Unmark successfully processed source changelists
+    foreach ($id in $successIds) {
+        [void]$state.Query.MarkedChangeIds.Remove($id)
+    }
+
+    $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowEnd' })
+
+    # Trigger reload so HasOpenedFiles and counts are re-fetched
+    $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Reload' })
+
+    return $state
+}
+
 function Get-BrowserConsoleSize {
     [pscustomobject]@{
         Width  = [Console]::WindowWidth

@@ -675,4 +675,36 @@ function Get-P4SubmittedChangelistEntries {
     }
 }
 
-Export-ModuleMember -Function Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Remove-P4Changelist, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles
+function Invoke-P4ReopenFiles {
+    <#
+    .SYNOPSIS
+        Moves all opened files from a source pending changelist to a target pending changelist.
+    .DESCRIPTION
+        Fetches all opened files in SourceChange using Get-P4OpenedFiles, then runs
+        'p4 reopen -c <TargetChange> <depotPaths...>' to reassign them.
+        Returns a hashtable with MovedCount (int) and Files (string[]).
+        If the source changelist has no opened files, returns MovedCount=0 immediately
+        without calling p4 reopen.
+    .PARAMETER SourceChange
+        The changelist number whose opened files should be moved.
+    .PARAMETER TargetChange
+        The destination changelist number.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][int]$SourceChange,
+        [Parameter(Mandatory)][int]$TargetChange
+    )
+
+    $files = @(Get-P4OpenedFiles -Change $SourceChange)
+    if ($files.Count -eq 0) {
+        return @{ MovedCount = 0; Files = @() }
+    }
+
+    [string[]]$depotPaths = @($files | ForEach-Object { [string]$_.DepotPath })
+    Invoke-P4 -P4Args (@('reopen', '-c', "$TargetChange") + $depotPaths) | Out-Null
+
+    return @{ MovedCount = $depotPaths.Count; Files = $depotPaths }
+}
+
+Export-ModuleMember -Function Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Remove-P4Changelist, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles

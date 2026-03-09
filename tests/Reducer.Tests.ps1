@@ -1474,3 +1474,166 @@ Describe 'Workflow framework actions' {
         (Test-IsBrowserGlobalAction -ActionType 'WorkflowEnd')          | Should -BeTrue
     }
 }
+
+# ─── Phase 5: First workflows ─────────────────────────────────────────────────
+
+Describe 'Phase 5 — DeleteMarked and MoveMarkedFiles menu actions' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+    }
+
+    BeforeEach {
+        $changes = @(
+            [pscustomobject]@{ Id = '101'; Title = 'One';   HasShelvedFiles = $false; HasOpenedFiles = $true;  Captured = [datetime]'2026-02-10' },
+            [pscustomobject]@{ Id = '102'; Title = 'Two';   HasShelvedFiles = $false; HasOpenedFiles = $true;  Captured = [datetime]'2026-02-09' },
+            [pscustomobject]@{ Id = '103'; Title = 'Three'; HasShelvedFiles = $false; HasOpenedFiles = $false; Captured = [datetime]'2026-02-08' }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+    }
+
+    # ── File menu now has 6 navigable items (MoveMarkedFiles added) ────────────
+
+    It 'File menu has 6 navigable items including MoveMarkedFiles' {
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $navCount = Get-MenuNavigableCount -ComputedItems $items
+        $navCount | Should -Be 6
+    }
+
+    # ── DeleteMarked ─────────────────────────────────────────────────────────
+
+    It 'MenuSelect DeleteMarked opens confirm dialog when marks exist' {
+        # Mark 101 and 102
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+
+        # Open File menu and select DeleteMarked (nav index 0)
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 0; MenuItems = $menuItems }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
+
+        $next.Ui.OverlayMode                          | Should -Be 'Confirm'
+        $next.Ui.OverlayPayload.OnAccept.WorkflowKind | Should -Be 'DeleteMarked'
+        $next.Ui.OverlayPayload.OnAccept.Kind         | Should -Be 'ExecuteWorkflow'
+    }
+
+    It 'DeleteMarked confirm dialog OnAccept.ChangeIds contains all marked IDs' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 0; MenuItems = $menuItems }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
+
+        @($next.Ui.OverlayPayload.OnAccept.ChangeIds) | Should -Contain '101'
+        @($next.Ui.OverlayPayload.OnAccept.ChangeIds) | Should -Contain '102'
+    }
+
+    It 'DeleteMarked menu item is disabled when no marks exist' {
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $dmItem = $items | Where-Object { [string]$_.Id -eq 'DeleteMarked' } | Select-Object -First 1
+        $dmItem.IsEnabled | Should -Be $false
+    }
+
+    It 'DeleteMarked menu item is enabled when marks exist' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $dmItem = $items | Where-Object { [string]$_.Id -eq 'DeleteMarked' } | Select-Object -First 1
+        $dmItem.IsEnabled | Should -Be $true
+    }
+
+    It 'DeleteMarked menu item is disabled in Submitted view even with marks' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'Submitted' })
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $dmItem = $items | Where-Object { [string]$_.Id -eq 'DeleteMarked' } | Select-Object -First 1
+        $dmItem.IsEnabled | Should -Be $false
+    }
+
+    # ── MoveMarkedFiles ───────────────────────────────────────────────────────
+
+    It 'MenuSelect MoveMarkedFiles opens confirm dialog when marks and focus exist' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+
+        # Advance focus to CL 102 to set a distinct target
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        # MoveMarkedFiles is nav index 1
+        [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 1; MenuItems = $menuItems }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
+
+        $next.Ui.OverlayMode                          | Should -Be 'Confirm'
+        $next.Ui.OverlayPayload.OnAccept.WorkflowKind | Should -Be 'MoveMarkedFiles'
+        $next.Ui.OverlayPayload.OnAccept.Kind         | Should -Be 'ExecuteWorkflow'
+    }
+
+    It 'MoveMarkedFiles confirm dialog OnAccept.TargetChangeId is the focused CL' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        # Focus is now on CL 101 (index 0)
+
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 1; MenuItems = $menuItems }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
+
+        $next.Ui.OverlayPayload.OnAccept.TargetChangeId | Should -Be '101'
+    }
+
+    It 'MoveMarkedFiles confirm dialog OnAccept.ChangeIds contains marked IDs' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 1; MenuItems = $menuItems }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
+
+        @($next.Ui.OverlayPayload.OnAccept.ChangeIds) | Should -Contain '101'
+        @($next.Ui.OverlayPayload.OnAccept.ChangeIds) | Should -Contain '102'
+    }
+
+    It 'MoveMarkedFiles menu item is disabled when no marks exist' {
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $mmItem = $items | Where-Object { [string]$_.Id -eq 'MoveMarkedFiles' } | Select-Object -First 1
+        $mmItem.IsEnabled | Should -Be $false
+    }
+
+    It 'MoveMarkedFiles menu item is enabled when marks and visible CLs exist' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $mmItem = $items | Where-Object { [string]$_.Id -eq 'MoveMarkedFiles' } | Select-Object -First 1
+        $mmItem.IsEnabled | Should -Be $true
+    }
+
+    It 'MoveMarkedFiles accelerator M opens the confirm dialog' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuAccelerator'; Key = 'M' })
+        $next.Ui.OverlayMode                          | Should -Be 'Confirm'
+        $next.Ui.OverlayPayload.OnAccept.WorkflowKind | Should -Be 'MoveMarkedFiles'
+    }
+
+    It 'DeleteMarked accelerator D opens the confirm dialog' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuAccelerator'; Key = 'D' })
+        $next.Ui.OverlayMode                          | Should -Be 'Confirm'
+        $next.Ui.OverlayPayload.OnAccept.WorkflowKind | Should -Be 'DeleteMarked'
+    }
+}

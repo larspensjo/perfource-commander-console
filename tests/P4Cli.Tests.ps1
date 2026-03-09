@@ -723,3 +723,52 @@ Describe 'P4 observer' {
             Should -Not -Throw
     }
 }
+
+Describe 'Invoke-P4ReopenFiles' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+        Import-Module (Join-Path $PSScriptRoot '..\p4\Models.psm1') -Force
+    }
+
+    It 'returns MovedCount zero and empty Files when source changelist has no opened files' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            throw "p4 failed (exit 1).`nSTDOUT: //depot/... - file(s) not opened on this client."
+        }
+
+        $result = Invoke-P4ReopenFiles -SourceChange 101 -TargetChange 200
+        $result.MovedCount | Should -Be 0
+        $result.Files.Count | Should -Be 0
+    }
+
+    It 'calls p4 reopen with target change and all depot paths' {
+        $capturedArgs = $null
+        Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter { $P4Args[0] -eq 'opened' } {
+            return @(
+                [pscustomobject]@{ depotFile = '//depot/a.cs'; action = 'edit'; change = '101'; type = 'text' },
+                [pscustomobject]@{ depotFile = '//depot/b.cs'; action = 'add';  change = '101'; type = 'text' }
+            )
+        }
+        Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter { $P4Args[0] -eq 'reopen' } {
+            param($P4Args)
+            # just capture; no output needed (returns $null → Out-Null in caller)
+        }
+
+        $result = Invoke-P4ReopenFiles -SourceChange 101 -TargetChange 200
+        $result.MovedCount  | Should -Be 2
+        $result.Files.Count | Should -Be 2
+        $result.Files       | Should -Contain '//depot/a.cs'
+        $result.Files       | Should -Contain '//depot/b.cs'
+        Should -Invoke Invoke-P4 -ModuleName P4Cli -ParameterFilter { $P4Args[0] -eq 'reopen' } -Times 1
+    }
+
+    It 'returns MovedCount zero when Invoke-P4 returns no records for opened' {
+        Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter { $P4Args[0] -eq 'opened' } {
+            return @()
+        }
+
+        $result = Invoke-P4ReopenFiles -SourceChange 55 -TargetChange 66
+        $result.MovedCount | Should -Be 0
+        # reopen should NOT be called since there are no files
+        Should -Invoke Invoke-P4 -ModuleName P4Cli -ParameterFilter { $P4Args[0] -eq 'reopen' } -Times 0
+    }
+}

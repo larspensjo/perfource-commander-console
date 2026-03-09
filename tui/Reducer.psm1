@@ -27,8 +27,23 @@ $script:MenuDefinitions = @{
             IsSeparator = $false
             IsEnabled   = { param($s)
                 $mcProp = $s.Query.PSObject.Properties['MarkedChangeIds']
-                ($null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0) -and
-                ([string](if ($s.Ui.PSObject.Properties['ViewMode']) { $s.Ui.ViewMode } else { 'Pending' }) -ne 'Submitted')
+                $viewMode = if ($s.Ui.PSObject.Properties['ViewMode']) { [string]$s.Ui.ViewMode } else { 'Pending' }
+                ($null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0) -and ($viewMode -ne 'Submitted')
+            }
+        },
+        [pscustomobject]@{
+            Id          = 'MoveMarkedFiles'
+            Label       = 'Move files from marked to focused'
+            Accelerator = 'M'
+            IsSeparator = $false
+            IsEnabled   = { param($s)
+                $mcProp  = $s.Query.PSObject.Properties['MarkedChangeIds']
+                $hasMarks = $null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0
+                $vcProp   = $s.Derived.PSObject.Properties['VisibleChangeIds']
+                $hasFocus = $null -ne $vcProp -and $null -ne $vcProp.Value -and $vcProp.Value.Count -gt 0
+                $viewMode = if ($s.Ui.PSObject.Properties['ViewMode']) { [string]$s.Ui.ViewMode } else { 'Pending' }
+                $isPending = $viewMode -ne 'Submitted'
+                $hasMarks -and $hasFocus -and $isPending
             }
         },
         [pscustomobject]@{ Id = '__FileSep1__'; Label = ''; Accelerator = ''; IsSeparator = $true;  IsEnabled = { $true } },
@@ -63,14 +78,14 @@ $script:MenuDefinitions = @{
             Label      = 'Pending changelists'
             Accelerator = 'P'
             IsSeparator = $false
-            IsEnabled   = { param($s) [string](if ($s.Ui.PSObject.Properties['ViewMode']) { $s.Ui.ViewMode } else { 'Pending' }) -ne 'Pending' }
+            IsEnabled   = { param($s) $vm = if ($s.Ui.PSObject.Properties['ViewMode']) { [string]$s.Ui.ViewMode } else { 'Pending' }; $vm -ne 'Pending' }
         },
         [pscustomobject]@{
             Id         = 'ViewSubmitted'
             Label      = 'Submitted changelists'
             Accelerator = 'S'
             IsSeparator = $false
-            IsEnabled   = { param($s) [string](if ($s.Ui.PSObject.Properties['ViewMode']) { $s.Ui.ViewMode } else { 'Pending' }) -ne 'Submitted' }
+            IsEnabled   = { param($s) $vm = if ($s.Ui.PSObject.Properties['ViewMode']) { [string]$s.Ui.ViewMode } else { 'Pending' }; $vm -ne 'Submitted' }
         },
         [pscustomobject]@{ Id = 'ViewCommandLog'; Label = 'Command log';              Accelerator = 'L'; IsSeparator = $false; IsEnabled = { $true } },
         [pscustomobject]@{ Id = '__ViewSep1__'; Label = ''; Accelerator = ''; IsSeparator = $true;  IsEnabled = { $true } },
@@ -909,7 +924,49 @@ function Invoke-ChangelistReducer {
                 'ToggleHideFilters' { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleHideUnavailableFilters' }) }
                 'ExpandCollapse'    { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleChangelistView' }) }
                 'Help'              { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleHelpOverlay' }) }
-                'DeleteMarked'      { <# Phase 5: open confirm dialog + workflow dispatch #> }
+                'DeleteMarked'      {
+                    [string[]]$changeIds = @($next.Query.MarkedChangeIds | ForEach-Object { [string]$_ } | Sort-Object)
+                    $markedCount = $changeIds.Count
+                    $payload = [pscustomobject]@{
+                        Title            = "Delete $markedCount marked changelist$(if ($markedCount -ne 1) { 's' } else { '' })?"
+                        SummaryLines     = @(
+                            "Selected: $markedCount changelist$(if ($markedCount -ne 1) { 's' } else { '' })"
+                            'Will attempt deletion in sequence'
+                        )
+                        ConsequenceLines = @('Only empty changelists can be deleted')
+                        ConfirmLabel     = 'Y / Enter = confirm'
+                        CancelLabel      = 'N / Esc = cancel'
+                        OnAccept         = [pscustomobject]@{
+                            Kind         = 'ExecuteWorkflow'
+                            WorkflowKind = 'DeleteMarked'
+                            ChangeIds    = $changeIds
+                        }
+                    }
+                    return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenConfirmDialog'; Payload = $payload })
+                }
+                'MoveMarkedFiles'   {
+                    [string[]]$changeIds   = @($next.Query.MarkedChangeIds | ForEach-Object { [string]$_ } | Sort-Object)
+                    [object[]]$visibleIds  = @($next.Derived.VisibleChangeIds)
+                    $targetId = if ($visibleIds.Count -gt 0) { [string]$visibleIds[$next.Cursor.ChangeIndex] } else { '' }
+                    $markedCount = $changeIds.Count
+                    $payload = [pscustomobject]@{
+                        Title            = "Move opened files from $markedCount marked changelist$(if ($markedCount -ne 1) { 's' }) to focused?"
+                        SummaryLines     = @(
+                            "Source: $markedCount changelist$(if ($markedCount -ne 1) { 's' } else { '' })"
+                            "Target: changelist $targetId"
+                        )
+                        ConsequenceLines = @('Opened files in marked changelists will be reassigned to the focused changelist')
+                        ConfirmLabel     = 'Y / Enter = confirm'
+                        CancelLabel      = 'N / Esc = cancel'
+                        OnAccept         = [pscustomobject]@{
+                            Kind           = 'ExecuteWorkflow'
+                            WorkflowKind   = 'MoveMarkedFiles'
+                            ChangeIds      = $changeIds
+                            TargetChangeId = $targetId
+                        }
+                    }
+                    return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenConfirmDialog'; Payload = $payload })
+                }
                 default             { }
             }
             return Update-BrowserDerivedState -State $next

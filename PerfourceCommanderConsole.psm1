@@ -10,6 +10,29 @@ Import-Module (Join-Path $PSScriptRoot 'tui\Reducer.psm1')   -Force
 Import-Module (Join-Path $PSScriptRoot 'tui\Input.psm1')     -Force
 Import-Module (Join-Path $PSScriptRoot 'tui\Render.psm1')    -Force -DisableNameChecking
 
+# Workflow registry: Kind (string) → executor scriptblock.
+# Executors receive -State and -Request parameters and must return the updated state.
+# They are responsible for dispatching WorkflowBegin, WorkflowItemComplete/Failed, and WorkflowEnd.
+$script:WorkflowRegistry = @{}
+
+function Register-WorkflowKind {
+    <#
+    .SYNOPSIS
+        Registers an executor for a named workflow kind.  Call this at module
+        load time or before Start-P4Browser to add supported workflow kinds.
+    .PARAMETER Kind
+        Unique workflow identifier string, e.g. 'DeleteMarked'.
+    .PARAMETER Execute
+        Scriptblock that performs the workflow.  Receives -State and -Request
+        parameters, dispatches progress actions, and returns the final state.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Kind,
+        [Parameter(Mandatory = $true)][scriptblock]$Execute
+    )
+    $script:WorkflowRegistry[$Kind] = $Execute
+}
+
 function Get-BrowserConsoleSize {
     [pscustomobject]@{
         Width  = [Console]::WindowWidth
@@ -406,6 +429,15 @@ function Start-P4Browser {
                                 }
                             }
                         }
+                        'ExecuteWorkflow' {
+                            $workflowKind = if (($req.PSObject.Properties.Match('WorkflowKind')).Count -gt 0) { [string]$req.WorkflowKind } else { '' }
+                            if ([string]::IsNullOrEmpty($workflowKind) -or -not $script:WorkflowRegistry.ContainsKey($workflowKind)) {
+                                throw "Unknown workflow kind: '$workflowKind'"
+                            }
+                            $executor = $script:WorkflowRegistry[$workflowKind]
+                            # Executor receives state + request, dispatches BeginWorkflow/ItemComplete/Failed/End, returns final state
+                            $state = & $executor -State $state -Request $req
+                        }
                         default {
                             throw "Unknown PendingRequest.Kind: '$($req.Kind)'"
                         }
@@ -419,4 +451,4 @@ function Start-P4Browser {
     }
 }
 
-Export-ModuleMember -Function Start-P4Browser
+Export-ModuleMember -Function Start-P4Browser, Register-WorkflowKind

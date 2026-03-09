@@ -1368,3 +1368,109 @@ Describe 'Menu reducer actions' {
         $next.Runtime.IsRunning        | Should -Be $false
     }
 }
+
+# ─── Phase 4: Workflow execution framework ────────────────────────────────────
+
+Describe 'Workflow framework actions' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+    }
+
+    BeforeEach {
+        $changes = @(
+            [pscustomobject]@{ Id = '101'; Title = 'One'; HasShelvedFiles = $false; HasOpenedFiles = $true; Captured = [datetime]'2026-02-10' }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+    }
+
+    It 'New-BrowserState initialises ActiveWorkflow to null' {
+        $state.Runtime.ActiveWorkflow | Should -BeNullOrEmpty
+    }
+
+    It 'WorkflowBegin sets ActiveWorkflow with Kind and TotalCount' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'WorkflowBegin'; Kind = 'DeleteMarked'; TotalCount = 5
+        })
+        $next.Runtime.ActiveWorkflow.Kind        | Should -Be 'DeleteMarked'
+        $next.Runtime.ActiveWorkflow.TotalCount  | Should -Be 5
+        $next.Runtime.ActiveWorkflow.DoneCount   | Should -Be 0
+        $next.Runtime.ActiveWorkflow.FailedCount | Should -Be 0
+        @($next.Runtime.ActiveWorkflow.FailedIds).Count | Should -Be 0
+    }
+
+    It 'WorkflowItemComplete increments DoneCount' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'WorkflowBegin'; Kind = 'DeleteMarked'; TotalCount = 3
+        })
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowItemComplete' })
+        $next.Runtime.ActiveWorkflow.DoneCount | Should -Be 1
+    }
+
+    It 'WorkflowItemComplete is a no-op when no workflow is active' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowItemComplete' })
+        $next.Runtime.ActiveWorkflow | Should -BeNullOrEmpty
+    }
+
+    It 'WorkflowItemFailed increments FailedCount and appends ChangeId' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'WorkflowBegin'; Kind = 'DeleteMarked'; TotalCount = 3
+        })
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'WorkflowItemFailed'; ChangeId = '101'
+        })
+        $next.Runtime.ActiveWorkflow.FailedCount | Should -Be 1
+        @($next.Runtime.ActiveWorkflow.FailedIds) | Should -Contain '101'
+    }
+
+    It 'WorkflowItemFailed is a no-op when no workflow is active' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'WorkflowItemFailed'; ChangeId = '101'
+        })
+        $next.Runtime.ActiveWorkflow | Should -BeNullOrEmpty
+    }
+
+    It 'WorkflowEnd clears ActiveWorkflow' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'WorkflowBegin'; Kind = 'DeleteMarked'; TotalCount = 3
+        })
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowEnd' })
+        $next.Runtime.ActiveWorkflow | Should -BeNullOrEmpty
+    }
+
+    It 'AcceptDialog with OnAccept queues PendingRequest from OnAccept' {
+        $state.Ui.OverlayMode    = 'Confirm'
+        $state.Ui.OverlayPayload = [pscustomobject]@{
+            Title        = 'Delete?'
+            SummaryLines = @()
+            OnAccept     = [pscustomobject]@{ Kind = 'ExecuteWorkflow'; WorkflowKind = 'DeleteMarked' }
+        }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'AcceptDialog' })
+        $next.Ui.OverlayMode                      | Should -Be 'None'
+        $next.Runtime.PendingRequest.Kind         | Should -Be 'ExecuteWorkflow'
+        $next.Runtime.PendingRequest.WorkflowKind | Should -Be 'DeleteMarked'
+    }
+
+    It 'AcceptDialog without OnAccept clears overlay and leaves PendingRequest null' {
+        $state.Ui.OverlayMode    = 'Confirm'
+        $state.Ui.OverlayPayload = [pscustomobject]@{ Title = 'Test?'; SummaryLines = @() }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'AcceptDialog' })
+        $next.Ui.OverlayMode         | Should -Be 'None'
+        $next.Runtime.PendingRequest | Should -BeNullOrEmpty
+    }
+
+    It 'WorkflowBegin is a global action handled from Files screen' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.PendingRequest = $null
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'WorkflowBegin'; Kind = 'DeleteMarked'; TotalCount = 2
+        })
+        $next.Runtime.ActiveWorkflow.Kind | Should -Be 'DeleteMarked'
+    }
+
+    It 'Test-IsBrowserGlobalAction returns true for WorkflowBegin/ItemComplete/ItemFailed/WorkflowEnd' {
+        (Test-IsBrowserGlobalAction -ActionType 'WorkflowBegin')       | Should -BeTrue
+        (Test-IsBrowserGlobalAction -ActionType 'WorkflowItemComplete') | Should -BeTrue
+        (Test-IsBrowserGlobalAction -ActionType 'WorkflowItemFailed')   | Should -BeTrue
+        (Test-IsBrowserGlobalAction -ActionType 'WorkflowEnd')          | Should -BeTrue
+    }
+}

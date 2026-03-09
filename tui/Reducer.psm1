@@ -10,6 +10,7 @@ $script:BrowserGlobalActionTypes = @(
     'ToggleHelpOverlay', 'HideHelpOverlay',
     'OpenConfirmDialog', 'AcceptDialog', 'CancelDialog',
     'OpenMenu', 'MenuMoveUp', 'MenuMoveDown', 'MenuSwitchLeft', 'MenuSwitchRight', 'MenuSelect', 'MenuAccelerator',
+    'WorkflowBegin', 'WorkflowItemComplete', 'WorkflowItemFailed', 'WorkflowEnd',
     'LogCommandExecution'
 )
 
@@ -265,6 +266,7 @@ function New-BrowserState {
             LastError      = $null
             DetailChangeId = $null
             PendingRequest = $null
+            ActiveWorkflow = $null   # null | @{ Kind; TotalCount; DoneCount; FailedCount; FailedIds }
             ConfiguredMax  = 200
             NextCommandId            = 1
             CommandLog               = @()
@@ -812,9 +814,16 @@ function Invoke-ChangelistReducer {
             return $next
         }
         'AcceptDialog' {
-            # Phase 5 will add workflow dispatch here based on OverlayPayload.WorkflowPayload
+            $acceptPayload = $next.Ui.OverlayPayload
             $next.Ui.OverlayMode    = 'None'
             $next.Ui.OverlayPayload = $null
+            # If the overlay payload carries an OnAccept workflow continuation, queue it as PendingRequest
+            if ($null -ne $acceptPayload) {
+                $onAcceptProp = $acceptPayload.PSObject.Properties['OnAccept']
+                if ($null -ne $onAcceptProp -and $null -ne $onAcceptProp.Value) {
+                    $next.Runtime.PendingRequest = $onAcceptProp.Value
+                }
+            }
             return $next
         }
         'CancelDialog' {
@@ -934,6 +943,39 @@ function Invoke-ChangelistReducer {
             if ([bool]$matchedItem.IsEnabled) {
                 return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'MenuSelect' })
             }
+            return $next
+        }
+        'WorkflowBegin' {
+            $wfKind       = if (($Action.PSObject.Properties.Match('Kind')).Count -gt 0) { [string]$Action.Kind } else { '' }
+            $wfTotalCount = if (($Action.PSObject.Properties.Match('TotalCount')).Count -gt 0) { [int]$Action.TotalCount } else { 0 }
+            $next.Runtime.ActiveWorkflow = [pscustomobject]@{
+                Kind        = $wfKind
+                TotalCount  = $wfTotalCount
+                DoneCount   = 0
+                FailedCount = 0
+                FailedIds   = @()
+            }
+            return $next
+        }
+        'WorkflowItemComplete' {
+            if ($null -ne $next.Runtime.ActiveWorkflow) {
+                $next.Runtime.ActiveWorkflow.DoneCount++
+            }
+            return $next
+        }
+        'WorkflowItemFailed' {
+            if ($null -ne $next.Runtime.ActiveWorkflow) {
+                $next.Runtime.ActiveWorkflow.FailedCount++
+                $failedId = if (($Action.PSObject.Properties.Match('ChangeId')).Count -gt 0) { [string]$Action.ChangeId } else { '' }
+                if (-not [string]::IsNullOrEmpty($failedId)) {
+                    [object[]]$prevFailed = @($next.Runtime.ActiveWorkflow.FailedIds)
+                    $next.Runtime.ActiveWorkflow.FailedIds = $prevFailed + @($failedId)
+                }
+            }
+            return $next
+        }
+        'WorkflowEnd' {
+            $next.Runtime.ActiveWorkflow = $null
             return $next
         }
         'Quit' {

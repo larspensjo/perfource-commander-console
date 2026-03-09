@@ -47,6 +47,21 @@ $script:MenuDefinitions = @{
                 $hasMarks -and $hasFocus -and $isPending
             }
         },
+        [pscustomobject]@{
+            Id          = 'ShelveFiles'
+            Label       = 'Shelve files'
+            Accelerator = 'S'
+            IsSeparator = $false
+            IsEnabled   = { param($s)
+                $viewMode  = if ($s.Ui.PSObject.Properties['ViewMode']) { [string]$s.Ui.ViewMode } else { 'Pending' }
+                $isPending = $viewMode -ne 'Submitted'
+                $mcProp    = $s.Query.PSObject.Properties['MarkedChangeIds']
+                $hasMarks  = $null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0
+                $vcProp    = $s.Derived.PSObject.Properties['VisibleChangeIds']
+                $hasVisible = $null -ne $vcProp -and $null -ne $vcProp.Value -and $vcProp.Value.Count -gt 0
+                $isPending -and ($hasMarks -or $hasVisible)
+            }
+        },
         [pscustomobject]@{ Id = '__FileSep1__'; Label = ''; Accelerator = ''; IsSeparator = $true;  IsEnabled = { $true } },
         [pscustomobject]@{
             Id         = 'MarkAllVisible'
@@ -965,6 +980,46 @@ function Invoke-ChangelistReducer {
                             WorkflowKind   = 'MoveMarkedFiles'
                             ChangeIds      = $changeIds
                             TargetChangeId = $targetId
+                        }
+                    }
+                    return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenConfirmDialog'; Payload = $payload })
+                }
+                'ShelveFiles'       {
+                    [object[]]$visibleIds  = @($next.Derived.VisibleChangeIds)
+                    $mcProp   = $next.Query.PSObject.Properties['MarkedChangeIds']
+                    $hasMarks = $null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0
+                    if ($hasMarks) {
+                        [string[]]$changeIds = @($next.Query.MarkedChangeIds | ForEach-Object { [string]$_ } | Sort-Object)
+                        $count = $changeIds.Count
+                        $payload = [pscustomobject]@{
+                            Title            = "Shelve files in $count selected changelist$(if ($count -ne 1) { 's' })?"
+                            SummaryLines     = @(
+                                "Selected: $count changelist$(if ($count -ne 1) { 's' } else { '' })"
+                                ($changeIds | ForEach-Object { "  CL $_" })
+                            )
+                            ConsequenceLines = @('Existing shelved files in these changelists will be replaced')
+                            ConfirmLabel     = 'Y / Enter = confirm'
+                            CancelLabel      = 'N / Esc = cancel'
+                            OnAccept         = [pscustomobject]@{
+                                Kind         = 'ExecuteWorkflow'
+                                WorkflowKind = 'ShelveFiles'
+                                ChangeIds    = $changeIds
+                            }
+                        }
+                    } else {
+                        $currentId = if ($visibleIds.Count -gt 0) { [string]$visibleIds[$next.Cursor.ChangeIndex] } else { '' }
+                        [string[]]$changeIds = @($currentId)
+                        $payload = [pscustomobject]@{
+                            Title            = "Shelve files in changelist ${currentId}?"
+                            SummaryLines     = @("Changelist: $currentId")
+                            ConsequenceLines = @('Existing shelved files in this changelist will be replaced')
+                            ConfirmLabel     = 'Y / Enter = confirm'
+                            CancelLabel      = 'N / Esc = cancel'
+                            OnAccept         = [pscustomobject]@{
+                                Kind         = 'ExecuteWorkflow'
+                                WorkflowKind = 'ShelveFiles'
+                                ChangeIds    = $changeIds
+                            }
                         }
                     }
                     return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenConfirmDialog'; Payload = $payload })

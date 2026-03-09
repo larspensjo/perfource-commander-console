@@ -61,23 +61,22 @@ This analyses all `.ps1`, `.psm1`, and `.psd1` files in the workspace using the 
 * Use Dependency Injection to make testing easier.
 * Test behavior and contracts, not arbitrary literals. Prefer assertions about outcomes, transitions, emitted effects, and command arguments over direct checks of internal/config constants.
 
-**Important:** Always run Pester tests from a **terminal** (`run_in_terminal` or a
-manual shell), **never** via VSCode's built-in test runner (`runTests`). The test
-runner executes inside the PowerShell Extension Host's Integrated Console. That
-console shares a single thread with the Language Server, so a long-running test
-suite blocks IntelliSense, diagnostics, and all other LS features — and can make
-VSCode appear completely frozen (triggering the "reload the window" prompt).
+**Important:** Always run Pester tests by spawning a **fresh `pwsh -NoProfile` process** as shown below — never call `Invoke-Pester` directly in an existing session or via VSCode's built-in test runner.
+
+Two reasons:
+1. **Module pollution:** If modules such as `Render` or `Reducer` are already loaded in the session (from a previous run or from the VS Code extension auto-import), Pester's `InModuleScope` will find multiple copies and fail with *"Multiple script or manifest modules named '…' are currently loaded"*. A fresh `-NoProfile` process starts with no loaded modules.
+2. **Thread blocking:** The VS Code built-in test runner executes inside the PowerShell Extension Host Integrated Console, which shares a thread with the Language Server. A long-running suite blocks IntelliSense and diagnostics, and can freeze VS Code entirely.
 
 Run the full test suite from the workspace root:
 
 ```powershell
-pwsh -NoProfile -Command "Import-Module Pester -Force; Invoke-Pester -Path tests\"
+pwsh -NoProfile -Command "Import-Module Pester -Force; Invoke-Pester -Path tests\ -Output Minimal"
 ```
 
 To run a single test file:
 
 ```powershell
-pwsh -NoProfile -Command "Import-Module Pester -Force; Invoke-Pester -Path tests/Filtering.Tests.ps1"
+pwsh -NoProfile -Command "Import-Module Pester -Force; Invoke-Pester -Path tests/Filtering.Tests.ps1 -Output Minimal"
 ```
 
 All tests must pass after making changes. Add new tests to the appropriate file under `tests/` to lock in any new functionality.

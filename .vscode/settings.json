@@ -52,6 +52,10 @@
     "/^pwsh -NoProfile -Command \"Invoke-Pester -Path tests/ -Output Normal\" 2>&1 \\| Select-Object -Last 10$/": {
       "approve": true,
       "matchCommandLine": true
+    },
+    "/^pwsh -NoProfile -Command \"Invoke-Pester -Path tests -Output Minimal 2>&1\"$/": {
+      "approve": true,
+      "matchCommandLine": true
     }
   }
 }

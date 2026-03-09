@@ -1493,10 +1493,10 @@ Describe 'Phase 5 — DeleteMarked and MoveMarkedFiles menu actions' {
 
     # ── File menu now has 6 navigable items (MoveMarkedFiles added) ────────────
 
-    It 'File menu has 6 navigable items including MoveMarkedFiles' {
+    It 'File menu has 7 navigable items including MoveMarkedFiles and ShelveFiles' {
         $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
         $navCount = Get-MenuNavigableCount -ComputedItems $items
-        $navCount | Should -Be 6
+        $navCount | Should -Be 7
     }
 
     # ── DeleteMarked ─────────────────────────────────────────────────────────
@@ -1635,6 +1635,83 @@ Describe 'Phase 5 — DeleteMarked and MoveMarkedFiles menu actions' {
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuAccelerator'; Key = 'D' })
         $next.Ui.OverlayMode                          | Should -Be 'Confirm'
         $next.Ui.OverlayPayload.OnAccept.WorkflowKind | Should -Be 'DeleteMarked'
+    }
+
+    # ── ShelveFiles ───────────────────────────────────────────────────────────
+
+    It 'ShelveFiles menu item is enabled with no marks when visible CLs exist' {
+        $items  = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $sfItem = $items | Where-Object { [string]$_.Id -eq 'ShelveFiles' } | Select-Object -First 1
+        $sfItem.IsEnabled | Should -Be $true
+    }
+
+    It 'ShelveFiles menu item is enabled when marks exist' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $items  = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $sfItem = $items | Where-Object { [string]$_.Id -eq 'ShelveFiles' } | Select-Object -First 1
+        $sfItem.IsEnabled | Should -Be $true
+    }
+
+    It 'ShelveFiles menu item is disabled in Submitted view' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'Submitted' })
+        $items  = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $sfItem = $items | Where-Object { [string]$_.Id -eq 'ShelveFiles' } | Select-Object -First 1
+        $sfItem.IsEnabled | Should -Be $false
+    }
+
+    It 'ShelveFiles with no marks opens confirm dialog targeting the focused CL' {
+        # No marks; focus is on CL 101 (ChangeIndex 0)
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
+        $navIdx = 0; $sfIdx = -1
+        foreach ($item in $menuItems) {
+            if (-not [bool]$item.IsSeparator) {
+                if ([string]$item.Id -eq 'ShelveFiles') { $sfIdx = $navIdx; break }
+                $navIdx++
+            }
+        }
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = $sfIdx; MenuItems = $menuItems }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
+
+        $next.Ui.OverlayMode                          | Should -Be 'Confirm'
+        $next.Ui.OverlayPayload.OnAccept.WorkflowKind | Should -Be 'ShelveFiles'
+        $next.Ui.OverlayPayload.OnAccept.Kind         | Should -Be 'ExecuteWorkflow'
+        @($next.Ui.OverlayPayload.OnAccept.ChangeIds) | Should -Contain '101'
+        @($next.Ui.OverlayPayload.OnAccept.ChangeIds).Count | Should -Be 1
+    }
+
+    It 'ShelveFiles with marks opens confirm dialog with all marked CL IDs' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
+        $navIdx = 0; $sfIdx = -1
+        foreach ($item in $menuItems) {
+            if (-not [bool]$item.IsSeparator) {
+                if ([string]$item.Id -eq 'ShelveFiles') { $sfIdx = $navIdx; break }
+                $navIdx++
+            }
+        }
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = $sfIdx; MenuItems = $menuItems }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
+
+        $next.Ui.OverlayMode                          | Should -Be 'Confirm'
+        $next.Ui.OverlayPayload.OnAccept.WorkflowKind | Should -Be 'ShelveFiles'
+        @($next.Ui.OverlayPayload.OnAccept.ChangeIds) | Should -Contain '101'
+        @($next.Ui.OverlayPayload.OnAccept.ChangeIds) | Should -Contain '102'
+    }
+
+    It 'ShelveFiles accelerator S opens the confirm dialog' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuAccelerator'; Key = 'S' })
+        $next.Ui.OverlayMode                          | Should -Be 'Confirm'
+        $next.Ui.OverlayPayload.OnAccept.WorkflowKind | Should -Be 'ShelveFiles'
     }
 }
 

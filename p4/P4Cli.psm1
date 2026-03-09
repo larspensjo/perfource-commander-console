@@ -745,6 +745,25 @@ function Remove-P4Changelist {
     Invoke-P4 -P4Args @('change', '-d', "$Change") | Out-Null
 }
 
+function Invoke-P4ShelveFiles {
+    <#
+    .SYNOPSIS
+        Shelves all opened files in a pending changelist.
+    .DESCRIPTION
+        Runs 'p4 shelve -c <change>' to shelve all opened files in the specified
+        pending changelist.  Existing shelved files for the changelist are
+        replaced (-f flag).  The opened files remain checked-out after shelving.
+    .PARAMETER Change
+        The pending changelist number whose opened files should be shelved.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][int]$Change
+    )
+
+    Invoke-P4 -P4Args @('shelve', '-f', '-c', "$Change") | Out-Null
+}
+
 function Get-P4SubmittedChangelists {
     <#
     .SYNOPSIS
@@ -860,4 +879,4 @@ function Invoke-P4ReopenFiles {
     return @{ MovedCount = $depotPaths.Count; Files = $depotPaths }
 }
 
-Export-ModuleMember -Function Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Set-P4FileEntriesUnresolvedState, Remove-P4Changelist, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles
+Export-ModuleMember -Function Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Set-P4FileEntriesUnresolvedState, Remove-P4Changelist, Invoke-P4ShelveFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles

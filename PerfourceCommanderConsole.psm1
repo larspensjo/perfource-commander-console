@@ -124,6 +124,37 @@ Register-WorkflowKind -Kind 'MoveMarkedFiles' -Execute {
     return $state
 }
 
+Register-WorkflowKind -Kind 'ShelveFiles' -Execute {
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$State,
+        [Parameter(Mandatory = $true)][pscustomobject]$Request
+    )
+
+    [string[]]$changeIds = @($Request.ChangeIds)
+    $state = Invoke-BrowserReducer -State $State -Action ([pscustomobject]@{
+        Type = 'WorkflowBegin'; Kind = 'ShelveFiles'; TotalCount = $changeIds.Count
+    })
+
+    foreach ($changeId in $changeIds) {
+        $changeNum = [int]$changeId
+        try {
+            Invoke-P4ShelveFiles -Change $changeNum
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowItemComplete' })
+        } catch {
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                Type = 'WorkflowItemFailed'; ChangeId = $changeId
+            })
+        }
+    }
+
+    $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowEnd' })
+
+    # Trigger reload so shelved file counts are refreshed
+    $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Reload' })
+
+    return $state
+}
+
 function Get-BrowserConsoleSize {
     [pscustomobject]@{
         Width  = [Console]::WindowWidth

@@ -190,16 +190,11 @@ function New-BrowserState {
             }
         }
         Runtime = [pscustomobject]@{
-            IsRunning                = $true
-            LastError                = $null
-            LastSelectedId           = $null
-            DetailChangeId           = $null
-            DeleteChangeId           = $null
-            ReloadRequested          = $false
-            SubmittedReloadRequested = $false
-            LoadMoreRequested        = $false
-            LoadFilesRequested       = $false
-            ConfiguredMax            = 200
+            IsRunning      = $true
+            LastError      = $null
+            DetailChangeId = $null
+            PendingRequest = $null
+            ConfiguredMax  = 200
             HelpOverlayOpen          = $false
             NextCommandId            = 1
             CommandLog               = @()
@@ -844,8 +839,9 @@ function Invoke-ChangelistReducer {
             if ($next.Derived.VisibleChangeIds.Count -eq 0) { return $next }
             $idx = [Math]::Max(0, [Math]::Min($next.Cursor.ChangeIndex,
                                                $next.Derived.VisibleChangeIds.Count - 1))
-            $next.Runtime.LastSelectedId = $next.Derived.VisibleChangeIds[$idx]
-            $next.Runtime.DetailChangeId = $next.Derived.VisibleChangeIds[$idx]  # persists for rendering
+            $changeId = $next.Derived.VisibleChangeIds[$idx]
+            $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'FetchDescribe'; ChangeId = $changeId }
+            $next.Runtime.DetailChangeId = $changeId  # persists for rendering
             return Update-BrowserDerivedState -State $next
         }
         'DeleteChange' {
@@ -854,7 +850,7 @@ function Invoke-ChangelistReducer {
             if ($next.Derived.VisibleChangeIds.Count -eq 0) { return $next }
             $idx = [Math]::Max(0, [Math]::Min($next.Cursor.ChangeIndex,
                                                $next.Derived.VisibleChangeIds.Count - 1))
-            $next.Runtime.DeleteChangeId = $next.Derived.VisibleChangeIds[$idx]
+            $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'DeleteChange'; ChangeId = $next.Derived.VisibleChangeIds[$idx] }
             return Update-BrowserDerivedState -State $next
         }
         'ToggleMarkCurrent' {
@@ -892,12 +888,11 @@ function Invoke-ChangelistReducer {
         'Reload' {
             $currentViewMode = if (($next.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$next.Ui.ViewMode } else { 'Pending' }
             $next.Data.DescribeCache = @{}
-            $next.Runtime.LastSelectedId = $null
             $next.Runtime.DetailChangeId = $null
             if ($currentViewMode -eq 'Submitted') {
-                $next.Runtime.SubmittedReloadRequested = $true
+                $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'ReloadSubmitted' }
             } else {
-                $next.Runtime.ReloadRequested = $true
+                $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'ReloadPending' }
             }
             return Update-BrowserDerivedState -State $next
         }
@@ -979,7 +974,7 @@ function Invoke-ChangelistReducer {
                 }
                 $submittedHasMore = if (($next.Data.PSObject.Properties.Match('SubmittedHasMore')).Count -gt 0) { [bool]$next.Data.SubmittedHasMore } else { $true }
                 if ($submittedChanges.Count -eq 0 -and $submittedHasMore) {
-                    $next.Runtime.LoadMoreRequested = $true
+                    $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'LoadMore' }
                 }
             }
 
@@ -989,7 +984,7 @@ function Invoke-ChangelistReducer {
             $currentViewMode  = if (($next.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$next.Ui.ViewMode } else { 'Pending' }
             $submittedHasMore = if (($next.Data.PSObject.Properties.Match('SubmittedHasMore')).Count -gt 0) { [bool]$next.Data.SubmittedHasMore } else { $false }
             if ($currentViewMode -eq 'Submitted' -and $submittedHasMore) {
-                $next.Runtime.LoadMoreRequested = $true
+                $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'LoadMore' }
             }
             return $next
         }
@@ -1077,7 +1072,7 @@ function Invoke-ChangelistReducer {
             $next.Cursor.FileScrollTop   = 0
 
             # Signal main loop to trigger the I/O side effect (implemented in Step 2).
-            $next.Runtime.LoadFilesRequested = $true
+            $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'LoadFiles' }
 
             return Update-BrowserDerivedState -State $next
         }
@@ -1197,7 +1192,7 @@ function Invoke-FilesReducer {
             if ($null -ne $fileCache -and $fileCache.ContainsKey($cacheKey)) {
                 $fileCache.Remove($cacheKey) | Out-Null
             }
-            $next.Runtime.LoadFilesRequested = $true
+            $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'LoadFiles' }
             return Update-BrowserDerivedState -State $next
         }
         'OpenFilesScreen' {

@@ -293,128 +293,121 @@ function Start-P4Browser {
             if ($null -ne $action) {
                 $state = Invoke-BrowserReducer -State $state -Action $action
 
-                # Handle reload flag (Reload I/O lives outside the reducer for purity)
-                if ($state.Runtime.ReloadRequested) {
-                    $state.Runtime.ReloadRequested = $false
-                    $configuredMax = $state.Runtime.ConfiguredMax
-                    $reloadCmdLine = "p4 changes -s pending -m $configuredMax"
-                    $state = Invoke-BrowserSideEffect -State $state -CommandLine $reloadCmdLine -WorkItem {
-                        param($s)
-                        $fresh = Get-P4ChangelistEntries -Max $s.Runtime.ConfiguredMax
-                        $s.Data.AllChanges = @($fresh)
-                        $s.Runtime.LastError = $null
-                        return Update-BrowserDerivedState -State $s
-                    }
-                }
+                # Dispatch single PendingRequest (I/O side effects live outside the reducer)
+                if ($null -ne $state.Runtime.PendingRequest) {
+                    $req = $state.Runtime.PendingRequest
+                    $state.Runtime.PendingRequest = $null   # consume before I/O so retries never re-fire
 
-                # Handle submitted view reload (F5 in submitted view)
-                if ($state.Runtime.SubmittedReloadRequested) {
-                    $state.Runtime.SubmittedReloadRequested = $false
-                    $state.Runtime.LoadMoreRequested        = $false
-                    $reloadSubmittedSpec = if ([string]::IsNullOrWhiteSpace([string]$state.Data.CurrentClient)) { '//...' } else { "//$($state.Data.CurrentClient)/..." }
-                    $reloadSubmittedCmdLine = Format-P4CommandLine -P4Args @('changes', '-s', 'submitted', '-m', '50', $reloadSubmittedSpec)
-                    $state = Invoke-BrowserSideEffect -State $state -CommandLine $reloadSubmittedCmdLine -WorkItem {
-                        param($s)
-                        $fresh = if ([string]::IsNullOrWhiteSpace([string]$s.Data.CurrentClient)) {
-                            Get-P4SubmittedChangelistEntries -Max 50
-                        } else {
-                            Get-P4SubmittedChangelistEntries -Max 50 -Client $s.Data.CurrentClient
+                    switch ($req.Kind) {
+                        'ReloadPending' {
+                            $configuredMax = $state.Runtime.ConfiguredMax
+                            $reloadCmdLine = "p4 changes -s pending -m $configuredMax"
+                            $state = Invoke-BrowserSideEffect -State $state -CommandLine $reloadCmdLine -WorkItem {
+                                param($s)
+                                $fresh = Get-P4ChangelistEntries -Max $s.Runtime.ConfiguredMax
+                                $s.Data.AllChanges = @($fresh)
+                                $s.Runtime.LastError = $null
+                                return Update-BrowserDerivedState -State $s
+                            }
                         }
-                        $s.Data.SubmittedChanges  = @($fresh)
-                        $s.Data.SubmittedHasMore  = ($fresh.Count -ge 50)
-                        $s.Data.SubmittedOldestId = if ($fresh.Count -gt 0) { [int]($fresh | ForEach-Object { [int]$_.Id } | Sort-Object | Select-Object -First 1) } else { $null }
-                        $s.Runtime.LastError      = $null
-                        return Update-BrowserDerivedState -State $s
-                    }
-                }
-
-                # Handle load-more flag for submitted changelists
-                if ($state.Runtime.LoadMoreRequested) {
-                    $state.Runtime.LoadMoreRequested = $false
-                    $beforeChange = $state.Data.SubmittedOldestId
-                    $loadMoreSpec = if ([string]::IsNullOrWhiteSpace([string]$state.Data.CurrentClient)) { '//...' } else { "//$($state.Data.CurrentClient)/..." }
-                    $loadMoreCmdLine = if ($null -ne $beforeChange) {
-                        Format-P4CommandLine -P4Args @('changes', '-s', 'submitted', '-m', '50', "$loadMoreSpec@<$beforeChange")
-                    } else {
-                        Format-P4CommandLine -P4Args @('changes', '-s', 'submitted', '-m', '50', $loadMoreSpec)
-                    }
-                    $state = Invoke-BrowserSideEffect -State $state -CommandLine $loadMoreCmdLine -WorkItem {
-                        param($s)
-                        $pageSize = 50
-                        $bc       = $s.Data.SubmittedOldestId
-                        $newEntries = if ($null -ne $bc) {
-                            if ([string]::IsNullOrWhiteSpace([string]$s.Data.CurrentClient)) {
-                                @(Get-P4SubmittedChangelistEntries -Max $pageSize -BeforeChange $bc)
+                        'ReloadSubmitted' {
+                            $reloadSubmittedSpec = if ([string]::IsNullOrWhiteSpace([string]$state.Data.CurrentClient)) { '//...' } else { "//$($state.Data.CurrentClient)/..." }
+                            $reloadSubmittedCmdLine = Format-P4CommandLine -P4Args @('changes', '-s', 'submitted', '-m', '50', $reloadSubmittedSpec)
+                            $state = Invoke-BrowserSideEffect -State $state -CommandLine $reloadSubmittedCmdLine -WorkItem {
+                                param($s)
+                                $fresh = if ([string]::IsNullOrWhiteSpace([string]$s.Data.CurrentClient)) {
+                                    Get-P4SubmittedChangelistEntries -Max 50
+                                } else {
+                                    Get-P4SubmittedChangelistEntries -Max 50 -Client $s.Data.CurrentClient
+                                }
+                                $s.Data.SubmittedChanges  = @($fresh)
+                                $s.Data.SubmittedHasMore  = ($fresh.Count -ge 50)
+                                $s.Data.SubmittedOldestId = if ($fresh.Count -gt 0) { [int]($fresh | ForEach-Object { [int]$_.Id } | Sort-Object | Select-Object -First 1) } else { $null }
+                                $s.Runtime.LastError      = $null
+                                return Update-BrowserDerivedState -State $s
+                            }
+                        }
+                        'LoadMore' {
+                            $beforeChange = $state.Data.SubmittedOldestId
+                            $loadMoreSpec = if ([string]::IsNullOrWhiteSpace([string]$state.Data.CurrentClient)) { '//...' } else { "//$($state.Data.CurrentClient)/..." }
+                            $loadMoreCmdLine = if ($null -ne $beforeChange) {
+                                Format-P4CommandLine -P4Args @('changes', '-s', 'submitted', '-m', '50', "$loadMoreSpec@<$beforeChange")
                             } else {
-                                @(Get-P4SubmittedChangelistEntries -Max $pageSize -BeforeChange $bc -Client $s.Data.CurrentClient)
+                                Format-P4CommandLine -P4Args @('changes', '-s', 'submitted', '-m', '50', $loadMoreSpec)
                             }
-                        } else {
-                            if ([string]::IsNullOrWhiteSpace([string]$s.Data.CurrentClient)) {
-                                @(Get-P4SubmittedChangelistEntries -Max $pageSize)
+                            $state = Invoke-BrowserSideEffect -State $state -CommandLine $loadMoreCmdLine -WorkItem {
+                                param($s)
+                                $pageSize = 50
+                                $bc       = $s.Data.SubmittedOldestId
+                                $newEntries = if ($null -ne $bc) {
+                                    if ([string]::IsNullOrWhiteSpace([string]$s.Data.CurrentClient)) {
+                                        @(Get-P4SubmittedChangelistEntries -Max $pageSize -BeforeChange $bc)
+                                    } else {
+                                        @(Get-P4SubmittedChangelistEntries -Max $pageSize -BeforeChange $bc -Client $s.Data.CurrentClient)
+                                    }
+                                } else {
+                                    if ([string]::IsNullOrWhiteSpace([string]$s.Data.CurrentClient)) {
+                                        @(Get-P4SubmittedChangelistEntries -Max $pageSize)
+                                    } else {
+                                        @(Get-P4SubmittedChangelistEntries -Max $pageSize -Client $s.Data.CurrentClient)
+                                    }
+                                }
+                                $s.Data.SubmittedChanges = @($s.Data.SubmittedChanges) + @($newEntries)
+                                if ($newEntries.Count -gt 0) {
+                                    $s.Data.SubmittedOldestId = [int]($newEntries | ForEach-Object { [int]$_.Id } | Sort-Object | Select-Object -First 1)
+                                }
+                                $s.Data.SubmittedHasMore = ($newEntries.Count -ge $pageSize)
+                                $s.Runtime.LastError     = $null
+                                return Update-BrowserDerivedState -State $s
+                            }
+                        }
+                        'LoadFiles' {
+                            $change     = [int]$state.Data.FilesSourceChange
+                            $sourceKind = [string]$state.Data.FilesSourceKind
+                            $cacheKey   = "${change}:${sourceKind}"
+
+                            if ($state.Data.FileCache.ContainsKey($cacheKey)) {
+                                # Cache hit — recompute derived state (cursor/scroll already reset by reducer)
+                                $state = Update-BrowserDerivedState -State $state
                             } else {
-                                @(Get-P4SubmittedChangelistEntries -Max $pageSize -Client $s.Data.CurrentClient)
+                                $state = Invoke-BrowserFilesLoad -State $state -Change $change -SourceKind $sourceKind -CacheKey $cacheKey
+                            }
+                            # After I/O: if user navigated away, silently stay on current screen
+                        }
+                        'FetchDescribe' {
+                            $change = ConvertTo-ChangeNumberFromId -Id $req.ChangeId
+                            if ($null -ne $change -and -not $state.Data.DescribeCache.ContainsKey($change)) {
+                                $describeCmdLine = Format-P4CommandLine -P4Args @('describe', '-s', "$change")
+                                $state = Invoke-BrowserSideEffect -State $state -CommandLine $describeCmdLine -WorkItem {
+                                    param($s)
+                                    $s.Data.DescribeCache[$change] = Get-P4Describe -Change $change
+                                    $s.Runtime.LastError = $null
+                                    return $s
+                                }
                             }
                         }
-                        $s.Data.SubmittedChanges = @($s.Data.SubmittedChanges) + @($newEntries)
-                        if ($newEntries.Count -gt 0) {
-                            $s.Data.SubmittedOldestId = [int]($newEntries | ForEach-Object { [int]$_.Id } | Sort-Object | Select-Object -First 1)
-                        }
-                        $s.Data.SubmittedHasMore = ($newEntries.Count -ge $pageSize)
-                        $s.Runtime.LastError     = $null
-                        return Update-BrowserDerivedState -State $s
-                    }
-                }
-
-                # Handle file-list load request — I/O side effect kept outside the reducer.
-                if ($state.Runtime.LoadFilesRequested) {
-                    $state.Runtime.LoadFilesRequested = $false
-                    $change     = [int]$state.Data.FilesSourceChange
-                    $sourceKind = [string]$state.Data.FilesSourceKind
-                    $cacheKey   = "${change}:${sourceKind}"
-
-                    if ($state.Data.FileCache.ContainsKey($cacheKey)) {
-                        # Cache hit — recompute derived state (cursor/scroll already reset by reducer)
-                        $state = Update-BrowserDerivedState -State $state
-                    } else {
-                        $state = Invoke-BrowserFilesLoad -State $state -Change $change -SourceKind $sourceKind -CacheKey $cacheKey
-                    }
-                    # After I/O: if user navigated away, silently stay on current screen
-                }
-
-                # Fetch describe on-demand (I/O lives outside the reducer to keep it pure)
-                if (-not [string]::IsNullOrWhiteSpace([string]$state.Runtime.LastSelectedId)) {
-                    $change = ConvertTo-ChangeNumberFromId -Id $state.Runtime.LastSelectedId
-                    $state.Runtime.LastSelectedId = $null   # consume immediately; prevents retry on every keypress
-                    if ($null -ne $change -and -not $state.Data.DescribeCache.ContainsKey($change)) {
-                        $describeCmdLine = Format-P4CommandLine -P4Args @('describe', '-s', "$change")
-                        $state = Invoke-BrowserSideEffect -State $state -CommandLine $describeCmdLine -WorkItem {
-                            param($s)
-                            $s.Data.DescribeCache[$change] = Get-P4Describe -Change $change
-                            $s.Runtime.LastError = $null
-                            return $s
-                        }
-                    }
-                }
-
-                # Delete changelist on-demand
-                if (-not [string]::IsNullOrWhiteSpace([string]$state.Runtime.DeleteChangeId)) {
-                    $change = ConvertTo-ChangeNumberFromId -Id $state.Runtime.DeleteChangeId
-                    $state.Runtime.DeleteChangeId = $null
-                    if ($null -ne $change) {
-                        $deleteCmdLine = Format-P4CommandLine -P4Args @('change', '-d', "$change")
-                        $state = Invoke-BrowserSideEffect -State $state -CommandLine $deleteCmdLine -WorkItem {
-                            param($s)
-                            Remove-P4Changelist -Change $change
-                            $deletedId = "$change"
-                            $s.Data.AllChanges = @($s.Data.AllChanges | Where-Object { $_.Id -ne $deletedId })
-                            $s.Data.DescribeCache.Remove($change) | Out-Null
-                            # Remove from mark set so deleted CLs don't linger in selection
-                            $markedProp = $s.Query.PSObject.Properties['MarkedChangeIds']
-                            if ($null -ne $markedProp -and $null -ne $markedProp.Value) {
-                                [void]$markedProp.Value.Remove($deletedId)
+                        'DeleteChange' {
+                            $change = ConvertTo-ChangeNumberFromId -Id $req.ChangeId
+                            if ($null -ne $change) {
+                                $deleteCmdLine = Format-P4CommandLine -P4Args @('change', '-d', "$change")
+                                $state = Invoke-BrowserSideEffect -State $state -CommandLine $deleteCmdLine -WorkItem {
+                                    param($s)
+                                    Remove-P4Changelist -Change $change
+                                    $deletedId = "$change"
+                                    $s.Data.AllChanges = @($s.Data.AllChanges | Where-Object { $_.Id -ne $deletedId })
+                                    $s.Data.DescribeCache.Remove($change) | Out-Null
+                                    # Remove from mark set so deleted CLs don't linger in selection
+                                    $markedProp = $s.Query.PSObject.Properties['MarkedChangeIds']
+                                    if ($null -ne $markedProp -and $null -ne $markedProp.Value) {
+                                        [void]$markedProp.Value.Remove($deletedId)
+                                    }
+                                    $s.Runtime.LastError = $null
+                                    return Update-BrowserDerivedState -State $s
+                                }
                             }
-                            $s.Runtime.LastError = $null
-                            return Update-BrowserDerivedState -State $s
+                        }
+                        default {
+                            throw "Unknown PendingRequest.Kind: '$($req.Kind)'"
                         }
                     }
                 }

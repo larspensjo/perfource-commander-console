@@ -94,7 +94,6 @@ function New-RenderTestState {
         Runtime = [pscustomobject]@{
             IsRunning = $true
             LastError = $null
-            DeleteChangeId = $null
             ModalPrompt = [pscustomobject]@{
                 IsOpen         = $false
                 IsBusy         = $false
@@ -228,7 +227,6 @@ Describe 'Frame helpers' {
                     Runtime = [pscustomobject]@{
                         IsRunning = $true
                         LastError = $null
-                        DeleteChangeId = $null
                         ModalPrompt = [pscustomobject]@{
                             IsOpen         = $false
                             IsBusy         = $false
@@ -846,7 +844,6 @@ Describe 'Expanded changelist frame rendering' {
                     Runtime = [pscustomobject]@{
                         IsRunning  = $true
                         LastError  = $null
-                        DeleteChangeId = $null
                         CommandModal   = [pscustomobject]@{
                             IsOpen = $false; IsBusy = $false; CurrentCommand = ''; History = @()
                         }
@@ -973,7 +970,6 @@ Describe 'Files screen rendering' {
                 Runtime = [pscustomobject]@{
                     IsRunning = $true
                     LastError = $null
-                    DeleteChangeId = $null
                     ModalPrompt = [pscustomobject]@{
                         IsOpen         = $false
                         IsBusy         = $false
@@ -1000,7 +996,6 @@ Describe 'Files screen rendering' {
         $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0, 1)
         $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
         $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
-        $state.Runtime | Add-Member -NotePropertyName LoadFilesRequested -NotePropertyValue $false
 
         $frame = Build-FilesScreenFrame -State $state
         $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
@@ -1023,7 +1018,6 @@ Describe 'Files screen rendering' {
         $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
         $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
         $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
-        $state.Runtime | Add-Member -NotePropertyName LoadFilesRequested -NotePropertyValue $false
 
         $frame = Build-FilesScreenFrame -State $state
         $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"

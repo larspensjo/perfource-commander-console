@@ -122,59 +122,58 @@ Describe 'Browser reducer' {
         $next.Runtime.IsRunning | Should -BeFalse
     }
 
-    It 'Describe action sets LastSelectedId to the currently focused changelist' {
+    It 'Describe action sets PendingRequest with kind FetchDescribe' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Describe' })
-        $next.Runtime.LastSelectedId | Should -Be $state.Derived.VisibleChangeIds[$state.Cursor.ChangeIndex]
+        $next.Runtime.PendingRequest.Kind     | Should -Be 'FetchDescribe'
+        $next.Runtime.PendingRequest.ChangeId | Should -Be $state.Derived.VisibleChangeIds[$state.Cursor.ChangeIndex]
     }
 
     It 'Describe action on empty list is a no-op' {
         $emptyState = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
         $next = Invoke-BrowserReducer -State $emptyState -Action ([pscustomobject]@{ Type = 'Describe' })
-        $next.Runtime.LastSelectedId | Should -BeNullOrEmpty
+        $next.Runtime.PendingRequest | Should -BeNullOrEmpty
     }
 
-    It 'Copy-BrowserState preserves DescribeCache by reference and copies LastSelectedId' {
+    It 'Copy-BrowserState preserves DescribeCache by reference and copies PendingRequest' {
         $state.Data.DescribeCache[42] = 'cached-value'
-        $state.Runtime.LastSelectedId = 'FI-2'
-        $state.Runtime.DeleteChangeId = 'FI-3'
+        $state.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'FetchDescribe'; ChangeId = 'FI-2' }
         $copy = Copy-BrowserState -State $state
-        $copy.Data.DescribeCache[42]    | Should -Be 'cached-value'
-        $copy.Runtime.LastSelectedId    | Should -Be 'FI-2'
-        $copy.Runtime.DeleteChangeId    | Should -Be 'FI-3'
+        $copy.Data.DescribeCache[42]        | Should -Be 'cached-value'
+        $copy.Runtime.PendingRequest.Kind   | Should -Be 'FetchDescribe'
+        $copy.Runtime.PendingRequest.ChangeId | Should -Be 'FI-2'
         # shared reference — mutation visible in copy
         $state.Data.DescribeCache[99] = 'new-entry'
         $copy.Data.DescribeCache[99]    | Should -Be 'new-entry'
     }
 
-    It 'Reload clears DescribeCache and LastSelectedId and sets ReloadRequested' {
+    It 'Reload clears DescribeCache and sets PendingRequest ReloadPending' {
         $state.Data.DescribeCache[1] = 'something'
-        $state.Runtime.LastSelectedId = 'FI-1'
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Reload' })
-        $next.Data.DescribeCache.Count  | Should -Be 0
-        $next.Runtime.LastSelectedId    | Should -BeNullOrEmpty
-        $next.Runtime.ReloadRequested   | Should -BeTrue
+        $next.Data.DescribeCache.Count         | Should -Be 0
+        $next.Runtime.PendingRequest.Kind      | Should -Be 'ReloadPending'
     }
 
     It 'Reload does not modify AllFilters in the reducer' {
         $before = $state.Data.AllFilters.Count
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Reload' })
-        $next.Data.AllFilters.Count   | Should -Be $before
-        $next.Runtime.ReloadRequested | Should -BeTrue
+        $next.Data.AllFilters.Count            | Should -Be $before
+        $next.Runtime.PendingRequest.Kind      | Should -Be 'ReloadPending'
     }
 
-    It 'DeleteChange action sets DeleteChangeId to the currently focused changelist' {
+    It 'DeleteChange action sets PendingRequest with kind DeleteChange' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'DeleteChange' })
-        $next.Runtime.DeleteChangeId | Should -Be $state.Derived.VisibleChangeIds[$state.Cursor.ChangeIndex]
+        $next.Runtime.PendingRequest.Kind     | Should -Be 'DeleteChange'
+        $next.Runtime.PendingRequest.ChangeId | Should -Be $state.Derived.VisibleChangeIds[$state.Cursor.ChangeIndex]
     }
 
     It 'DeleteChange action on empty list is a no-op' {
         $emptyState = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
         $next = Invoke-BrowserReducer -State $emptyState -Action ([pscustomobject]@{ Type = 'DeleteChange' })
-        $next.Runtime.DeleteChangeId | Should -BeNullOrEmpty
+        $next.Runtime.PendingRequest | Should -BeNullOrEmpty
     }
 }
 
@@ -481,8 +480,8 @@ Describe 'Files screen reducer — Step 1' {
         $state.Cursor.FileScrollTop | Should -Be 0
     }
 
-    It 'New-BrowserState includes LoadFilesRequested defaulting to false' {
-        $state.Runtime.LoadFilesRequested | Should -BeFalse
+    It 'New-BrowserState includes PendingRequest defaulting to null' {
+        $state.Runtime.PendingRequest | Should -BeNullOrEmpty
     }
 
     # ── OpenFilesScreen (Changelists → Files) ─────────────────────────────────
@@ -506,9 +505,9 @@ Describe 'Files screen reducer — Step 1' {
         $next.Data.FilesSourceKind | Should -Be 'Opened'
     }
 
-    It 'OpenFilesScreen sets LoadFilesRequested flag' {
+    It 'OpenFilesScreen sets PendingRequest to LoadFiles' {
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $next.Runtime.LoadFilesRequested | Should -BeTrue
+        $next.Runtime.PendingRequest.Kind | Should -Be 'LoadFiles'
     }
 
     It 'OpenFilesScreen clears FileFilterText and resets file cursor' {
@@ -523,7 +522,7 @@ Describe 'Files screen reducer — Step 1' {
     It 'OpenFilesScreen is a no-op when visible change list is empty' {
         $emptyState = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
         $next = Invoke-BrowserReducer -State $emptyState -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $next.Runtime.LoadFilesRequested | Should -BeFalse
+        $next.Runtime.PendingRequest | Should -BeNullOrEmpty
     }
 
     # ── CloseFilesScreen (Files → Changelists) ────────────────────────────────
@@ -537,14 +536,14 @@ Describe 'Files screen reducer — Step 1' {
 
     It 'HideCommandModal (Esc) on Files screen closes the screen when no overlay is open' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $state.Runtime.LoadFilesRequested = $false   # consume flag so screen stays on Files
+        $state.Runtime.PendingRequest = $null   # consume flag so screen stays on Files
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'HideCommandModal' })
         $next.Ui.ScreenStack | Should -Be @('Changelists')
     }
 
     It 'HideCommandModal closes help overlay first when overlay is open on Files screen' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $state.Runtime.LoadFilesRequested = $false
+        $state.Runtime.PendingRequest = $null
         $state.Runtime.HelpOverlayOpen   = $true
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'HideCommandModal' })
         $next.Runtime.HelpOverlayOpen | Should -BeFalse
@@ -553,7 +552,7 @@ Describe 'Files screen reducer — Step 1' {
 
     It 'LeftArrow action (CloseFilesScreen) on Files screen pops to Changelists' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $state.Runtime.LoadFilesRequested = $false
+        $state.Runtime.PendingRequest = $null
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'CloseFilesScreen' })
         $next.Ui.ScreenStack | Should -Be @('Changelists')
     }
@@ -562,7 +561,7 @@ Describe 'Files screen reducer — Step 1' {
 
     It 'MoveDown/MoveUp navigate FileIndex when files are loaded' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $state.Runtime.LoadFilesRequested = $false
+        $state.Runtime.PendingRequest = $null
         # Inject 5 fake file entries into the cache
         $cacheKey = "$($state.Data.FilesSourceChange)`:$($state.Data.FilesSourceKind)"
         $state.Data.FileCache[$cacheKey] = @(0..4 | ForEach-Object { [pscustomobject]@{ DepotPath = "//depot/file$_.txt" } })
@@ -578,7 +577,7 @@ Describe 'Files screen reducer — Step 1' {
 
     It 'MoveDown clamps FileIndex at last entry' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $state.Runtime.LoadFilesRequested = $false
+        $state.Runtime.PendingRequest = $null
         $cacheKey = "$($state.Data.FilesSourceChange)`:$($state.Data.FilesSourceKind)"
         $state.Data.FileCache[$cacheKey] = @(0..2 | ForEach-Object { [pscustomobject]@{ DepotPath = "//depot/f$_.txt" } })
         $state = Update-BrowserDerivedState -State $state
@@ -591,7 +590,7 @@ Describe 'Files screen reducer — Step 1' {
 
     It 'MoveHome and MoveEnd work on Files screen' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $state.Runtime.LoadFilesRequested = $false
+        $state.Runtime.PendingRequest = $null
         $cacheKey = "$($state.Data.FilesSourceChange)`:$($state.Data.FilesSourceKind)"
         $state.Data.FileCache[$cacheKey] = @(0..9 | ForEach-Object { [pscustomobject]@{ DepotPath = "//depot/f$_.txt" } })
         $state = Update-BrowserDerivedState -State $state
@@ -608,14 +607,14 @@ Describe 'Files screen reducer — Step 1' {
 
     It 'VisibleFileIndices is empty when no files are in FileCache' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $state.Runtime.LoadFilesRequested = $false
+        $state.Runtime.PendingRequest = $null
         $state = Update-BrowserDerivedState -State $state
         $state.Derived.VisibleFileIndices.Count | Should -Be 0
     }
 
     It 'VisibleFileIndices contains 0..N-1 after files are loaded into cache' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $state.Runtime.LoadFilesRequested = $false
+        $state.Runtime.PendingRequest = $null
         $cacheKey = "$($state.Data.FilesSourceChange)`:$($state.Data.FilesSourceKind)"
         $state.Data.FileCache[$cacheKey] = @(0..4 | ForEach-Object { [pscustomobject]@{ DepotPath = "//depot/f$_.txt" } })
         $state = Update-BrowserDerivedState -State $state
@@ -624,7 +623,7 @@ Describe 'Files screen reducer — Step 1' {
 
     It 'VisibleFileIndices with a single file returns @(0) not $null' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $state.Runtime.LoadFilesRequested = $false
+        $state.Runtime.PendingRequest = $null
         $cacheKey = "$($state.Data.FilesSourceChange)`:$($state.Data.FilesSourceKind)"
         $state.Data.FileCache[$cacheKey] = @([pscustomobject]@{ DepotPath = '//depot/solo.txt' })
         $state = Update-BrowserDerivedState -State $state
@@ -665,14 +664,14 @@ Describe 'Files screen reducer — Step 1' {
 
     It 'Quit action on Files screen stops the runtime' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $state.Runtime.LoadFilesRequested = $false
+        $state.Runtime.PendingRequest = $null
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Quit' })
         $next.Runtime.IsRunning | Should -BeFalse
     }
 
     It 'Resize on Files screen updates Layout and keeps ScreenStack' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $state.Runtime.LoadFilesRequested = $false
+        $state.Runtime.PendingRequest = $null
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
             Type = 'Resize'; Width = 160; Height = 50
         })
@@ -683,7 +682,7 @@ Describe 'Files screen reducer — Step 1' {
 
     It 'ToggleHelpOverlay is forwarded on Files screen' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $state.Runtime.LoadFilesRequested = $false
+        $state.Runtime.PendingRequest = $null
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleHelpOverlay' })
         $next.Runtime.HelpOverlayOpen    | Should -BeTrue
         $next.Ui.ScreenStack[-1]         | Should -Be 'Files'
@@ -691,7 +690,7 @@ Describe 'Files screen reducer — Step 1' {
 
     It 'LogCommandExecution on Files screen is forwarded into CommandLog' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $state.Runtime.LoadFilesRequested = $false
+        $state.Runtime.PendingRequest = $null
         $action = [pscustomobject]@{
             Type           = 'LogCommandExecution'
             CommandLine    = 'p4 describe -s 123'
@@ -714,7 +713,7 @@ Describe 'Files screen reducer — Step 1' {
 
     It 'SwitchView from Files screen is forwarded and pops back to the target root view' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $state.Runtime.LoadFilesRequested = $false
+        $state.Runtime.PendingRequest = $null
 
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'CommandLog' })
 

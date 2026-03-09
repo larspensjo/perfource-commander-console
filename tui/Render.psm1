@@ -1123,7 +1123,7 @@ function Build-FilesScreenFrame {
     $sourceKind    = Get-PropertyValueOrDefault -Object $State.Data  -Name 'FilesSourceKind'   -Default ''
     $filterText    = Get-PropertyValueOrDefault -Object $State.Query -Name 'FileFilterText'    -Default ''
     $fileCount     = if (($State.Derived.PSObject.Properties.Match('VisibleFileIndices')).Count -gt 0) { $State.Derived.VisibleFileIndices.Count } else { 0 }
-    $isLoading     = [bool](Get-PropertyValueOrDefault -Object $State.Runtime -Name 'LoadFilesRequested' -Default $false)
+    $isLoading     = ($State.Runtime.PSObject.Properties['PendingRequest']?.Value?.Kind -eq 'LoadFiles')
     $cacheKey      = "${sourceChange}:${sourceKind}"
     $fileCache     = Get-PropertyValueOrDefault -Object $State.Data -Name 'FileCache' -Default $null
     [object[]]$allFiles = if ($null -ne $fileCache -and $fileCache.ContainsKey($cacheKey)) { @($fileCache[$cacheKey]) } else { @() }

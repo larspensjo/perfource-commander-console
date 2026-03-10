@@ -147,6 +147,71 @@ function Unregister-P4Observer {
     $script:P4ExecutionObserver = $null
 }
 
+function Test-P4JsonRecordIsError {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowNull()][object]$Record
+    )
+
+    if ($null -eq $Record) { return $false }
+
+    $codeProp = $Record.PSObject.Properties['code']
+    if ($null -ne $codeProp -and [string]::Equals([string]$codeProp.Value, 'error', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+
+    $severityProp = $Record.PSObject.Properties['severity']
+    if ($null -ne $severityProp) {
+        $severity = 0
+        if ([int]::TryParse([string]$severityProp.Value, [ref]$severity)) {
+            return ($severity -ge 3)
+        }
+    }
+
+    return $false
+}
+
+function Get-P4JsonRecordMessageText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowNull()][object]$Record,
+        [AllowEmptyString()][string]$FallbackText = ''
+    )
+
+    if ($null -eq $Record) { return ([string]$FallbackText).Trim() }
+
+    foreach ($propertyName in @('data', 'message', 'fmt', 'desc')) {
+        $prop = $Record.PSObject.Properties[$propertyName]
+        if ($null -eq $prop) { continue }
+
+        $text = [string]$prop.Value
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            return ($text -replace '\r?\n', ' ').Trim()
+        }
+    }
+
+    return ([string]$FallbackText).Trim()
+}
+
+function Test-P4JsonRecordIsCommandFailure {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string[]]$P4Args,
+        [Parameter(Mandatory)][AllowNull()][object]$Record
+    )
+
+    if ($null -eq $Record -or $P4Args.Count -eq 0) { return $false }
+
+    $dataText = Get-P4JsonRecordMessageText -Record $Record
+    if ([string]::IsNullOrWhiteSpace($dataText)) { return $false }
+
+    if ($P4Args.Count -ge 2 -and $P4Args[0] -eq 'change' -and $P4Args[1] -eq '-d') {
+        return ($dataText -notmatch '(?i)^change\s+\d+\s+deleted\.\s*$')
+    }
+
+    return $false
+}
+
 function Invoke-P4 {
     [CmdletBinding()]
     param(
@@ -204,29 +269,57 @@ function Invoke-P4 {
     $process.Dispose()
 
     $rawLines  = @(($stdout -split "`r?`n") | Where-Object { $_ -ne '' })
+    $records   = @($rawLines | ForEach-Object { ConvertFrom-Json $_ })
+    $stdoutErrorMessages = @()
+
+    for ($i = 0; $i -lt $records.Count; $i++) {
+        $record = $records[$i]
+        $fallbackText = if ($i -lt $rawLines.Count) { [string]$rawLines[$i] } else { '' }
+        if ((Test-P4JsonRecordIsError -Record $record) -or (Test-P4JsonRecordIsCommandFailure -P4Args $P4Args -Record $record)) {
+            $stdoutErrorMessages += @(Get-P4JsonRecordMessageText -Record $record -FallbackText $fallbackText)
+        }
+    }
+
+    $effectiveExitCode = $exitCode
+    if ($effectiveExitCode -eq 0 -and $stdoutErrorMessages.Count -gt 0) {
+        $effectiveExitCode = 1
+    }
+
+    $effectiveErrorOutput = if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+        $stderr
+    } elseif ($stdoutErrorMessages.Count -gt 0) {
+        $stdoutErrorMessages -join "`n"
+    } else {
+        ''
+    }
+
     $endedAt   = Get-Date
     $durationMs = [int](($endedAt - $startedAt).TotalMilliseconds)
 
     if ($script:P4ExecutionObserver) {
         try {
             & $script:P4ExecutionObserver -CommandLine $commandLine -RawLines $rawLines `
-                -ExitCode $exitCode -ErrorOutput $stderr `
+                -ExitCode $effectiveExitCode -ErrorOutput $effectiveErrorOutput `
                 -StartedAt $startedAt -EndedAt $endedAt -DurationMs $durationMs
         } catch { <# observer must not break p4 operations #> }
     }
 
-    if ($exitCode -ne 0) {
+    if ($effectiveExitCode -ne 0) {
         $messageParts = @(
-            "p4 failed (exit $exitCode).",
+            "p4 failed (exit $effectiveExitCode).",
             "Args: $($psi.Arguments)"
         )
         if ($stderr) { $messageParts += "STDERR: $stderr" }
-        if ($stdout) { $messageParts += "STDOUT: $stdout" }
+        if ($stdoutErrorMessages.Count -gt 0) {
+            $messageParts += "STDOUT: $($stdoutErrorMessages -join "`n")"
+        } elseif ($stdout) {
+            $messageParts += "STDOUT: $stdout"
+        }
 
         throw ($messageParts -join "`n")
     }
 
-    return @($rawLines | ForEach-Object { ConvertFrom-Json $_ })
+    return $records
 }
 
 function Get-P4Info {

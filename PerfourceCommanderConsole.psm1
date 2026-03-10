@@ -48,14 +48,25 @@ Register-WorkflowKind -Kind 'DeleteMarked' -Execute {
     })
 
     $successIds = [System.Collections.Generic.List[string]]::new()
+    $lastFailureError = ''
 
     foreach ($changeId in $changeIds) {
         $changeNum = [int]$changeId
-        try {
+        $deleteCmdLine = Format-P4CommandLine -P4Args @('change', '-d', "$changeNum")
+        $result = Invoke-BrowserWorkflowCommand -State $state -CommandLine $deleteCmdLine -WorkItem {
+            param($s)
             Remove-P4Changelist -Change $changeNum
+            return $s
+        }
+        $state = $result.State
+
+        if ($result.Succeeded) {
             $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowItemComplete' })
             [void]$successIds.Add($changeId)
-        } catch {
+        } else {
+            if (-not [string]::IsNullOrWhiteSpace([string]$result.ErrorText)) {
+                $lastFailureError = [string]$result.ErrorText
+            }
             $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
                 Type = 'WorkflowItemFailed'; ChangeId = $changeId
             })
@@ -70,7 +81,10 @@ Register-WorkflowKind -Kind 'DeleteMarked' -Execute {
     $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowEnd' })
 
     # Trigger a fresh reload so AllChanges reflects reality
-    $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Reload' })
+    $state = Invoke-BrowserPendingChangesReload -State $state
+    if (-not [string]::IsNullOrWhiteSpace($lastFailureError)) {
+        $state.Runtime.LastError = $lastFailureError
+    }
 
     return $state
 }
@@ -348,6 +362,45 @@ function Invoke-BrowserFilesLoad {
     }
 }
 
+function Invoke-BrowserWorkflowCommand {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][string]$CommandLine,
+        [Parameter(Mandatory = $true)][scriptblock]$WorkItem
+    )
+
+    $nextState = Invoke-BrowserSideEffect -State $State -CommandLine $CommandLine -WorkItem $WorkItem
+    [object[]]$history = @($nextState.Runtime.ModalPrompt.History)
+    $historyItem = if ($history.Count -gt 0) { $history[0] } else { $null }
+    $matchesCommand = $null -ne $historyItem -and [string]::Equals([string]$historyItem.CommandLine, $CommandLine, [System.StringComparison]::Ordinal)
+
+    return [pscustomobject]@{
+        State     = $nextState
+        Succeeded = ($matchesCommand -and [bool]$historyItem.Succeeded)
+        ErrorText = if ($matchesCommand) { [string]$historyItem.ErrorText } else { [string]$nextState.Runtime.LastError }
+    }
+}
+
+function Invoke-BrowserPendingChangesReload {
+    param(
+        [Parameter(Mandatory = $true)]$State
+    )
+
+    $configuredMax = $State.Runtime.ConfiguredMax
+    $reloadCmdLine = "p4 changes -s pending -m $configuredMax"
+    return Invoke-BrowserSideEffect -State $State -CommandLine $reloadCmdLine -WorkItem {
+        param($s)
+        $fresh = Get-P4ChangelistEntries -Max $s.Runtime.ConfiguredMax
+        $s.Data.AllChanges = @($fresh)
+        $s.Runtime.LastError = $null
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{
+            Type         = 'ReconcileMarks'
+            AllChangeIds = @($fresh | ForEach-Object { [string]$_.Id })
+        })
+        return Update-BrowserDerivedState -State $s
+    }
+}
+
 function Start-P4Browser {
     <#
     .SYNOPSIS
@@ -453,19 +506,7 @@ function Start-P4Browser {
 
                     switch ($req.Kind) {
                         'ReloadPending' {
-                            $configuredMax = $state.Runtime.ConfiguredMax
-                            $reloadCmdLine = "p4 changes -s pending -m $configuredMax"
-                            $state = Invoke-BrowserSideEffect -State $state -CommandLine $reloadCmdLine -WorkItem {
-                                param($s)
-                                $fresh = Get-P4ChangelistEntries -Max $s.Runtime.ConfiguredMax
-                                $s.Data.AllChanges = @($fresh)
-                                $s.Runtime.LastError = $null
-                                $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{
-                                    Type         = 'ReconcileMarks'
-                                    AllChangeIds = @($fresh | ForEach-Object { [string]$_.Id })
-                                })
-                                return Update-BrowserDerivedState -State $s
-                            }
+                            $state = Invoke-BrowserPendingChangesReload -State $state
                         }
                         'ReloadSubmitted' {
                             $reloadSubmittedSpec = if ([string]::IsNullOrWhiteSpace([string]$state.Data.CurrentClient)) { '//...' } else { "//$($state.Data.CurrentClient)/..." }

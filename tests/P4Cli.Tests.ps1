@@ -45,6 +45,63 @@ Describe 'Invoke-P4' {
             Should -Throw '*p4 failed (exit 1)*'
     }
 
+    It 'throws when p4 emits a JSON error record even if the process exit code is zero' {
+        $scriptPath = Join-Path $TestDrive 'p4-json-error.cmd'
+        Set-Content -Path $scriptPath -Value @(
+            '@echo off',
+            'echo {^"code^":^"error^",^"data^":^"Change 27202548 has 6 open file(s) associated with it and can''t be deleted.^"}',
+            'exit /b 0'
+        )
+
+        try {
+            & (Get-Module P4Cli) { param($path) $script:P4Executable = $path } $scriptPath
+            {
+                & (Get-Module P4Cli) { Invoke-P4 -P4Args @('change', '-d', '27202548') }
+            } | Should -Throw "*can't be deleted*"
+        }
+        finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'cmd.exe' }
+        }
+    }
+
+    It 'throws when p4 change -d returns a non-success level-only data message' {
+        $scriptPath = Join-Path $TestDrive 'p4-change-delete-fail.cmd'
+        Set-Content -Path $scriptPath -Value @(
+            '@echo off',
+            'echo {^"data^":^"Change 27202548 has 6 open file(s) associated with it and can''t be deleted.^",^"level^":0}',
+            'exit /b 0'
+        )
+
+        try {
+            & (Get-Module P4Cli) { param($path) $script:P4Executable = $path } $scriptPath
+            {
+                & (Get-Module P4Cli) { Invoke-P4 -P4Args @('change', '-d', '27202548') }
+            } | Should -Throw "*can't be deleted*"
+        }
+        finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'cmd.exe' }
+        }
+    }
+
+    It 'does not throw when p4 change -d returns the normal deleted confirmation message' {
+        $scriptPath = Join-Path $TestDrive 'p4-change-delete-ok.cmd'
+        Set-Content -Path $scriptPath -Value @(
+            '@echo off',
+            'echo {^"data^":^"Change 27202548 deleted.^",^"level^":0}',
+            'exit /b 0'
+        )
+
+        try {
+            & (Get-Module P4Cli) { param($path) $script:P4Executable = $path } $scriptPath
+            {
+                & (Get-Module P4Cli) { Invoke-P4 -P4Args @('change', '-d', '27202548') }
+            } | Should -Not -Throw
+        }
+        finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'cmd.exe' }
+        }
+    }
+
     It 'throws a timeout error and does not hang when the process exceeds TimeoutMs' {
         # cmd.exe /c ping -n 10 127.0.0.1 takes ~9 s; 400 ms timeout fires first.
         $before = Get-Date
@@ -780,6 +837,68 @@ Describe 'P4 observer' {
             InModuleScope P4Cli { Invoke-P4 -P4Args @('/c', 'exit', '1') }
         } catch {}
         $called.Value | Should -BeTrue
+    }
+
+    It 'observer sees JSON error-record failures as unsuccessful commands' {
+        $captured = [pscustomobject]@{ ExitCode = -1; ErrorOutput = '' }
+        $scriptPath = Join-Path $TestDrive 'p4-json-error-observer.cmd'
+        Set-Content -Path $scriptPath -Value @(
+            '@echo off',
+            'echo {^"code^":^"error^",^"data^":^"Change 27202548 has shelved files associated with it and can''t be deleted.^"}',
+            'exit /b 0'
+        )
+        Register-P4Observer -Observer {
+            param($CommandLine, $RawLines, $ExitCode, $ErrorOutput, $StartedAt, $EndedAt, $DurationMs)
+            [void]$CommandLine
+            [void]$RawLines
+            [void]$StartedAt
+            [void]$EndedAt
+            [void]$DurationMs
+            $captured.ExitCode = $ExitCode
+            $captured.ErrorOutput = $ErrorOutput
+        }
+
+        try {
+            & (Get-Module P4Cli) { param($path) $script:P4Executable = $path } $scriptPath
+            & (Get-Module P4Cli) { Invoke-P4 -P4Args @('change', '-d', '27202548') }
+        } catch {}
+        finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'cmd.exe' }
+        }
+
+        $captured.ExitCode | Should -Be 1
+        $captured.ErrorOutput | Should -Match "can't be deleted"
+    }
+
+    It 'observer sees level-only delete failures as unsuccessful commands' {
+        $captured = [pscustomobject]@{ ExitCode = -1; ErrorOutput = '' }
+        $scriptPath = Join-Path $TestDrive 'p4-json-level-observer.cmd'
+        Set-Content -Path $scriptPath -Value @(
+            '@echo off',
+            'echo {^"data^":^"Change 27202548 has 6 open file(s) associated with it and can''t be deleted.^",^"level^":0}',
+            'exit /b 0'
+        )
+        Register-P4Observer -Observer {
+            param($CommandLine, $RawLines, $ExitCode, $ErrorOutput, $StartedAt, $EndedAt, $DurationMs)
+            [void]$CommandLine
+            [void]$RawLines
+            [void]$StartedAt
+            [void]$EndedAt
+            [void]$DurationMs
+            $captured.ExitCode = $ExitCode
+            $captured.ErrorOutput = $ErrorOutput
+        }
+
+        try {
+            & (Get-Module P4Cli) { param($path) $script:P4Executable = $path } $scriptPath
+            & (Get-Module P4Cli) { Invoke-P4 -P4Args @('change', '-d', '27202548') }
+        } catch {}
+        finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'cmd.exe' }
+        }
+
+        $captured.ExitCode | Should -Be 1
+        $captured.ErrorOutput | Should -Match "can't be deleted"
     }
 
     It 'exceptions thrown inside the observer do not propagate out of Invoke-P4' {

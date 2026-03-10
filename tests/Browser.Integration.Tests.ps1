@@ -192,3 +192,73 @@ Describe 'Browser file loading helpers' {
         }
     }
 }
+
+Describe 'Workflow error handling' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+    }
+
+    It 'DeleteMarked preserves delete failures after refreshing pending changelists' {
+        InModuleScope PerfourceCommanderConsole {
+            Mock Render-BrowserState { }
+            Mock Get-P4ChangelistEntries {
+                @(
+                    [pscustomobject]@{
+                        Id               = '101'
+                        Title            = 'One'
+                        Kind             = 'Pending'
+                        User             = 'alice'
+                        Captured         = [datetime]'2026-03-07 09:15:00'
+                        HasOpenedFiles   = $true
+                        HasShelvedFiles  = $true
+                        OpenedFileCount  = 6
+                        ShelvedFileCount = 1
+                    }
+                )
+            }
+            Mock Remove-P4Changelist {
+                throw "p4 failed (exit 1).`nArgs: change -d 101`nSTDERR: Change 101 has 6 open file(s) associated with it and can't be deleted."
+            }
+
+            $changes = @(
+                [pscustomobject]@{
+                    Id              = '101'
+                    Title           = 'One'
+                    HasShelvedFiles = $true
+                    HasOpenedFiles  = $true
+                    Captured        = [datetime]'2026-03-07 09:15:00'
+                }
+            )
+            $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+            $state.Runtime.ConfiguredMax = 25
+            [void]$state.Query.MarkedChangeIds.Add('101')
+
+            $next = & $script:WorkflowRegistry['DeleteMarked'] -State $state -Request ([pscustomobject]@{
+                ChangeIds = @('101')
+            })
+
+            $next.Runtime.PendingRequest | Should -BeNullOrEmpty
+            $next.Runtime.LastWorkflowResult.Kind        | Should -Be 'DeleteMarked'
+            $next.Runtime.LastWorkflowResult.DoneCount   | Should -Be 0
+            $next.Runtime.LastWorkflowResult.FailedCount | Should -Be 1
+            @($next.Runtime.LastWorkflowResult.FailedIds) | Should -Contain '101'
+            $next.Runtime.LastError | Should -Match "can't be deleted"
+            @($next.Query.MarkedChangeIds) | Should -Contain '101'
+
+            Assert-MockCalled Remove-P4Changelist -Times 1 -Exactly -ParameterFilter {
+                $Change -eq 101
+            }
+            Assert-MockCalled Get-P4ChangelistEntries -Times 1 -Exactly -ParameterFilter {
+                $Max -eq 25
+            }
+
+            $deleteHistory = @(
+                $next.Runtime.ModalPrompt.History |
+                    Where-Object { [string]$_.CommandLine -eq 'p4 change -d 101' }
+            )
+            $deleteHistory.Count | Should -Be 1
+            $deleteHistory[0].Succeeded | Should -BeFalse
+            $deleteHistory[0].ErrorText | Should -Match "can't be deleted"
+        }
+    }
+}

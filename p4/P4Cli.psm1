@@ -8,6 +8,16 @@ $script:P4Executable = 'p4.exe'
 # Maximum number of formatted output lines to store per command invocation.
 $script:CommandOutputMaxLines = 2000
 
+# Shared file spec used for 'p4 fstat' queries that enumerate workspace files.
+$script:P4FstatAllFilesSpec = '//...'
+
+# Shared field list for opened-file 'p4 fstat' queries that also expose unresolved state.
+$script:P4FstatOpenedFileFields = 'change,depotFile,action,type,unresolved'
+
+# Shared field lists for unresolved-file 'p4 fstat' queries.
+$script:P4FstatUnresolvedCountFields = 'change,depotFile,unresolved'
+$script:P4FstatUnresolvedPathFields  = 'depotFile,unresolved'
+
 # Observer scriptblock invoked after each Invoke-P4 call.
 # Signature: { param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs) }
 [scriptblock]$script:P4ExecutionObserver = $null
@@ -285,7 +295,7 @@ function Get-P4ChangelistEntries {
     # Workspace-wide unresolved enrichment — degrades gracefully on failure.
     # Short-circuit when there are no pending changelists to avoid unnecessary p4 fstat calls.
     $unresolvedCounts = if ($changeNumbers.Count -gt 0) {
-        Get-P4UnresolvedFileCounts
+        Get-P4UnresolvedFileCounts -ChangeNumbers $changeNumbers
     } else {
         [System.Collections.Generic.Dictionary[int,int]]::new()
     }
@@ -331,8 +341,8 @@ function ConvertFrom-P4DescribeRecordToFiles {
 
     if ($null -ne ($Record.PSObject.Properties['depotFile'])) {
         $depotFiles = @($Record.depotFile)
-        $actions    = if ($null -ne ($Record.PSObject.Properties['action'])) { @($Record.action) } else { @() }
-        $types      = if ($null -ne ($Record.PSObject.Properties['type']))   { @($Record.type)   } else { @() }
+        $actions    = @(if ($null -ne ($Record.PSObject.Properties['action'])) { $Record.action })
+        $types      = @(if ($null -ne ($Record.PSObject.Properties['type']))   { $Record.type   })
 
         for ($i = 0; $i -lt $depotFiles.Count; $i++) {
             $files.Add([pscustomobject]@{
@@ -387,6 +397,41 @@ function Test-IsP4NoOpenedFilesError {
     return ($Message -match '(?i)file\(s\)\s+not\s+opened|no\s+such\s+file\(s\)')
 }
 
+function New-P4FstatOpenedArgs {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][int]$Change
+    )
+
+    return @(
+        'fstat',
+        '-Ro',
+        '-e', "$Change",
+        '-T', $script:P4FstatOpenedFileFields,
+        $script:P4FstatAllFilesSpec
+    )
+}
+
+function Test-P4FstatRecordIsUnresolved {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Record
+    )
+
+    $unresolvedProp = $Record.PSObject.Properties['unresolved']
+    if ($null -eq $unresolvedProp) { return $false }
+
+    $unresolvedText = [string]$unresolvedProp.Value
+    if ([string]::IsNullOrWhiteSpace($unresolvedText)) { return $true }
+
+    $unresolvedCount = 0
+    if ([int]::TryParse($unresolvedText, [ref]$unresolvedCount)) {
+        return ($unresolvedCount -gt 0)
+    }
+
+    return $true
+}
+
 function Test-IsP4NoShelvedChangesError {
     [CmdletBinding()]
     param(
@@ -414,7 +459,8 @@ function ConvertFrom-P4OpenedLinesToFileCounts {
 }
 
 # Pure helper: count shelved files per changelist from 'p4 -ztag -Mj describe -S -s' JSON output.
-# Each PSObject record is one changelist; depotFile is a (possibly array) property.
+# Each PSObject record is one changelist; files may be exposed either as a
+# depotFile array property or as indexed depotFileN properties.
 function ConvertFrom-P4DescribeShelvedLinesToFileCounts {
     [CmdletBinding()]
     param(
@@ -424,8 +470,9 @@ function ConvertFrom-P4DescribeShelvedLinesToFileCounts {
     $result = [System.Collections.Generic.Dictionary[int,int]]::new()
     foreach ($record in $Records) {
         if ($null -eq ($record.PSObject.Properties['change'])) { continue }
-        $change    = [int]$record.change
-        $fileCount = if ($null -ne ($record.PSObject.Properties['depotFile'])) { @($record.depotFile).Count } else { 0 }
+        $change        = [int]$record.change
+        $describedFiles = @(ConvertFrom-P4DescribeRecordToFiles -Record $record)
+        $fileCount     = $describedFiles.Count
         $result[$change] = $fileCount
     }
     return $result
@@ -549,7 +596,9 @@ function Get-P4OpenedFiles {
     .SYNOPSIS
         Returns FileEntry objects for all files opened in the given pending changelist.
     .DESCRIPTION
-        Calls 'p4 -ztag -Mj opened -c <cl>' (global flags added by Invoke-P4) and returns parsed PSObjects as FileEntry objects.
+        Calls 'p4 -ztag -Mj fstat -Ro -e <cl> -T change,depotFile,action,type,unresolved //...'
+        (global flags added by Invoke-P4) and returns parsed PSObjects as FileEntry objects.
+        When present, the 'unresolved' field is projected into FileEntry.IsUnresolved.
         An empty changelist (no opened files) returns an empty array without throwing.
     .PARAMETER Change
         The changelist number whose opened files to retrieve.
@@ -561,7 +610,7 @@ function Get-P4OpenedFiles {
 
     $lines = @()
     try {
-        $lines = @(Invoke-P4 -P4Args @('opened', '-c', "$Change"))
+        $lines = @(Invoke-P4 -P4Args (New-P4FstatOpenedArgs -Change $Change))
     }
     catch {
         $errorMessage = [string]$_.Exception.Message
@@ -579,8 +628,9 @@ function Get-P4OpenedFiles {
         $action    = if ($null -ne ($record.PSObject.Properties['action'])) { [string]$record.action } else { '' }
         $fileType  = if ($null -ne ($record.PSObject.Properties['type']))   { [string]$record.type   } else { '' }
         $recChange = if ($null -ne ($record.PSObject.Properties['change'])) { [int]$record.change    } else { $Change }
+        $isUnresolved = Test-P4FstatRecordIsUnresolved -Record $record
         New-P4FileEntry -DepotPath $depotPath -Action $action -FileType $fileType `
-                        -Change $recChange -SourceKind 'Opened'
+                        -Change $recChange -SourceKind 'Opened' -IsUnresolved $isUnresolved
     }
 
     return @($result)
@@ -591,9 +641,9 @@ function Test-IsP4NoUnresolvedFilesError {
     .SYNOPSIS
         Returns $true when the p4 error message indicates no unresolved files exist.
     .DESCRIPTION
-        'p4 fstat -Ru' exits non-zero with a 'no such file(s)' message when the
-        workspace has no unresolved open files.  This should be treated as a normal
-        empty result rather than an error.
+        'p4 fstat -Ru //...' exits non-zero with a 'no such file(s)' message when
+        the workspace or changelist has no unresolved open files. This should be
+        treated as a normal empty result rather than an error.
     #>
     [CmdletBinding()]
     param(
@@ -603,7 +653,23 @@ function Test-IsP4NoUnresolvedFilesError {
     return ($Message -match '(?i)no\s+such\s+file\(s\)')
 }
 
-# Pure helper: convert 'p4 fstat -Ro -Ru' records into a per-changelist unresolved file count.
+function New-P4FstatUnresolvedArgs {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Fields,
+        [AllowNull()][Nullable[int]]$Change
+    )
+
+    $p4Args = @('fstat', '-Ru')
+    if ($PSBoundParameters.ContainsKey('Change') -and $null -ne $Change) {
+        $p4Args += @('-e', "$Change")
+    }
+
+    $p4Args += @('-T', $Fields, $script:P4FstatAllFilesSpec)
+    return ,$p4Args
+}
+
+# Pure helper: convert 'p4 fstat -Ru' records into a per-changelist unresolved file count.
 # Each record represents one unresolved open file; 'change' identifies the CL.
 function ConvertFrom-P4FstatUnresolvedRecordsToFileCounts {
     [CmdletBinding()]
@@ -628,17 +694,62 @@ function Get-P4UnresolvedFileCounts {
     .SYNOPSIS
         Returns a dictionary mapping changelist number to its unresolved open-file count.
     .DESCRIPTION
-        Uses one workspace-wide 'p4 fstat -Ro -Ru' query to enumerate all unresolved
-        open files and aggregates counts per changelist.
+        When ChangeNumbers are supplied, uses changelist-scoped
+        'p4 fstat -Ru -e <change> -T change,depotFile,unresolved //...'
+        queries so pending changelist enrichment is explicit and valid.
+        When ChangeNumbers are omitted, falls back to a workspace-wide
+        'p4 fstat -Ru -T change,depotFile,unresolved //...' query.
         Returns an empty dictionary when there are no unresolved files.
         Degrades gracefully to an empty dictionary on unexpected failures so that
         pending changelist loading is never blocked by unresolved enrichment errors.
+    .PARAMETER ChangeNumbers
+        Optional pending changelist numbers to query individually with '-e <change>'.
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [AllowEmptyCollection()][int[]]$ChangeNumbers = @()
+    )
+
+    $changesToQuery = @(
+        $ChangeNumbers |
+            Where-Object { $_ -gt 0 } |
+            Sort-Object -Stable -Unique
+    )
+
+    if ($changesToQuery.Count -gt 0) {
+        $result = [System.Collections.Generic.Dictionary[int,int]]::new()
+
+        foreach ($change in $changesToQuery) {
+            try {
+                $lines = Invoke-P4 -P4Args (New-P4FstatUnresolvedArgs -Fields $script:P4FstatUnresolvedCountFields -Change $change)
+            }
+            catch {
+                $errorMessage = [string]$_.Exception.Message
+                if (Test-IsP4NoUnresolvedFilesError -Message $errorMessage) {
+                    continue
+                }
+
+                # Degrade gracefully: skip this changelist rather than blocking changelist load.
+                continue
+            }
+
+            if ($null -eq $lines) { continue }
+
+            $recordCount = @(
+                $lines |
+                    Where-Object { $null -ne ($_.PSObject.Properties['depotFile']) }
+            ).Count
+
+            if ($recordCount -gt 0) {
+                $result[$change] = $recordCount
+            }
+        }
+
+        return $result
+    }
 
     try {
-        $lines = Invoke-P4 -P4Args @('fstat', '-Ro', '-Ru', '-T', 'change,depotFile,unresolved')
+        $lines = Invoke-P4 -P4Args (New-P4FstatUnresolvedArgs -Fields $script:P4FstatUnresolvedCountFields)
     }
     catch {
         $errorMessage = [string]$_.Exception.Message
@@ -658,8 +769,9 @@ function Get-P4UnresolvedDepotPaths {
     .SYNOPSIS
         Returns a case-insensitive HashSet of depot paths for unresolved files in a changelist.
     .DESCRIPTION
-        Uses 'p4 fstat -Ro -Ru -e <change>' to retrieve the subset of opened files that
-        are unresolved.  Returns an empty set when the changelist has no unresolved files.
+        Uses 'p4 fstat -Ru -e <change> -T depotFile,unresolved //...' to retrieve
+        the subset of opened files that are unresolved. Returns an empty set when the
+        changelist has no unresolved files.
     .PARAMETER Change
         The pending changelist number to query.
     #>
@@ -671,21 +783,17 @@ function Get-P4UnresolvedDepotPaths {
     $result = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
     try {
-        $lines = Invoke-P4 -P4Args @('fstat', '-Ro', '-Ru', '-e', "$Change", '-T', 'depotFile,unresolved')
+        $openedFiles = @(Get-P4OpenedFiles -Change $Change)
     }
     catch {
-        $errorMessage = [string]$_.Exception.Message
-        if (Test-IsP4NoUnresolvedFilesError -Message $errorMessage) {
-            return ,$result
-        }
         return ,$result
     }
 
-    if ($null -eq $lines) { return ,$result }
+    if ($null -eq $openedFiles) { return ,$result }
 
-    foreach ($record in $lines) {
-        if ($null -eq ($record.PSObject.Properties['depotFile'])) { continue }
-        [void]$result.Add([string]$record.depotFile)
+    foreach ($entry in $openedFiles) {
+        if (-not [bool]$entry.IsUnresolved) { continue }
+        [void]$result.Add([string]$entry.DepotPath)
     }
 
     return ,$result

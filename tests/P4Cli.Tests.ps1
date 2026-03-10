@@ -424,6 +424,25 @@ Describe 'ConvertFrom-P4DescribeShelvedLinesToFileCounts' {
         $result.ContainsKey(500) | Should -BeTrue
         $result[500]             | Should -Be 0
     }
+
+    It 'counts indexed depotFileN properties from describe output' {
+        $records = @(
+            [pscustomobject]@{
+                change = '600'
+                user = 'u'
+                depotFile0 = '//depot/one.txt'
+                action0 = 'edit'
+                type0 = 'text'
+                depotFile1 = '//depot/two.txt'
+                action1 = 'add'
+                type1 = 'text'
+            }
+        )
+
+        $result = InModuleScope P4Cli { ConvertFrom-P4DescribeShelvedLinesToFileCounts -Records $args[0] } -ArgumentList @(,$records)
+        $result.ContainsKey(600) | Should -BeTrue
+        $result[600]             | Should -Be 2
+    }
 }
 
 Describe 'Get-P4OpenedFileCounts' {
@@ -488,6 +507,25 @@ Describe 'Get-P4ShelvedFileCounts' {
         $result = Get-P4ShelvedFileCounts -ChangeNumbers @(300, 400)
         $result[300] | Should -Be 2
         $result[400] | Should -Be 1
+    }
+
+    It 'parses indexed shelved files from batched describe output' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @(
+                [pscustomobject]@{
+                    change = '610'
+                    depotFile0 = '//depot/a.txt'
+                    action0 = 'edit'
+                    type0 = 'text'
+                    depotFile1 = '//depot/b.txt'
+                    action1 = 'edit'
+                    type1 = 'text'
+                }
+            )
+        }
+
+        $result = Get-P4ShelvedFileCounts -ChangeNumbers @(610)
+        $result[610] | Should -Be 2
     }
 
     It 'degrades gracefully on describe failure and returns empty result' {
@@ -576,6 +614,23 @@ Describe 'Get-P4OpenedFiles' {
         Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
     }
 
+    It 'queries fstat with opened scope, change scope, unresolved field, and the all-files spec' {
+        Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter {
+            (@($P4Args) -join '|') -eq 'fstat|-Ro|-e|101|-T|change,depotFile,action,type,unresolved|//...'
+        } {
+            return @(
+                [pscustomobject]@{ depotFile = '//depot/src/Foo.cs'; action = 'edit'; change = '101'; type = 'text' }
+            )
+        }
+
+        $result = Get-P4OpenedFiles -Change 101
+        $result.Count | Should -Be 1
+
+        Should -Invoke Invoke-P4 -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
+            (@($P4Args) -join '|') -eq 'fstat|-Ro|-e|101|-T|change,depotFile,action,type,unresolved|//...'
+        }
+    }
+
     It 'parses a single opened file into a FileEntry with correct fields' {
         Mock Invoke-P4 -ModuleName P4Cli {
             return @([pscustomobject]@{
@@ -598,6 +653,7 @@ Describe 'Get-P4OpenedFiles' {
         $result[0].FileType     | Should -Be 'text'
         $result[0].Change       | Should -Be 101
         $result[0].SourceKind   | Should -Be 'Opened'
+        $result[0].IsUnresolved | Should -BeFalse
     }
 
     It 'parses multiple opened files' {
@@ -667,6 +723,16 @@ Describe 'Get-P4OpenedFiles' {
 
         $result = Get-P4OpenedFiles -Change 5
         $result[0].SearchKey | Should -Be '//depot/dir/myfile.cs edit text'
+    }
+
+    It 'marks file entries unresolved when the unresolved field is present' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @([pscustomobject]@{ depotFile = '//depot/conflict.cpp'; action = 'integrate'; change = '9'; type = 'text'; unresolved = '' })
+        }
+
+        $result = Get-P4OpenedFiles -Change 9
+        $result[0].IsUnresolved | Should -BeTrue
+        $result[0].SearchKey    | Should -Match 'unresolved'
     }
 }
 
@@ -742,7 +808,7 @@ Describe 'Invoke-P4ReopenFiles' {
 
     It 'calls p4 reopen with target change and all depot paths' {
         $capturedArgs = $null
-        Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter { $P4Args[0] -eq 'opened' } {
+        Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter { $P4Args[0] -eq 'fstat' } {
             return @(
                 [pscustomobject]@{ depotFile = '//depot/a.cs'; action = 'edit'; change = '101'; type = 'text' },
                 [pscustomobject]@{ depotFile = '//depot/b.cs'; action = 'add';  change = '101'; type = 'text' }
@@ -761,7 +827,7 @@ Describe 'Invoke-P4ReopenFiles' {
     }
 
     It 'returns MovedCount zero when Invoke-P4 returns no records for opened' {
-        Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter { $P4Args[0] -eq 'opened' } {
+        Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter { $P4Args[0] -eq 'fstat' } {
             return @()
         }
 
@@ -855,6 +921,36 @@ Describe 'Get-P4UnresolvedFileCounts' {
         Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
     }
 
+    It 'queries each requested changelist with -Ru, -e, and the all-files spec' {
+        Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter {
+            (@($P4Args) -join '|') -eq 'fstat|-Ru|-e|100|-T|change,depotFile,unresolved|//...'
+        } {
+            return @(
+                [pscustomobject]@{ change = '100'; depotFile = '//depot/a.cpp'; unresolved = '' }
+            )
+        }
+
+        Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter {
+            (@($P4Args) -join '|') -eq 'fstat|-Ru|-e|200|-T|change,depotFile,unresolved|//...'
+        } {
+            return @(
+                [pscustomobject]@{ change = '200'; depotFile = '//depot/b.cpp'; unresolved = '' },
+                [pscustomobject]@{ change = '200'; depotFile = '//depot/c.cpp'; unresolved = '' }
+            )
+        }
+
+        $result = Get-P4UnresolvedFileCounts -ChangeNumbers @(100, 200)
+        $result[100] | Should -Be 1
+        $result[200] | Should -Be 2
+
+        Should -Invoke Invoke-P4 -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
+            (@($P4Args) -join '|') -eq 'fstat|-Ru|-e|100|-T|change,depotFile,unresolved|//...'
+        }
+        Should -Invoke Invoke-P4 -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
+            (@($P4Args) -join '|') -eq 'fstat|-Ru|-e|200|-T|change,depotFile,unresolved|//...'
+        }
+    }
+
     It 'returns correct counts from mocked Invoke-P4' {
         Mock Invoke-P4 -ModuleName P4Cli {
             return @(
@@ -898,11 +994,30 @@ Describe 'Get-P4UnresolvedDepotPaths' {
         Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
     }
 
-    It 'returns a HashSet containing the correct depot paths' {
-        Mock Invoke-P4 -ModuleName P4Cli {
+    It 'derives unresolved paths from opened files for the changelist' {
+        Mock Get-P4OpenedFiles -ModuleName P4Cli -ParameterFilter {
+            $Change -eq 123
+        } {
             return @(
-                [pscustomobject]@{ depotFile = '//depot/a.cpp'; unresolved = '' },
-                [pscustomobject]@{ depotFile = '//depot/b.h';   unresolved = '' }
+                [pscustomobject]@{ DepotPath = '//depot/a.cpp'; IsUnresolved = $true },
+                [pscustomobject]@{ DepotPath = '//depot/b.cpp'; IsUnresolved = $false }
+            )
+        }
+
+        $result = Get-P4UnresolvedDepotPaths -Change 123
+        $result.Contains('//depot/a.cpp') | Should -BeTrue
+        $result.Contains('//depot/b.cpp') | Should -BeFalse
+
+        Should -Invoke Get-P4OpenedFiles -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
+            $Change -eq 123
+        }
+    }
+
+    It 'returns a HashSet containing the correct depot paths' {
+        Mock Get-P4OpenedFiles -ModuleName P4Cli {
+            return @(
+                [pscustomobject]@{ DepotPath = '//depot/a.cpp'; IsUnresolved = $true },
+                [pscustomobject]@{ DepotPath = '//depot/b.h'; IsUnresolved = $true }
             )
         }
 
@@ -913,24 +1028,26 @@ Describe 'Get-P4UnresolvedDepotPaths' {
         $result.Count | Should -Be 2
     }
 
-    It 'returns empty set when Invoke-P4 throws the no-such-file empty-result error' {
-        Mock Invoke-P4 -ModuleName P4Cli { throw 'no such file(s).' }
+    It 'returns empty set when Get-P4OpenedFiles throws' {
+        Mock Get-P4OpenedFiles -ModuleName P4Cli { throw 'no such file(s).' }
 
         $result = Get-P4UnresolvedDepotPaths -Change 200
         ($result -is [System.Collections.Generic.HashSet[string]]) | Should -BeTrue
         $result.Count | Should -Be 0
     }
 
-    It 'degrades to empty set on unexpected Invoke-P4 failure' {
-        Mock Invoke-P4 -ModuleName P4Cli { throw 'connection refused' }
+    It 'degrades to empty set on unexpected Get-P4OpenedFiles failure' {
+        Mock Get-P4OpenedFiles -ModuleName P4Cli { throw 'connection refused' }
 
         $result = Get-P4UnresolvedDepotPaths -Change 300
         $result.Count | Should -Be 0
     }
 
     It 'uses case-insensitive membership — uppercase lookup matches lowercase record' {
-        Mock Invoke-P4 -ModuleName P4Cli {
-            return @([pscustomobject]@{ depotFile = '//depot/src/foo.cs'; unresolved = '' })
+        Mock Get-P4OpenedFiles -ModuleName P4Cli {
+            return @(
+                [pscustomobject]@{ DepotPath = '//depot/src/foo.cs'; IsUnresolved = $true }
+            )
         }
 
         $result = Get-P4UnresolvedDepotPaths -Change 42
@@ -938,10 +1055,10 @@ Describe 'Get-P4UnresolvedDepotPaths' {
     }
 
     It 'handles duplicate depot path records defensively (set deduplicates)' {
-        Mock Invoke-P4 -ModuleName P4Cli {
+        Mock Get-P4OpenedFiles -ModuleName P4Cli {
             return @(
-                [pscustomobject]@{ depotFile = '//depot/x.cpp'; unresolved = '' },
-                [pscustomobject]@{ depotFile = '//depot/x.cpp'; unresolved = '' }
+                [pscustomobject]@{ DepotPath = '//depot/x.cpp'; IsUnresolved = $true },
+                [pscustomobject]@{ DepotPath = '//depot/x.cpp'; IsUnresolved = $true }
             )
         }
 
@@ -949,8 +1066,8 @@ Describe 'Get-P4UnresolvedDepotPaths' {
         $result.Count | Should -Be 1
     }
 
-    It 'returns empty set when Invoke-P4 returns empty output' {
-        Mock Invoke-P4 -ModuleName P4Cli { return @() }
+    It 'returns empty set when Get-P4OpenedFiles returns empty output' {
+        Mock Get-P4OpenedFiles -ModuleName P4Cli { return @() }
 
         $result = Get-P4UnresolvedDepotPaths -Change 55
         $result.Count | Should -Be 0
@@ -1026,6 +1143,24 @@ Describe 'Get-P4ChangelistEntries — unresolved enrichment' {
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
         Import-Module (Join-Path $PSScriptRoot '..\p4\Models.psm1') -Force
+    }
+
+    It 'passes pending changelist numbers to Get-P4UnresolvedFileCounts' {
+        Mock Get-P4PendingChangelists -ModuleName P4Cli {
+            return @(
+                (New-P4Changelist -Change 800 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc 800'),
+                (New-P4Changelist -Change 801 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc 801')
+            )
+        }
+        Mock Get-P4OpenedFileCounts  -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
+        Mock Get-P4ShelvedFileCounts -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
+        Mock Get-P4UnresolvedFileCounts -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
+
+        $null = @(Get-P4ChangelistEntries)
+
+        Should -Invoke Get-P4UnresolvedFileCounts -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
+            (@($ChangeNumbers) -join ',') -eq '800,801'
+        }
     }
 
     It 'populates UnresolvedFileCount and HasUnresolvedFiles when counts are present' {

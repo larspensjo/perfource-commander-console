@@ -650,6 +650,43 @@ Describe 'Write-ColorSegments' {
     }
 }
 
+Describe 'Build-HelpOverlayRows' {
+    It 'renders each shortcut as one row with key then description' {
+        $rows = @(Build-HelpOverlayRows -Width 50 -MaxRows 40)
+
+        $firstContentRowText = ($rows[1] | ForEach-Object { $_.Text }) -join ''
+        $allText = ($rows | ForEach-Object { ($_ | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+
+        $firstContentRowText | Should -Match 'Tab\s+Switch pane'
+        $allText | Should -Match 'M / Ins\s+Mark/unmark current changelist'
+        $allText | Should -Match 'Shift\+M\s+Mark all visible changelists'
+        $allText | Should -Match 'C\s+Clear all changelist marks'
+    }
+
+    It 'aligns descriptions to the same column' {
+        $rows = @(Build-HelpOverlayRows -Width 50 -MaxRows 40)
+        $contentRows = @($rows[1..4] | ForEach-Object { ($_ | ForEach-Object { $_.Text }) -join '' })
+
+        $descriptionStarts = @(
+            $contentRows[0].IndexOf('Switch pane'),
+            $contentRows[1].IndexOf('Navigate'),
+            $contentRows[2].IndexOf('Page scroll'),
+            $contentRows[3].IndexOf('Jump top/bottom')
+        )
+
+        ($descriptionStarts | Select-Object -Unique).Count | Should -Be 1
+    }
+
+    It 'keeps help key text cyan' {
+        $rows = @(Build-HelpOverlayRows -Width 50 -MaxRows 40)
+        $firstContentRow = @($rows[1])
+
+        $firstContentRow[1].Text  | Should -Be 'Tab'
+        $firstContentRow[1].Color | Should -Be 'Cyan'
+        $firstContentRow[3].Color | Should -Be 'Gray'
+    }
+}
+
 Describe 'Segment builders' {
     InModuleScope 'Render' {
         It 'builds unselected changelist segments with semantic colors' {

@@ -220,11 +220,8 @@ function Build-BorderedRowSegments {
 
     $innerWidth = [Math]::Max(0, $Width - 2)
     $inner = @(Resize-SegmentRow -Segments $InnerSegments -Width $innerWidth)
-    Write-Output -NoEnumerate @(
-        @{ Text = '│'; Color = $BorderColor },
-        @($inner),
-        @{ Text = '│'; Color = $BorderColor }
-    )
+    $segments = @(@{ Text = '│'; Color = $BorderColor }) + @($inner) + @(@{ Text = '│'; Color = $BorderColor })
+    Write-Output -NoEnumerate $segments
 }
 
 function Resize-SegmentRow {
@@ -959,6 +956,7 @@ function Build-HelpOverlayRows {
     $borderColor = 'DarkMagenta'
     $keyColor    = 'Cyan'
     $descColor   = 'Gray'
+    $columnGap   = 2
 
     $helpLines = @(
         @{ Key = 'Tab';        Desc = 'Switch pane' },
@@ -966,6 +964,9 @@ function Build-HelpOverlayRows {
         @{ Key = 'PgUp/PgDn';  Desc = 'Page scroll' },
         @{ Key = 'Home/End';   Desc = 'Jump top/bottom' },
         @{ Key = 'Space';      Desc = 'Toggle filter' },
+        @{ Key = 'M / Ins';    Desc = 'Mark/unmark current changelist' },
+        @{ Key = 'Shift+M';    Desc = 'Mark all visible changelists' },
+        @{ Key = 'C';          Desc = 'Clear all changelist marks' },
         @{ Key = 'Enter/D';    Desc = 'Describe CL' },
         @{ Key = 'E';          Desc = 'Expand/collapse rows' },
         @{ Key = 'H';          Desc = 'Hide unavailable filters' },
@@ -980,12 +981,20 @@ function Build-HelpOverlayRows {
 
     $innerRows    = [Math]::Max(3, [Math]::Min($MaxRows - 2, $helpLines.Count))
     $displayLines = $helpLines | Select-Object -First $innerRows
+    $maxKeyWidth  = (($displayLines | ForEach-Object { ([string]$_.Key).Length } | Measure-Object -Maximum).Maximum)
 
-    $contentRows = foreach ($line in $displayLines) {
-        @(
-            @{ Text = ('  {0,-14}' -f $line.Key); Color = $keyColor  },
-            @{ Text = $line.Desc;                  Color = $descColor }
-        )
+    $contentRows = [System.Collections.Generic.List[object]]::new()
+    foreach ($line in $displayLines) {
+        $key         = [string]$line.Key
+        $desc        = [string]$line.Desc
+        $paddingSize = [Math]::Max($columnGap, ($maxKeyWidth - $key.Length) + $columnGap)
+        $padding     = ' ' * $paddingSize
+
+        $contentRows.Add(@(
+            @{ Text = $key;     Color = $keyColor  },
+            @{ Text = $padding; Color = $descColor },
+            @{ Text = $desc;    Color = $descColor }
+        ))
     }
 
     $rows = [System.Collections.Generic.List[object]]::new()

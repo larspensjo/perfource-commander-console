@@ -26,6 +26,16 @@ function ConvertFrom-KeyInfoToAction {
                 }
             }
         }
+
+        if ($null -ne $overlayModeProp -and [string]$overlayModeProp.Value -eq 'Confirm') {
+            switch ($KeyInfo.Key) {
+                'Enter'  { return [pscustomobject]@{ Type = 'AcceptDialog' } }
+                'Y'      { return [pscustomobject]@{ Type = 'AcceptDialog' } }
+                'N'      { return [pscustomobject]@{ Type = 'CancelDialog' } }
+                'Escape' { return [pscustomobject]@{ Type = 'CancelDialog' } }
+                default  { return $null }
+            }
+        }
     }
 
     # Modifier-aware chords (checked before the plain-key switch)

@@ -52,15 +52,7 @@ $script:MenuDefinitions = @{
             Label       = 'Shelve files'
             Accelerator = 'S'
             IsSeparator = $false
-            IsEnabled   = { param($s)
-                $viewMode  = if ($s.Ui.PSObject.Properties['ViewMode']) { [string]$s.Ui.ViewMode } else { 'Pending' }
-                $isPending = $viewMode -ne 'Submitted'
-                $mcProp    = $s.Query.PSObject.Properties['MarkedChangeIds']
-                $hasMarks  = $null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0
-                $vcProp    = $s.Derived.PSObject.Properties['VisibleChangeIds']
-                $hasVisible = $null -ne $vcProp -and $null -ne $vcProp.Value -and $vcProp.Value.Count -gt 0
-                $isPending -and ($hasMarks -or $hasVisible)
-            }
+            IsEnabled   = { param($s) Test-CanShelveSelectedChanges -State $s }
         },
         [pscustomobject]@{ Id = '__FileSep1__'; Label = ''; Accelerator = ''; IsSeparator = $true;  IsEnabled = { $true } },
         [pscustomobject]@{
@@ -115,6 +107,70 @@ $script:MenuDefinitions = @{
 Import-Module (Join-Path $PSScriptRoot 'Filtering.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Layout.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+
+function Test-ChangeHasOpenedFiles {
+    param($Change)
+
+    if ($null -eq $Change) { return $false }
+
+    $hasOpenedProp = $Change.PSObject.Properties['HasOpenedFiles']
+    if ($null -ne $hasOpenedProp -and [bool]$hasOpenedProp.Value) {
+        return $true
+    }
+
+    $openedCountProp = $Change.PSObject.Properties['OpenedFileCount']
+    if ($null -ne $openedCountProp -and [int]$openedCountProp.Value -gt 0) {
+        return $true
+    }
+
+    return $false
+}
+
+function Get-ShelveActionableChanges {
+    param($State)
+
+    $viewMode = if ($State.Ui.PSObject.Properties['ViewMode']) { [string]$State.Ui.ViewMode } else { 'Pending' }
+    if ($viewMode -ne 'Pending') { return @() }
+
+    [object[]]$activeChanges = @($State.Data.AllChanges)
+    $mcProp = $State.Query.PSObject.Properties['MarkedChangeIds']
+    $hasMarks = $null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0
+
+    if ($hasMarks) {
+        $markedIdSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($markedId in @($mcProp.Value)) {
+            [void]$markedIdSet.Add([string]$markedId)
+        }
+
+        return @(
+            $activeChanges |
+                Where-Object { $markedIdSet.Contains([string]$_.Id) } |
+                Where-Object { Test-ChangeHasOpenedFiles -Change $_ }
+        )
+    }
+
+    $visibleIdsProp = $State.Derived.PSObject.Properties['VisibleChangeIds']
+    if ($null -eq $visibleIdsProp -or $null -eq $visibleIdsProp.Value) { return @() }
+
+    [object[]]$visibleIds = @($visibleIdsProp.Value)
+    if ($visibleIds.Count -eq 0) { return @() }
+
+    $focusedIndex = [Math]::Max(0, [Math]::Min([int]$State.Cursor.ChangeIndex, $visibleIds.Count - 1))
+    $focusedId = [string]$visibleIds[$focusedIndex]
+
+    return @(
+        $activeChanges |
+            Where-Object { [string]$_.Id -eq $focusedId } |
+            Where-Object { Test-ChangeHasOpenedFiles -Change $_ } |
+            Select-Object -First 1
+    )
+}
+
+function Test-CanShelveSelectedChanges {
+    param($State)
+
+    return @(Get-ShelveActionableChanges -State $State).Count -gt 0
+}
 
 # ── Changelist viewport geometry helpers ──────────────────────────────────────
 # These must stay in sync with the render logic in Render.psm1 (which uses H-2).
@@ -985,11 +1041,15 @@ function Invoke-ChangelistReducer {
                     return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenConfirmDialog'; Payload = $payload })
                 }
                 'ShelveFiles'       {
-                    [object[]]$visibleIds  = @($next.Derived.VisibleChangeIds)
-                    $mcProp   = $next.Query.PSObject.Properties['MarkedChangeIds']
+                    [object[]]$targetChanges = @(Get-ShelveActionableChanges -State $next)
+                    if ($targetChanges.Count -eq 0) {
+                        return Update-BrowserDerivedState -State $next
+                    }
+
+                    [string[]]$changeIds = @($targetChanges | ForEach-Object { [string]$_.Id } | Sort-Object -Unique)
+                    $mcProp = $next.Query.PSObject.Properties['MarkedChangeIds']
                     $hasMarks = $null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0
                     if ($hasMarks) {
-                        [string[]]$changeIds = @($next.Query.MarkedChangeIds | ForEach-Object { [string]$_ } | Sort-Object)
                         $count = $changeIds.Count
                         $payload = [pscustomobject]@{
                             Title            = "Shelve files in $count selected changelist$(if ($count -ne 1) { 's' })?"
@@ -1007,8 +1067,7 @@ function Invoke-ChangelistReducer {
                             }
                         }
                     } else {
-                        $currentId = if ($visibleIds.Count -gt 0) { [string]$visibleIds[$next.Cursor.ChangeIndex] } else { '' }
-                        [string[]]$changeIds = @($currentId)
+                        $currentId = [string]$changeIds[0]
                         $payload = [pscustomobject]@{
                             Title            = "Shelve files in changelist ${currentId}?"
                             SummaryLines     = @("Changelist: $currentId")

@@ -178,6 +178,18 @@ Describe 'ConvertFrom-KeyInfoToAction' {
         $action.Type | Should -Be 'MenuSelect'
     }
 
+    It 'Enter maps to AcceptDialog when confirm overlay is open' {
+        $mockState = [pscustomobject]@{ Ui = [pscustomobject]@{ OverlayMode = 'Confirm' } }
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key Enter) -State $mockState
+        $action.Type | Should -Be 'AcceptDialog'
+    }
+
+    It 'Escape maps to CancelDialog when confirm overlay is open' {
+        $mockState = [pscustomobject]@{ Ui = [pscustomobject]@{ OverlayMode = 'Confirm' } }
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key Escape) -State $mockState
+        $action.Type | Should -Be 'CancelDialog'
+    }
+
     It 'Escape maps to HideCommandModal when menu is open' {
         $mockState = [pscustomobject]@{ Ui = [pscustomobject]@{ OverlayMode = 'Menu' } }
         $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key Escape) -State $mockState

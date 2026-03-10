@@ -1639,10 +1639,20 @@ Describe 'Phase 5 — DeleteMarked and MoveMarkedFiles menu actions' {
 
     # ── ShelveFiles ───────────────────────────────────────────────────────────
 
-    It 'ShelveFiles menu item is enabled with no marks when visible CLs exist' {
+    It 'ShelveFiles menu item is enabled when the focused changelist has opened files' {
         $items  = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
         $sfItem = $items | Where-Object { [string]$_.Id -eq 'ShelveFiles' } | Select-Object -First 1
         $sfItem.IsEnabled | Should -Be $true
+    }
+
+    It 'ShelveFiles menu item is disabled when the focused changelist has no opened files' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+
+        $items  = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $sfItem = $items | Where-Object { [string]$_.Id -eq 'ShelveFiles' } | Select-Object -First 1
+        $sfItem.IsEnabled | Should -Be $false
     }
 
     It 'ShelveFiles menu item is enabled when marks exist' {
@@ -1651,6 +1661,17 @@ Describe 'Phase 5 — DeleteMarked and MoveMarkedFiles menu actions' {
         $items  = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
         $sfItem = $items | Where-Object { [string]$_.Id -eq 'ShelveFiles' } | Select-Object -First 1
         $sfItem.IsEnabled | Should -Be $true
+    }
+
+    It 'ShelveFiles menu item is disabled when marked changelists have no opened files' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+
+        $items  = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $sfItem = $items | Where-Object { [string]$_.Id -eq 'ShelveFiles' } | Select-Object -First 1
+        $sfItem.IsEnabled | Should -Be $false
     }
 
     It 'ShelveFiles menu item is disabled in Submitted view' {

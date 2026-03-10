@@ -1231,7 +1231,7 @@ function Build-ConfirmDialogRows {
     $rows = [System.Collections.Generic.List[object]]::new()
 
     # Top border with title
-    $rows.Add((Build-BoxTopSegments -Title "! $titleText" -Width $Width -BorderColor $BORDER -TitleColor $TITLE))
+    $rows.Add((Build-BoxTopSegments -Title "[$titleText]" -Width $Width -BorderColor $BORDER -TitleColor $TITLE))
     # Empty row
     $rows.Add((Build-BorderedRowSegments -InnerSegments @((& $padLine '' $TEXT)) -Width $Width -BorderColor $BORDER))
 

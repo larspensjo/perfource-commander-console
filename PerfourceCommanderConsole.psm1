@@ -149,12 +149,24 @@ Register-WorkflowKind -Kind 'ShelveFiles' -Execute {
         Type = 'WorkflowBegin'; Kind = 'ShelveFiles'; TotalCount = $changeIds.Count
     })
 
+    $lastFailureError = ''
+
     foreach ($changeId in $changeIds) {
         $changeNum = [int]$changeId
-        try {
+        $shelveCmdLine = Format-P4CommandLine -P4Args @('shelve', '-f', '-c', "$changeNum")
+        $result = Invoke-BrowserWorkflowCommand -State $state -CommandLine $shelveCmdLine -WorkItem {
+            param($s)
             Invoke-P4ShelveFiles -Change $changeNum
+            return $s
+        }
+        $state = $result.State
+
+        if ($result.Succeeded) {
             $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowItemComplete' })
-        } catch {
+        } else {
+            if (-not [string]::IsNullOrWhiteSpace([string]$result.ErrorText)) {
+                $lastFailureError = [string]$result.ErrorText
+            }
             $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
                 Type = 'WorkflowItemFailed'; ChangeId = $changeId
             })
@@ -164,7 +176,10 @@ Register-WorkflowKind -Kind 'ShelveFiles' -Execute {
     $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowEnd' })
 
     # Trigger reload so shelved file counts are refreshed
-    $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Reload' })
+    $state = Invoke-BrowserPendingChangesReload -State $state
+    if (-not [string]::IsNullOrWhiteSpace($lastFailureError)) {
+        $state.Runtime.LastError = $lastFailureError
+    }
 
     return $state
 }

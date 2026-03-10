@@ -1297,6 +1297,20 @@ Describe 'Build-ConfirmDialogRows and Apply-ConfirmDialogOverlay' {
         $topText | Should -Match 'Delete 3 changelists'
     }
 
+    It 'Build-ConfirmDialogRows uses bracketed title styling' {
+        $payload = [pscustomobject]@{
+            Title            = 'Delete 3 changelists?'
+            SummaryLines     = @('Selected: 3')
+            ConsequenceLines = @()
+            ConfirmLabel     = 'Y = confirm'
+            CancelLabel      = 'N / Esc = cancel'
+        }
+        $rows = @(Build-ConfirmDialogRows -Width 50 -Payload $payload)
+
+        $topText = ($rows[0] | ForEach-Object { $_.Text }) -join ''
+        $topText | Should -Match '\[Delete 3 changelists\?\]'
+    }
+
     It 'Build-ConfirmDialogRows includes summary line' {
         $payload = [pscustomobject]@{
             Title            = 'Test?'

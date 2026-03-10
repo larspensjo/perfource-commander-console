@@ -8,6 +8,7 @@ $SCROLLBAR_TRACK_GLYPH = [char]0x2502
 $CURSOR_GLYPH          = $_theme.Glyphs.Cursor      # ▶
 $MARK_GLYPH            = $_theme.Glyphs.Mark        # ●
 $UNRESOLVED_GLYPH      = $_theme.Glyphs.Unresolved  # ⚠
+$MODIFIED_GLYPH        = $_theme.Glyphs.Modified    # ≠
 $UNRESOLVED_BADGE_WIDTH = 2  # one glyph slot + one trailing space
 
 # Set to $true via Enable-FrameIntegrityTest to activate the runtime border checker.
@@ -1481,14 +1482,27 @@ function Build-FilesScreenFrame {
                         $fileName     = [string](Get-PropertyValueOrDefault -Object $file -Name 'FileName'     -Default '')
                         $depot        = [string](Get-PropertyValueOrDefault -Object $file -Name 'DepotPath'    -Default '')
                         $isUnresolved = [bool]  (Get-PropertyValueOrDefault -Object $file -Name 'IsUnresolved' -Default $false)
+                        $isContentModified = [bool](Get-PropertyValueOrDefault -Object $file -Name 'IsContentModified' -Default $false)
                         if ([string]::IsNullOrWhiteSpace($fileName)) { $fileName = $depot }
-                        $unresolvedBadge      = if ($isUnresolved) { $UNRESOLVED_GLYPH + ' ' } else { '  ' }
-                        $unresolvedBadgeColor = if ($isUnresolved) { 'Yellow' } else { 'DarkGray' }
+                        $statusBadge = if ($isUnresolved) {
+                            $UNRESOLVED_GLYPH + ' '
+                        } elseif ($isContentModified) {
+                            $MODIFIED_GLYPH + ' '
+                        } else {
+                            '  '
+                        }
+                        $statusBadgeColor = if ($isUnresolved) {
+                            'Yellow'
+                        } elseif ($isContentModified) {
+                            'Cyan'
+                        } else {
+                            'DarkGray'
+                        }
                         $inner = @(
-                            @{ Text = $marker;              Color = $mColor            },
-                            @{ Text = $unresolvedBadge;     Color = $unresolvedBadgeColor },
-                            @{ Text = ('{0,-10}' -f $action); Color = 'DarkYellow'   },
-                            @{ Text = $fileName;            Color = $tColor            }
+                            @{ Text = $marker;                Color = $mColor           },
+                            @{ Text = $statusBadge;           Color = $statusBadgeColor },
+                            @{ Text = ('{0,-10}' -f $action); Color = 'DarkYellow'      },
+                            @{ Text = $fileName;              Color = $tColor           }
                         )
                     } else {
                         $inner = @(
@@ -1529,8 +1543,11 @@ function Build-FilesScreenFrame {
                     $selectedType      = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'FileType'     -Default '')
                     $selectedChange    = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'Change'       -Default '')
                     $selectedUnresolvd = [bool]  (Get-PropertyValueOrDefault -Object $selectedFile -Name 'IsUnresolved' -Default $false)
+                    $selectedContentModified = [bool](Get-PropertyValueOrDefault -Object $selectedFile -Name 'IsContentModified' -Default $false)
                     $resolveLabel      = if ($selectedUnresolvd) { 'unresolved' } else { 'clean' }
                     $resolveColor      = if ($selectedUnresolvd) { 'Yellow' } else { 'DarkGray' }
+                    $contentLabel      = if ($selectedContentModified) { 'modified' } else { 'clean' }
+                    $contentColor      = if ($selectedContentModified) { 'Cyan' } else { 'DarkGray' }
                     $inspectorLines = @(
                         @(@{ Text = "File: $selectedFileName"; Color = 'White'       }),
                         @(@{ Text = "Action: $selectedAction"; Color = 'DarkYellow' }),
@@ -1538,6 +1555,7 @@ function Build-FilesScreenFrame {
                         @(@{ Text = "Change: $selectedChange"; Color = 'DarkGray'   }),
                         @(@{ Text = "Source: $sourceKind";     Color = 'DarkGray'   }),
                         @(@{ Text = "Resolve: $resolveLabel";  Color = $resolveColor }),
+                        @(@{ Text = "Content: $contentLabel";  Color = $contentColor }),
                         @(@{ Text = '';                        Color = 'Gray'        }),
                         @(@{ Text = $selectedDepot;            Color = 'Gray'        })
                     )

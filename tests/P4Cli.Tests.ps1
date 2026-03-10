@@ -45,6 +45,11 @@ Describe 'Invoke-P4' {
             Should -Throw '*p4 failed (exit 1)*'
     }
 
+    It 'allows configured non-zero exit codes to return successfully' {
+        $result = InModuleScope P4Cli { Invoke-P4 -P4Args @('/c', 'exit', '1') -AllowedExitCodes @(0, 1) }
+        $result | Should -BeNullOrEmpty
+    }
+
     It 'throws when p4 emits a JSON error record even if the process exit code is zero' {
         $scriptPath = Join-Path $TestDrive 'p4-json-error.cmd'
         Set-Content -Path $scriptPath -Value @(
@@ -1035,6 +1040,44 @@ Describe 'ConvertFrom-P4FstatUnresolvedRecordsToFileCounts' {
     }
 }
 
+Describe 'ConvertFrom-P4DiffRecordsToDepotPaths' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'returns depot paths from diff records with depotFile properties' {
+        $records = @(
+            [pscustomobject]@{ depotFile = '//depot/a.cpp' },
+            [pscustomobject]@{ depotFile = '//depot/b.cpp' }
+        )
+
+        $result = InModuleScope P4Cli { ConvertFrom-P4DiffRecordsToDepotPaths -Records $args[0] } -ArgumentList @(,$records)
+        $result.Contains('//depot/a.cpp') | Should -BeTrue
+        $result.Contains('//depot/b.cpp') | Should -BeTrue
+        $result.Count | Should -Be 2
+    }
+
+    It 'falls back to depot paths embedded in data messages' {
+        $records = @(
+            [pscustomobject]@{ data = '//depot/c.cpp' }
+        )
+
+        $result = InModuleScope P4Cli { ConvertFrom-P4DiffRecordsToDepotPaths -Records $args[0] } -ArgumentList @(,$records)
+        $result.Contains('//depot/c.cpp') | Should -BeTrue
+    }
+
+    It 'deduplicates depot paths case-insensitively' {
+        $records = @(
+            [pscustomobject]@{ depotFile = '//depot/D.cpp' },
+            [pscustomobject]@{ depotFile = '//DEPOT/d.cpp' }
+        )
+
+        $result = InModuleScope P4Cli { ConvertFrom-P4DiffRecordsToDepotPaths -Records $args[0] } -ArgumentList @(,$records)
+        $result.Count | Should -Be 1
+        $result.Contains('//depot/d.cpp') | Should -BeTrue
+    }
+}
+
 Describe 'Get-P4UnresolvedFileCounts' {
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
@@ -1193,6 +1236,78 @@ Describe 'Get-P4UnresolvedDepotPaths' {
     }
 }
 
+Describe 'Get-P4ModifiedDepotPaths' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+        Import-Module (Join-Path $PSScriptRoot '..\p4\Models.psm1') -Force
+    }
+
+    It 'queries p4 diff -sa with depot paths on standard input' {
+        $entries = @(
+            (New-P4FileEntry -DepotPath '//depot/a.cpp' -Action 'edit' -FileType 'text' -Change 10),
+            (New-P4FileEntry -DepotPath '//depot/b.cpp' -Action 'integrate' -FileType 'text' -Change 10)
+        )
+
+        Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter {
+            (@($P4Args) -join '|') -eq 'diff|-sa' -and
+            (@($InputLines) -join '|') -eq '//depot/a.cpp|//depot/b.cpp' -and
+            (@($AllowedExitCodes) -join ',') -eq '0,1'
+        } {
+            return @([pscustomobject]@{ depotFile = '//depot/a.cpp' })
+        }
+
+        $result = Get-P4ModifiedDepotPaths -FileEntries $entries
+        $result.Contains('//depot/a.cpp') | Should -BeTrue
+
+        Should -Invoke Invoke-P4 -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
+            (@($P4Args) -join '|') -eq 'diff|-sa' -and
+            (@($InputLines) -join '|') -eq '//depot/a.cpp|//depot/b.cpp' -and
+            (@($AllowedExitCodes) -join ',') -eq '0,1'
+        }
+    }
+
+    It 'skips non-diffable add and delete actions' {
+        $entries = @(
+            (New-P4FileEntry -DepotPath '//depot/add.cpp' -Action 'add' -FileType 'text' -Change 10),
+            (New-P4FileEntry -DepotPath '//depot/delete.cpp' -Action 'delete' -FileType 'text' -Change 10)
+        )
+        Mock Invoke-P4 -ModuleName P4Cli { return @() }
+
+        $result = Get-P4ModifiedDepotPaths -FileEntries $entries
+        $result.Count | Should -Be 0
+        Should -Invoke Invoke-P4 -ModuleName P4Cli -Times 0 -Exactly
+    }
+
+    It 'returns empty set when the diff command fails unexpectedly' {
+        $entries = @(
+            New-P4FileEntry -DepotPath '//depot/a.cpp' -Action 'edit' -FileType 'text' -Change 10
+        )
+
+        Mock Invoke-P4 -ModuleName P4Cli { throw 'diff failed' }
+
+        $result = Get-P4ModifiedDepotPaths -FileEntries $entries
+        ($result -is [System.Collections.Generic.HashSet[string]]) | Should -BeTrue
+        $result.Count | Should -Be 0
+    }
+
+    It 'returns empty set when there are no modified files' {
+        $entries = @(
+            New-P4FileEntry -DepotPath '//depot/a.cpp' -Action 'edit' -FileType 'text' -Change 10
+        )
+
+        Mock Invoke-P4 -ModuleName P4Cli { return @() }
+
+        $result = Get-P4ModifiedDepotPaths -FileEntries $entries
+        $result.Count | Should -Be 0
+    }
+
+    It 'returns empty set when FileEntries is null' {
+        $result = Get-P4ModifiedDepotPaths -FileEntries $null
+        ($result -is [System.Collections.Generic.HashSet[string]]) | Should -BeTrue
+        $result.Count | Should -Be 0
+    }
+}
+
 Describe 'Set-P4FileEntriesUnresolvedState' {
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
@@ -1255,6 +1370,53 @@ Describe 'Set-P4FileEntriesUnresolvedState' {
         $result = Set-P4FileEntriesUnresolvedState -FileEntries $entries -UnresolvedDepotPaths $unresolvedSet
         $result[0].IsUnresolved | Should -BeTrue
         $original.IsUnresolved  | Should -BeFalse   # original untouched
+    }
+}
+
+Describe 'Set-P4FileEntriesContentModifiedState' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+        Import-Module (Join-Path $PSScriptRoot '..\p4\Models.psm1') -Force
+    }
+
+    It 'marks matching depot path entry as content-modified' {
+        $entries = @(New-P4FileEntry -DepotPath '//depot/a.cpp' -Action 'edit' -FileType 'text' -Change 10)
+        $modifiedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        [void]$modifiedSet.Add('//depot/a.cpp')
+
+        $result = Set-P4FileEntriesContentModifiedState -FileEntries $entries -ModifiedDepotPaths $modifiedSet
+        $result.Count                    | Should -Be 1
+        $result[0].IsContentModified     | Should -BeTrue
+        $result[0].SearchKey             | Should -Match 'modified'
+    }
+
+    It 'preserves unresolved state while annotating modified content' {
+        $entries = @(New-P4FileEntry -DepotPath '//depot/c.cpp' -Action 'edit' -FileType 'text' -Change 99 -IsUnresolved $true)
+        $modifiedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        [void]$modifiedSet.Add('//depot/c.cpp')
+
+        $result = Set-P4FileEntriesContentModifiedState -FileEntries $entries -ModifiedDepotPaths $modifiedSet
+        $result[0].IsUnresolved      | Should -BeTrue
+        $result[0].IsContentModified | Should -BeTrue
+    }
+
+    It 'leaves non-matching entries clean' {
+        $entries = @(New-P4FileEntry -DepotPath '//depot/b.h' -Action 'add' -FileType 'text' -Change 10)
+        $modifiedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+        $result = Set-P4FileEntriesContentModifiedState -FileEntries $entries -ModifiedDepotPaths $modifiedSet
+        $result[0].IsContentModified | Should -BeFalse
+        $result[0].SearchKey         | Should -Not -Match 'modified'
+    }
+
+    It 'does not mutate the original entry objects' {
+        $original = New-P4FileEntry -DepotPath '//depot/d.cpp' -Action 'edit' -FileType 'text' -Change 7
+        $modifiedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        [void]$modifiedSet.Add('//depot/d.cpp')
+
+        $result = Set-P4FileEntriesContentModifiedState -FileEntries @($original) -ModifiedDepotPaths $modifiedSet
+        $result[0].IsContentModified | Should -BeTrue
+        $original.IsContentModified  | Should -BeFalse
     }
 }
 

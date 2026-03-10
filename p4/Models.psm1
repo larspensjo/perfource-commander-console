@@ -82,7 +82,8 @@ function New-P4FileEntry {
         [Parameter(Mandatory = $false)][string]$FileType     = '',
         [Parameter(Mandatory = $false)][int]$Change          = 0,
         [Parameter(Mandatory = $false)][string]$SourceKind   = 'Opened',
-        [Parameter(Mandatory = $false)][bool]$IsUnresolved   = $false
+        [Parameter(Mandatory = $false)][bool]$IsUnresolved   = $false,
+        [Parameter(Mandatory = $false)][bool]$IsContentModified = $false
     )
 
     # Derive FileName: last path segment after the final '/'
@@ -92,8 +93,11 @@ function New-P4FileEntry {
     # Includes FileType so future 'type:' facets work without cache invalidation.
     # Appends 'unresolved' token when the file is unresolved so future file-level
     # filtering can match without cache invalidation.
+    # Appends 'modified' token when the workspace content differs from depot so
+    # future file-level filtering can match without cache invalidation.
     $searchKey = ($DepotPath + ' ' + $Action + ' ' + $FileType).ToLowerInvariant()
     if ($IsUnresolved) { $searchKey = $searchKey + ' unresolved' }
+    if ($IsContentModified) { $searchKey = $searchKey + ' modified' }
 
     [pscustomobject]@{
         DepotPath    = $DepotPath
@@ -103,6 +107,7 @@ function New-P4FileEntry {
         Change       = $Change
         SourceKind   = $SourceKind
         IsUnresolved = $IsUnresolved
+        IsContentModified = $IsContentModified
         SearchKey    = $searchKey
     }
 }

@@ -332,7 +332,9 @@ function Invoke-BrowserFilesLoad {
             )
             return Invoke-BrowserSideEffect -State $State -CommandLine $loadFilesCmdLine -WorkItem {
                 param($s)
-                $files = Get-P4OpenedFiles -Change $Change
+                $files = @(Get-P4OpenedFiles -Change $Change)
+                $modifiedPaths = Get-P4ModifiedDepotPaths -FileEntries $files
+                $files = Set-P4FileEntriesContentModifiedState -FileEntries $files -ModifiedDepotPaths $modifiedPaths
                 $s.Data.FileCache[$CacheKey] = $files
                 $s.Runtime.LastError = $null
                 return Update-BrowserDerivedState -State $s

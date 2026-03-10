@@ -193,6 +193,39 @@ function Get-P4JsonRecordMessageText {
     return ([string]$FallbackText).Trim()
 }
 
+function ConvertFrom-P4DiffRecordsToDepotPaths {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Records
+    )
+
+    $result = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($record in $Records) {
+        if ($null -eq $record) { continue }
+
+        $depotPath = ''
+        $depotFileProp = $record.PSObject.Properties['depotFile']
+        if ($null -ne $depotFileProp) {
+            $depotPath = [string]$depotFileProp.Value
+        } else {
+            $dataProp = $record.PSObject.Properties['data']
+            if ($null -ne $dataProp) {
+                $dataText = [string]$dataProp.Value
+                if ($dataText -match '(//\S+)') {
+                    $depotPath = [string]$Matches[1]
+                }
+            }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($depotPath)) {
+            [void]$result.Add($depotPath.Trim())
+        }
+    }
+
+    return ,$result
+}
+
 function Test-P4JsonRecordIsCommandFailure {
     [CmdletBinding()]
     param(
@@ -217,17 +250,24 @@ function Invoke-P4 {
     param(
         [Parameter(Mandatory)][string[]]$P4Args,
         # Milliseconds to wait before killing the p4 process. Defaults to 30 s.
-        [int]$TimeoutMs = 30000
+        [int]$TimeoutMs = 30000,
+        [int[]]$AllowedExitCodes = @(0),
+        [AllowEmptyCollection()][string[]]$InputLines = @()
     )
 
     $globalArgs = @('-ztag', '-Mj')
-    $fullArgs = $globalArgs + $P4Args
+    $fullArgs = @($globalArgs)
+    if ($InputLines.Count -gt 0) {
+        $fullArgs += @('-x', '-')
+    }
+    $fullArgs += $P4Args
     $commandLine = Format-P4CommandLine -P4Args $fullArgs
 
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $script:P4Executable
     $psi.Arguments = $commandLine.Substring(3)  # strip leading 'p4 '
     $psi.WorkingDirectory = (Get-Location).Path
+    $psi.RedirectStandardInput = ($InputLines.Count -gt 0)
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
@@ -239,6 +279,13 @@ function Invoke-P4 {
     $startedAt = Get-Date
     if (-not $process.Start()) {
         throw 'Failed to start p4.exe'
+    }
+
+    if ($InputLines.Count -gt 0) {
+        foreach ($line in $InputLines) {
+            $process.StandardInput.WriteLine([string]$line)
+        }
+        $process.StandardInput.Close()
     }
 
     # Read stdout and stderr concurrently via async tasks to prevent the
@@ -280,7 +327,11 @@ function Invoke-P4 {
         }
     }
 
-    $effectiveExitCode = $exitCode
+    $effectiveExitCode = if ((@($AllowedExitCodes) -contains $exitCode) -and [string]::IsNullOrWhiteSpace($stderr)) {
+        0
+    } else {
+        $exitCode
+    }
     if ($effectiveExitCode -eq 0 -and $stdoutErrorMessages.Count -gt 0) {
         $effectiveExitCode = 1
     }
@@ -892,6 +943,66 @@ function Get-P4UnresolvedDepotPaths {
     return ,$result
 }
 
+function Test-P4FileEntrySupportsContentDiff {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$FileEntry
+    )
+
+    $action = [string]$FileEntry.Action
+    if ([string]::IsNullOrWhiteSpace($action)) { return $false }
+
+    return ($action -notmatch '(?i)(^|/)(add|delete)$')
+}
+
+function Get-P4ModifiedDepotPaths {
+    <#
+    .SYNOPSIS
+        Returns a case-insensitive HashSet of depot paths whose workspace content differs from depot.
+    .DESCRIPTION
+        Uses 'p4 diff -sa' with depot paths supplied on standard input via '-x -'.
+        The input file list is typically the opened-file set for a single pending changelist.
+        Returns an empty set when there are no diffable files or when the diff command
+        reports no modified files.
+    .PARAMETER FileEntries
+        Opened-file entries whose depot paths should be diffed against depot content.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][object[]]$FileEntries
+    )
+
+    $result = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    if ($null -eq $FileEntries -or $FileEntries.Count -eq 0) {
+        return ,$result
+    }
+
+    [string[]]$depotPaths = @(
+        $FileEntries |
+            Where-Object { Test-P4FileEntrySupportsContentDiff -FileEntry $_ } |
+            ForEach-Object { [string]$_.DepotPath } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Sort-Object -Stable -Unique
+    )
+
+    if ($depotPaths.Count -eq 0) {
+        return ,$result
+    }
+
+    try {
+        $lines = @(Invoke-P4 -P4Args @('diff', '-sa') -AllowedExitCodes @(0, 1) -InputLines $depotPaths)
+    }
+    catch {
+        return ,$result
+    }
+
+    if ($null -eq $lines -or $lines.Count -eq 0) {
+        return ,$result
+    }
+
+    return ConvertFrom-P4DiffRecordsToDepotPaths -Records $lines
+}
+
 function Set-P4FileEntriesUnresolvedState {
     <#
     .SYNOPSIS
@@ -925,6 +1036,45 @@ function Set-P4FileEntriesUnresolvedState {
             -Change      ([int]$entry.Change) `
             -SourceKind  ([string]$entry.SourceKind) `
             -IsUnresolved $isUnresolved
+    }
+
+    return @($result)
+}
+
+function Set-P4FileEntriesContentModifiedState {
+    <#
+    .SYNOPSIS
+        Returns new FileEntry objects with IsContentModified set based on membership in the given depot-path set.
+    .DESCRIPTION
+        Accepts an array of FileEntry objects and a case-insensitive HashSet of modified
+        depot paths. Returns new FileEntry objects reconstructed via New-P4FileEntry so
+        each entry has a complete and stable shape. Does not mutate the input objects.
+    .PARAMETER FileEntries
+        Array of FileEntry objects (as returned by Get-P4OpenedFiles).
+    .PARAMETER ModifiedDepotPaths
+        Case-insensitive HashSet of depot paths whose workspace content differs from depot.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$FileEntries,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][System.Collections.Generic.HashSet[string]]$ModifiedDepotPaths
+    )
+
+    if ($null -eq $ModifiedDepotPaths) {
+        $ModifiedDepotPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    }
+
+    $result = foreach ($entry in $FileEntries) {
+        $depotPath = [string]$entry.DepotPath
+        $isContentModified = [bool]$ModifiedDepotPaths.Contains($depotPath)
+        New-P4FileEntry `
+            -DepotPath         $depotPath `
+            -Action            ([string]$entry.Action) `
+            -FileType          ([string]$entry.FileType) `
+            -Change            ([int]$entry.Change) `
+            -SourceKind        ([string]$entry.SourceKind) `
+            -IsUnresolved      ([bool]$entry.IsUnresolved) `
+            -IsContentModified $isContentModified
     }
 
     return @($result)
@@ -1080,4 +1230,4 @@ function Invoke-P4ReopenFiles {
     return @{ MovedCount = $depotPaths.Count; Files = $depotPaths }
 }
 
-Export-ModuleMember -Function Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Set-P4FileEntriesUnresolvedState, Remove-P4Changelist, Invoke-P4ShelveFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles
+Export-ModuleMember -Function Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Get-P4ModifiedDepotPaths, Set-P4FileEntriesUnresolvedState, Set-P4FileEntriesContentModifiedState, Remove-P4Changelist, Invoke-P4ShelveFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles

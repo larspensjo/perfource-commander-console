@@ -191,6 +191,64 @@ Describe 'Browser file loading helpers' {
             } | Should -Throw "*Unsupported FilesSourceKind 'UnknownKind'*"
         }
     }
+
+    It 'stores opened files with content-modified enrichment in FileCache' {
+        InModuleScope PerfourceCommanderConsole {
+            Mock Render-BrowserState { }
+            Mock Get-P4OpenedFiles {
+                @(
+                    (New-P4FileEntry -DepotPath '//depot/a.cpp' -Action 'edit' -FileType 'text' -Change 101 -SourceKind 'Opened' -IsUnresolved $true),
+                    (New-P4FileEntry -DepotPath '//depot/b.cpp' -Action 'edit' -FileType 'text' -Change 101 -SourceKind 'Opened')
+                )
+            }
+            Mock Get-P4ModifiedDepotPaths {
+                $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                [void]$set.Add('//depot/b.cpp')
+                return $set
+            }
+
+            $state = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
+            $next = Invoke-BrowserFilesLoad -State $state -Change 101 -SourceKind 'Opened' -CacheKey '101:Opened'
+
+            $cached = @($next.Data.FileCache['101:Opened'])
+            $cached.Count | Should -Be 2
+            $cached[0].IsUnresolved | Should -BeTrue
+            $cached[0].IsContentModified | Should -BeFalse
+            $cached[1].IsUnresolved | Should -BeFalse
+            $cached[1].IsContentModified | Should -BeTrue
+
+            Assert-MockCalled Get-P4OpenedFiles -Times 1 -Exactly -ParameterFilter {
+                $Change -eq 101
+            }
+            Assert-MockCalled Get-P4ModifiedDepotPaths -Times 1 -Exactly -ParameterFilter {
+                @($FileEntries).Count -eq 2
+            }
+        }
+    }
+
+    It 'stores an empty opened-file cache entry when the changelist has no opened files' {
+        InModuleScope PerfourceCommanderConsole {
+            Mock Render-BrowserState { }
+            Mock Get-P4OpenedFiles { return @() }
+            Mock Get-P4ModifiedDepotPaths {
+                $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                return $set
+            }
+
+            $state = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
+            $next = Invoke-BrowserFilesLoad -State $state -Change 202 -SourceKind 'Opened' -CacheKey '202:Opened'
+
+            $next.Data.FileCache.ContainsKey('202:Opened') | Should -BeTrue
+            @($next.Data.FileCache['202:Opened']).Count | Should -Be 0
+
+            Assert-MockCalled Get-P4OpenedFiles -Times 1 -Exactly -ParameterFilter {
+                $Change -eq 202
+            }
+            Assert-MockCalled Get-P4ModifiedDepotPaths -Times 1 -Exactly -ParameterFilter {
+                @($FileEntries).Count -eq 0
+            }
+        }
+    }
 }
 
 Describe 'Workflow error handling' {

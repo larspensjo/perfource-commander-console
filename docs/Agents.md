@@ -41,6 +41,30 @@ This bug produces no error; the variable just holds a nested array instead of a 
 
 Any function that uses `Write-Output -NoEnumerate` should carry a `# Returns array-as-value; do NOT wrap call in @()` comment on its closing line or in its help block.
 
+### Normalize 0..N results at call boundaries
+
+PowerShell silently turns an empty command result into `$null` unless the caller explicitly normalizes it as an array.
+
+**Footgun:** a function that conceptually returns “zero or more items” can return `$null` at the call site, which then breaks downstream parameter binding for collection parameters.
+
+```powershell
+# WRONG — $files becomes $null when Get-P4OpenedFiles returns no items
+$files = Get-P4OpenedFiles -Change $Change
+Use-Something -FileEntries $files
+
+# CORRECT — $files is always an array, including the empty case
+$files = @(Get-P4OpenedFiles -Change $Change)
+Use-Something -FileEntries $files
+```
+
+Rules:
+
+* When consuming any function that semantically returns **0..N items**, normalize immediately with `@(...)` unless the function explicitly documents a different contract.
+* When declaring a parameter that semantically accepts an empty collection, prefer `[AllowEmptyCollection()]` and consider `[AllowNull()]` if `$null` is a meaningful or likely boundary value.
+* For cache/state writes, store normalized arrays rather than allowing `$null` and `object` shape drift.
+
+Apply this especially at I/O boundaries (`Invoke-P4`, file-cache population, parser helpers, and workflow side effects), where empty results are common and should not be treated as exceptional.
+
 ---
 
 ## Validating Changes

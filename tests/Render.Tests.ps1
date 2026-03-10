@@ -1112,6 +1112,7 @@ Describe 'Files screen rendering' {
         $frame = Build-FilesScreenFrame -State $state
         $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
         $allText | Should -Match 'Resolve: clean'
+        $allText | Should -Match 'Content: clean'
     }
 
     It 'inspector shows Resolve: unresolved for an unresolved file' {
@@ -1131,6 +1132,26 @@ Describe 'Files screen rendering' {
         $frame = Build-FilesScreenFrame -State $state
         $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
         $allText | Should -Match 'Resolve: unresolved'
+        $allText | Should -Match 'Content: clean'
+    }
+
+    It 'inspector shows Content: modified for a modified file' {
+        $state = New-FilesRenderState -Width 120 -Height 20
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '250:Opened' = @(
+                [pscustomobject]@{ FileName = 'Edited.cs'; DepotPath = '//depot/Edited.cs'; Action = 'edit'; FileType = 'text'; Change = 250; SourceKind = 'Opened'; IsUnresolved = $false; IsContentModified = $true }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 250
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Match 'Content: modified'
     }
 
     It 'unresolved file row shows ⚠ glyph' {
@@ -1173,6 +1194,47 @@ Describe 'Files screen rendering' {
         $listText = ($listRows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
         $unresolvedGlyph = [string][char]0x26A0
         $listText | Should -Not -Match $unresolvedGlyph
+    }
+
+    It 'modified file row shows ≠ glyph' {
+        $state = New-FilesRenderState -Width 120 -Height 20
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '450:Opened' = @(
+                [pscustomobject]@{ FileName = 'Changed.cs'; DepotPath = '//depot/Changed.cs'; Action = 'edit'; FileType = 'text'; Change = 450; SourceKind = 'Opened'; IsUnresolved = $false; IsContentModified = $true }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 450
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $listRows = $frame.Rows | Select-Object -First 10
+        $listText = ($listRows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $listText | Should -Match '≠'
+    }
+
+    It 'unresolved glyph takes priority over the modified glyph' {
+        $state = New-FilesRenderState -Width 120 -Height 20
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '460:Opened' = @(
+                [pscustomobject]@{ FileName = 'ConflictAndChanged.cs'; DepotPath = '//depot/ConflictAndChanged.cs'; Action = 'integrate'; FileType = 'text'; Change = 460; SourceKind = 'Opened'; IsUnresolved = $true; IsContentModified = $true }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 460
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $listRows = $frame.Rows | Select-Object -First 10
+        $listText = ($listRows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $listText | Should -Match ([string][char]0x26A0)
+        $listText | Should -Not -Match '≠.*ConflictAndChanged\.cs'
     }
 }
 # ─── Confirm dialog overlay ───────────────────────────────────────────────────

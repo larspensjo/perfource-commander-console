@@ -181,6 +181,24 @@ Describe 'Browser reducer' {
         @($next.Ui.OverlayPayload.OnAccept.ChangeIds) | Should -Not -Contain '102'
     }
 
+    It 'DeleteShelvedFiles action without marks sets PendingRequest with kind DeleteShelvedFiles' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'DeleteShelvedFiles' })
+        $next.Runtime.PendingRequest.Kind     | Should -Be 'DeleteShelvedFiles'
+        $next.Runtime.PendingRequest.ChangeId | Should -Be '102'
+    }
+
+    It 'DeleteShelvedFiles action with marks opens confirm dialog for marked changelists with shelved files' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'DeleteShelvedFiles' })
+        $next.Ui.OverlayMode                          | Should -Be 'Confirm'
+        $next.Ui.OverlayPayload.OnAccept.WorkflowKind | Should -Be 'DeleteShelvedFiles'
+        @($next.Ui.OverlayPayload.OnAccept.ChangeIds) | Should -Contain '102'
+    }
+
     It 'DeleteChange action on empty list is a no-op' {
         $emptyState = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
         $next = Invoke-BrowserReducer -State $emptyState -Action ([pscustomobject]@{ Type = 'DeleteChange' })
@@ -1307,9 +1325,9 @@ Describe 'Menu reducer actions' {
     }
 
     It 'MenuSelect on disabled item closes menu but does not dispatch action' {
-        # MoveMarkedFiles is disabled when no marks exist (default state)
+        # DeleteShelvedFiles is disabled when the focused changelist has no shelved files (default state)
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
-        # FocusIndex=1 is MoveMarkedFiles which should be disabled
+        # FocusIndex=1 is DeleteShelvedFiles which should be disabled
         $state.Ui.OverlayPayload = [pscustomobject]@{
             ActiveMenu = 'File'; FocusIndex = 1; MenuItems = $state.Ui.OverlayPayload.MenuItems
         }
@@ -1320,7 +1338,7 @@ Describe 'Menu reducer actions' {
             # PendingRequest should remain null (no reload triggered)
             $next.Runtime.PendingRequest | Should -BeNullOrEmpty
         } else {
-            # Skip: MoveMarkedFiles is enabled (marks exist from some other setup)
+            # Skip: DeleteShelvedFiles is enabled for this setup
             Set-ItResult -Skipped -Because 'Item was enabled; skipping disabled-item path'
         }
     }
@@ -1488,7 +1506,7 @@ Describe 'Workflow framework actions' {
 
 # ─── Phase 5: First workflows ─────────────────────────────────────────────────
 
-Describe 'Phase 5 — DeleteChange and MoveMarkedFiles menu actions' {
+Describe 'Phase 5 — DeleteChange, DeleteShelvedFiles and MoveMarkedFiles menu actions' {
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
     }
@@ -1496,18 +1514,18 @@ Describe 'Phase 5 — DeleteChange and MoveMarkedFiles menu actions' {
     BeforeEach {
         $changes = @(
             [pscustomobject]@{ Id = '101'; Title = 'One';   HasShelvedFiles = $false; HasOpenedFiles = $true;  Captured = [datetime]'2026-02-10' },
-            [pscustomobject]@{ Id = '102'; Title = 'Two';   HasShelvedFiles = $false; HasOpenedFiles = $true;  Captured = [datetime]'2026-02-09' },
+            [pscustomobject]@{ Id = '102'; Title = 'Two';   HasShelvedFiles = $true;  HasOpenedFiles = $true;  Captured = [datetime]'2026-02-09' },
             [pscustomobject]@{ Id = '103'; Title = 'Three'; HasShelvedFiles = $false; HasOpenedFiles = $false; Captured = [datetime]'2026-02-08' }
         )
         $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
     }
 
-    # ── File menu now has 6 navigable items (MoveMarkedFiles added) ────────────
+    # ── File menu now includes delete-shelved support ─────────────────────────
 
-    It 'File menu has 7 navigable items including MoveMarkedFiles and ShelveFiles' {
+    It 'File menu has 8 navigable items including DeleteShelvedFiles' {
         $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
         $navCount = Get-MenuNavigableCount -ComputedItems $items
-        $navCount | Should -Be 7
+        $navCount | Should -Be 8
     }
 
     # ── DeleteChange ─────────────────────────────────────────────────────────
@@ -1568,6 +1586,69 @@ Describe 'Phase 5 — DeleteChange and MoveMarkedFiles menu actions' {
         $deleteItem.IsEnabled | Should -Be $false
     }
 
+    # ── DeleteShelvedFiles ───────────────────────────────────────────────────
+
+    It 'DeleteShelvedFiles menu item is enabled when the focused changelist has shelved files' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $item = $items | Where-Object { [string]$_.Id -eq 'DeleteShelvedFiles' } | Select-Object -First 1
+        $item.IsEnabled | Should -Be $true
+    }
+
+    It 'DeleteShelvedFiles menu item is disabled when the focused changelist has no shelved files' {
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $item = $items | Where-Object { [string]$_.Id -eq 'DeleteShelvedFiles' } | Select-Object -First 1
+        $item.IsEnabled | Should -Be $false
+    }
+
+    It 'DeleteShelvedFiles menu item is enabled when marked changelists include shelved files' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $item = $items | Where-Object { [string]$_.Id -eq 'DeleteShelvedFiles' } | Select-Object -First 1
+        $item.IsEnabled | Should -Be $true
+    }
+
+    It 'DeleteShelvedFiles menu item is disabled when marks exist but none have shelved files' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $item = $items | Where-Object { [string]$_.Id -eq 'DeleteShelvedFiles' } | Select-Object -First 1
+        $item.IsEnabled | Should -Be $false
+    }
+
+    It 'DeleteShelvedFiles menu item is disabled in Submitted view' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'Submitted' })
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $item = $items | Where-Object { [string]$_.Id -eq 'DeleteShelvedFiles' } | Select-Object -First 1
+        $item.IsEnabled | Should -Be $false
+    }
+
+    It 'MenuSelect DeleteShelvedFiles opens confirm dialog when marks exist' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 1; MenuItems = $menuItems }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
+
+        $next.Ui.OverlayMode                          | Should -Be 'Confirm'
+        $next.Ui.OverlayPayload.OnAccept.WorkflowKind | Should -Be 'DeleteShelvedFiles'
+    }
+
+    It 'DeleteShelvedFiles accelerator U opens the confirm dialog' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuAccelerator'; Key = 'U' })
+        $next.Ui.OverlayMode                          | Should -Be 'Confirm'
+        $next.Ui.OverlayPayload.OnAccept.WorkflowKind | Should -Be 'DeleteShelvedFiles'
+    }
+
     # ── MoveMarkedFiles ───────────────────────────────────────────────────────
 
     It 'MenuSelect MoveMarkedFiles opens confirm dialog when marks and focus exist' {
@@ -1578,9 +1659,9 @@ Describe 'Phase 5 — DeleteChange and MoveMarkedFiles menu actions' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
 
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
-        # MoveMarkedFiles is nav index 1
+        # MoveMarkedFiles is nav index 2
         [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
-        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 1; MenuItems = $menuItems }
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 2; MenuItems = $menuItems }
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
 
         $next.Ui.OverlayMode                          | Should -Be 'Confirm'
@@ -1595,7 +1676,7 @@ Describe 'Phase 5 — DeleteChange and MoveMarkedFiles menu actions' {
 
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
         [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
-        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 1; MenuItems = $menuItems }
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 2; MenuItems = $menuItems }
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
 
         $next.Ui.OverlayPayload.OnAccept.TargetChangeId | Should -Be '101'
@@ -1609,7 +1690,7 @@ Describe 'Phase 5 — DeleteChange and MoveMarkedFiles menu actions' {
 
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
         [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
-        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 1; MenuItems = $menuItems }
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 2; MenuItems = $menuItems }
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
 
         @($next.Ui.OverlayPayload.OnAccept.ChangeIds) | Should -Contain '101'

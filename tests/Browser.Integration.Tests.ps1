@@ -381,4 +381,66 @@ Describe 'Workflow error handling' {
             $shelveHistory[0].ErrorText | Should -Match 'No files to shelve'
         }
     }
+
+    It 'DeleteShelvedFiles preserves delete-shelved failures after refreshing pending changelists' {
+        InModuleScope PerfourceCommanderConsole {
+            Mock Render-BrowserState { }
+            Mock Get-P4ChangelistEntries {
+                @(
+                    [pscustomobject]@{
+                        Id               = '101'
+                        Title            = 'One'
+                        Kind             = 'Pending'
+                        User             = 'alice'
+                        Captured         = [datetime]'2026-03-07 09:15:00'
+                        HasOpenedFiles   = $true
+                        HasShelvedFiles  = $true
+                        OpenedFileCount  = 6
+                        ShelvedFileCount = 1
+                    }
+                )
+            }
+            Mock Remove-P4ShelvedFiles {
+                throw "p4 failed (exit 1).`nArgs: shelve -d -c 101`nSTDERR: No shelved files in changelist 101."
+            }
+
+            $changes = @(
+                [pscustomobject]@{
+                    Id              = '101'
+                    Title           = 'One'
+                    HasShelvedFiles = $true
+                    HasOpenedFiles  = $true
+                    Captured        = [datetime]'2026-03-07 09:15:00'
+                }
+            )
+            $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+            $state.Runtime.ConfiguredMax = 25
+
+            $next = & $script:WorkflowRegistry['DeleteShelvedFiles'] -State $state -Request ([pscustomobject]@{
+                ChangeIds = @('101')
+            })
+
+            $next.Runtime.PendingRequest | Should -BeNullOrEmpty
+            $next.Runtime.LastWorkflowResult.Kind        | Should -Be 'DeleteShelvedFiles'
+            $next.Runtime.LastWorkflowResult.DoneCount   | Should -Be 0
+            $next.Runtime.LastWorkflowResult.FailedCount | Should -Be 1
+            @($next.Runtime.LastWorkflowResult.FailedIds) | Should -Contain '101'
+            $next.Runtime.LastError | Should -Match 'No shelved files in changelist 101'
+
+            Assert-MockCalled Remove-P4ShelvedFiles -Times 1 -Exactly -ParameterFilter {
+                $Change -eq 101
+            }
+            Assert-MockCalled Get-P4ChangelistEntries -Times 1 -Exactly -ParameterFilter {
+                $Max -eq 25
+            }
+
+            $deleteShelvedHistory = @(
+                $next.Runtime.ModalPrompt.History |
+                    Where-Object { [string]$_.CommandLine -eq 'p4 shelve -d -c 101' }
+            )
+            $deleteShelvedHistory.Count | Should -Be 1
+            $deleteShelvedHistory[0].Succeeded | Should -BeFalse
+            $deleteShelvedHistory[0].ErrorText | Should -Match 'No shelved files in changelist 101'
+        }
+    }
 }

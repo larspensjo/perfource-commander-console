@@ -436,6 +436,22 @@ Describe 'Get-P4SubmittedChangelists' {
     }
 }
 
+Describe 'Remove-P4ShelvedFiles' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'runs p4 shelve -d -c for the requested changelist' {
+        Mock Invoke-P4 -ModuleName P4Cli { return @() }
+
+        Remove-P4ShelvedFiles -Change 123
+
+        Should -Invoke Invoke-P4 -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
+            (@($P4Args) -join '|') -eq 'shelve|-d|-c|123'
+        }
+    }
+}
+
 Describe 'ConvertFrom-P4OpenedLinesToFileCounts' {
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force

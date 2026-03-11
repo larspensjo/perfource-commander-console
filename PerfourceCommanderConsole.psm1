@@ -184,6 +184,51 @@ Register-WorkflowKind -Kind 'ShelveFiles' -Execute {
     return $state
 }
 
+Register-WorkflowKind -Kind 'DeleteShelvedFiles' -Execute {
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$State,
+        [Parameter(Mandatory = $true)][pscustomobject]$Request
+    )
+
+    [string[]]$changeIds = @($Request.ChangeIds)
+    $state = Invoke-BrowserReducer -State $State -Action ([pscustomobject]@{
+        Type = 'WorkflowBegin'; Kind = 'DeleteShelvedFiles'; TotalCount = $changeIds.Count
+    })
+
+    $lastFailureError = ''
+
+    foreach ($changeId in $changeIds) {
+        $changeNum = [int]$changeId
+        $deleteShelvedCmdLine = Format-P4CommandLine -P4Args @('shelve', '-d', '-c', "$changeNum")
+        $result = Invoke-BrowserWorkflowCommand -State $state -CommandLine $deleteShelvedCmdLine -WorkItem {
+            param($s)
+            Remove-P4ShelvedFiles -Change $changeNum
+            return $s
+        }
+        $state = $result.State
+
+        if ($result.Succeeded) {
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowItemComplete' })
+        } else {
+            if (-not [string]::IsNullOrWhiteSpace([string]$result.ErrorText)) {
+                $lastFailureError = [string]$result.ErrorText
+            }
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                Type = 'WorkflowItemFailed'; ChangeId = $changeId
+            })
+        }
+    }
+
+    $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowEnd' })
+
+    $state = Invoke-BrowserPendingChangesReload -State $state
+    if (-not [string]::IsNullOrWhiteSpace($lastFailureError)) {
+        $state.Runtime.LastError = $lastFailureError
+    }
+
+    return $state
+}
+
 function Get-BrowserConsoleSize {
     [pscustomobject]@{
         Width  = [Console]::WindowWidth
@@ -623,6 +668,19 @@ function Start-P4Browser {
                                     $s.Runtime.LastError = $null
                                     return Update-BrowserDerivedState -State $s
                                 }
+                            }
+                        }
+                        'DeleteShelvedFiles' {
+                            $change = ConvertTo-ChangeNumberFromId -Id $req.ChangeId
+                            if ($null -ne $change) {
+                                $deleteShelvedCmdLine = Format-P4CommandLine -P4Args @('shelve', '-d', '-c', "$change")
+                                $state = Invoke-BrowserSideEffect -State $state -CommandLine $deleteShelvedCmdLine -WorkItem {
+                                    param($s)
+                                    Remove-P4ShelvedFiles -Change $change
+                                    $s.Runtime.LastError = $null
+                                    return $s
+                                }
+                                $state = Invoke-BrowserPendingChangesReload -State $state
                             }
                         }
                         'ExecuteWorkflow' {

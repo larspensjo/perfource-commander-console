@@ -29,6 +29,13 @@ $script:MenuDefinitions = @{
             IsEnabled   = { param($s) Test-CanDeleteSelectedChanges -State $s }
         },
         [pscustomobject]@{
+            Id          = 'DeleteShelvedFiles'
+            Label       = 'Delete shelved files'
+            Accelerator = 'U'
+            IsSeparator = $false
+            IsEnabled   = { param($s) Test-CanDeleteShelvedSelectedChanges -State $s }
+        },
+        [pscustomobject]@{
             Id          = 'MoveMarkedFiles'
             Label       = 'Move files from marked to focused'
             Accelerator = 'M'
@@ -122,6 +129,24 @@ function Test-ChangeHasOpenedFiles {
     return $false
 }
 
+function Test-ChangeHasShelvedFiles {
+    param($Change)
+
+    if ($null -eq $Change) { return $false }
+
+    $hasShelvedProp = $Change.PSObject.Properties['HasShelvedFiles']
+    if ($null -ne $hasShelvedProp -and [bool]$hasShelvedProp.Value) {
+        return $true
+    }
+
+    $shelvedCountProp = $Change.PSObject.Properties['ShelvedFileCount']
+    if ($null -ne $shelvedCountProp -and [int]$shelvedCountProp.Value -gt 0) {
+        return $true
+    }
+
+    return $false
+}
+
 function Get-DeleteActionableChangeIds {
     param($State)
 
@@ -148,6 +173,52 @@ function Test-CanDeleteSelectedChanges {
     param($State)
 
     return @(Get-DeleteActionableChangeIds -State $State).Count -gt 0
+}
+
+function Get-DeleteShelvedActionableChanges {
+    param($State)
+
+    $viewMode = if ($State.Ui.PSObject.Properties['ViewMode']) { [string]$State.Ui.ViewMode } else { 'Pending' }
+    if ($viewMode -ne 'Pending') { return @() }
+
+    [object[]]$activeChanges = @($State.Data.AllChanges)
+    $mcProp = $State.Query.PSObject.Properties['MarkedChangeIds']
+    $hasMarks = $null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0
+
+    if ($hasMarks) {
+        $markedIdSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($markedId in @($mcProp.Value)) {
+            [void]$markedIdSet.Add([string]$markedId)
+        }
+
+        return @(
+            $activeChanges |
+                Where-Object { $markedIdSet.Contains([string]$_.Id) } |
+                Where-Object { Test-ChangeHasShelvedFiles -Change $_ }
+        )
+    }
+
+    $visibleIdsProp = $State.Derived.PSObject.Properties['VisibleChangeIds']
+    if ($null -eq $visibleIdsProp -or $null -eq $visibleIdsProp.Value) { return @() }
+
+    [object[]]$visibleIds = @($visibleIdsProp.Value)
+    if ($visibleIds.Count -eq 0) { return @() }
+
+    $focusedIndex = [Math]::Max(0, [Math]::Min([int]$State.Cursor.ChangeIndex, $visibleIds.Count - 1))
+    $focusedId = [string]$visibleIds[$focusedIndex]
+
+    return @(
+        $activeChanges |
+            Where-Object { [string]$_.Id -eq $focusedId } |
+            Where-Object { Test-ChangeHasShelvedFiles -Change $_ } |
+            Select-Object -First 1
+    )
+}
+
+function Test-CanDeleteShelvedSelectedChanges {
+    param($State)
+
+    return @(Get-DeleteShelvedActionableChanges -State $State).Count -gt 0
 }
 
 function New-DeleteMarkedConfirmPayload {
@@ -181,6 +252,42 @@ function New-DeleteMarkedConfirmPayload {
         OnAccept         = [pscustomobject]@{
             Kind         = 'ExecuteWorkflow'
             WorkflowKind = 'DeleteMarked'
+            ChangeIds    = $ChangeIds
+        }
+    }
+}
+
+function New-DeleteShelvedConfirmPayload {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][string[]]$ChangeIds
+    )
+
+    $count = $ChangeIds.Count
+    $summaryLines = @(
+        "Selected: $count changelist$(if ($count -ne 1) { 's' } else { '' })"
+        'Shelved files will be deleted in sequence'
+    )
+
+    $visibleIdsProp = $State.Derived.PSObject.Properties['VisibleChangeIds']
+    [object[]]$visibleIds = if ($null -ne $visibleIdsProp -and $null -ne $visibleIdsProp.Value) { @($visibleIdsProp.Value) } else { @() }
+    if ($visibleIds.Count -gt 0) {
+        $focusedIndex = [Math]::Max(0, [Math]::Min([int]$State.Cursor.ChangeIndex, $visibleIds.Count - 1))
+        $focusedId = [string]$visibleIds[$focusedIndex]
+        if (-not [string]::IsNullOrWhiteSpace($focusedId) -and $ChangeIds -notcontains $focusedId) {
+            $summaryLines += "Focused: changelist $focusedId is not marked and will not be changed"
+        }
+    }
+
+    return [pscustomobject]@{
+        Title            = "Delete shelved files from $count selected changelist$(if ($count -ne 1) { 's' } else { '' })?"
+        SummaryLines     = $summaryLines
+        ConsequenceLines = @('Opened files in these changelists will remain unchanged')
+        ConfirmLabel     = 'Y / Enter = confirm'
+        CancelLabel      = 'N / Esc = cancel'
+        OnAccept         = [pscustomobject]@{
+            Kind         = 'ExecuteWorkflow'
+            WorkflowKind = 'DeleteShelvedFiles'
             ChangeIds    = $ChangeIds
         }
     }
@@ -1048,6 +1155,7 @@ function Invoke-ChangelistReducer {
             $itemId = [string]$item.Id
             switch ($itemId) {
                 'DeleteChange'      { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'DeleteChange' }) }
+                'DeleteShelvedFiles' { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'DeleteShelvedFiles' }) }
                 'MarkAllVisible'    { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'MarkAllVisible' }) }
                 'ClearMarks'        { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ClearMarks' }) }
                 'Refresh'           { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'Reload' }) }
@@ -1414,6 +1522,24 @@ function Invoke-ChangelistReducer {
             }
 
             $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'DeleteChange'; ChangeId = $changeIds[0] }
+            return Update-BrowserDerivedState -State $next
+        }
+        'DeleteShelvedFiles' {
+            $currentViewMode = if (($next.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$next.Ui.ViewMode } else { 'Pending' }
+            if ($currentViewMode -eq 'Submitted') { return $next }
+
+            [object[]]$targetChanges = @(Get-DeleteShelvedActionableChanges -State $next)
+            if ($targetChanges.Count -eq 0) { return Update-BrowserDerivedState -State $next }
+
+            [string[]]$changeIds = @($targetChanges | ForEach-Object { [string]$_.Id } | Sort-Object -Unique)
+            $mcProp = $next.Query.PSObject.Properties['MarkedChangeIds']
+            $hasMarks = $null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0
+            if ($hasMarks) {
+                $payload = New-DeleteShelvedConfirmPayload -State $next -ChangeIds $changeIds
+                return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenConfirmDialog'; Payload = $payload })
+            }
+
+            $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'DeleteShelvedFiles'; ChangeId = $changeIds[0] }
             return Update-BrowserDerivedState -State $next
         }
         'ToggleMarkCurrent' {

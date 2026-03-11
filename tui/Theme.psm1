@@ -7,6 +7,8 @@ $script:BrowserUiTheme = [pscustomobject]@{
         Cursor     = [char]0x25B6  # ▶
         Mark       = [char]0x25CF  # ●
         Unresolved = [string]'⚠'
+        Opened     = [string]'📁'
+        Shelved    = [string]'📦'
         Modified   = [string]'≠'
     }
     Labels = [pscustomobject]@{

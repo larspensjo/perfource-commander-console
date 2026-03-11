@@ -8,6 +8,8 @@ $SCROLLBAR_TRACK_GLYPH = [char]0x2502
 $CURSOR_GLYPH          = $_theme.Glyphs.Cursor      # ▶
 $MARK_GLYPH            = $_theme.Glyphs.Mark        # ●
 $UNRESOLVED_GLYPH      = $_theme.Glyphs.Unresolved  # ⚠
+$OPENED_GLYPH          = $_theme.Glyphs.Opened      # 📁
+$SHELVED_GLYPH         = $_theme.Glyphs.Shelved     # 📦
 $MODIFIED_GLYPH        = $_theme.Glyphs.Modified    # ≠
 $UNRESOLVED_BADGE_WIDTH = 2  # one glyph slot + one trailing space
 
@@ -602,17 +604,36 @@ function Build-ChangeSegments {
     $changeTitle      = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Title'              -Default '')
     $changeKind       = [string](Get-PropertyValueOrDefault -Object $Change -Name 'Kind'               -Default '')
     $changeUser       = [string](Get-PropertyValueOrDefault -Object $Change -Name 'User'               -Default '')
+    $openedCount      = [int]   (Get-PropertyValueOrDefault -Object $Change -Name 'OpenedFileCount'    -Default 0)
+    $shelvedCount     = [int]   (Get-PropertyValueOrDefault -Object $Change -Name 'ShelvedFileCount'   -Default 0)
     $hasUnresolved    = [bool]  (Get-PropertyValueOrDefault -Object $Change -Name 'HasUnresolvedFiles' -Default $false)
+    $hasOpened        = [bool]  (Get-PropertyValueOrDefault -Object $Change -Name 'HasOpenedFiles'     -Default ($openedCount -gt 0))
+    $hasShelved       = [bool]  (Get-PropertyValueOrDefault -Object $Change -Name 'HasShelvedFiles'    -Default ($shelvedCount -gt 0))
 
     $markerColor      = if ($IsSelected) { 'Cyan' } else { Get-MarkerColor -Marker $Marker }
     $titleColor       = if ($IsSelected) { 'White' } else { 'Gray' }
-    $unresolvedText   = if ($hasUnresolved) { $UNRESOLVED_GLYPH + ' ' } else { '  ' }
-    $unresolvedColor  = if ($hasUnresolved) { 'Yellow' } else { 'DarkGray' }
+    $stateText        = if ($hasUnresolved) {
+        $UNRESOLVED_GLYPH + ' '
+    } elseif ($hasOpened) {
+        $OPENED_GLYPH
+    } else {
+        '  '
+    }
+    $stateColor       = if ($hasUnresolved) {
+        'Yellow'
+    } elseif ($hasOpened) {
+        'DarkYellow'
+    } else {
+        'DarkGray'
+    }
+    $shelvedText      = if ($hasShelved) { $SHELVED_GLYPH } else { '  ' }
+    $shelvedColor     = if ($hasShelved) { 'DarkCyan' } else { 'DarkGray' }
 
     $segments = @(
         @{ Text = $Marker;          Color = $markerColor       },
         @{ Text = $markBadge;       Color = $markBadgeColor    },
-        @{ Text = $unresolvedText;  Color = $unresolvedColor   },
+        @{ Text = $stateText;       Color = $stateColor        },
+        @{ Text = $shelvedText;     Color = $shelvedColor      },
         @{ Text = " $changeId";     Color = 'DarkGray'         }
     )
 

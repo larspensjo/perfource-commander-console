@@ -694,12 +694,13 @@ Describe 'Segment builders' {
         It 'builds unselected changelist segments with semantic colors' {
             $cl = [pscustomobject]@{ Id = 'FI-1'; Title = 'Title' }
             $segments = Build-ChangeSegments -Marker '│' -Change $cl -IsSelected $false
-            $segments.Count | Should -Be 5
+            $segments.Count | Should -Be 6
             $segments[0].Color | Should -Be 'DarkGray'  # marker
             $segments[1].Color | Should -Be 'Gray'       # mark badge (unmarked = space)
-            $segments[2].Color | Should -Be 'DarkGray'  # unresolved badge (absent = placeholder)
-            $segments[3].Color | Should -Be 'DarkGray'  # changeId
-            $segments[4].Color | Should -Be 'Gray'       # title
+            $segments[2].Color | Should -Be 'DarkGray'  # state badge (absent = placeholder)
+            $segments[3].Color | Should -Be 'DarkGray'  # shelved badge (absent = placeholder)
+            $segments[4].Color | Should -Be 'DarkGray'  # changeId
+            $segments[5].Color | Should -Be 'Gray'       # title
         }
 
         It 'builds selected changelist segments with focus colors' {
@@ -707,9 +708,10 @@ Describe 'Segment builders' {
             $segments = Build-ChangeSegments -Marker '>' -Change $cl -IsSelected $true
             $segments[0].Color | Should -Be 'Cyan'      # marker (selected)
             $segments[1].Color | Should -Be 'Gray'       # mark badge (unmarked)
-            $segments[2].Color | Should -Be 'DarkGray'  # unresolved badge (absent = placeholder)
-            $segments[3].Color | Should -Be 'DarkGray'  # changeId
-            $segments[4].Color | Should -Be 'White'     # title (selected)
+            $segments[2].Color | Should -Be 'DarkGray'  # state badge (absent = placeholder)
+            $segments[3].Color | Should -Be 'DarkGray'  # shelved badge (absent = placeholder)
+            $segments[4].Color | Should -Be 'DarkGray'  # changeId
+            $segments[5].Color | Should -Be 'White'     # title (selected)
         }
 
         It 'builds scrollbar-only row as marker + badge segments when Change is null' {
@@ -736,31 +738,50 @@ Describe 'Segment builders' {
         It 'builds unresolved changelist row with Yellow ⚠ badge' {
             $cl = [pscustomobject]@{ Id = 'FI-5'; Title = 'Has conflicts'; HasUnresolvedFiles = $true }
             $segments = Build-ChangeSegments -Marker ' ' -Change $cl -IsSelected $false
-            # segment[2] is the unresolved badge slot
+            # segment[2] is the primary state badge slot
             $segments[2].Text  | Should -Be ([string]([char]0x26A0) + ' ')  # ⚠ + space
             $segments[2].Color | Should -Be 'Yellow'
         }
 
-        It 'clean changelist row reserves unresolved column without glyph' {
+        It 'opened changelist row shows 📁 when there are opened files and no unresolved files' {
+            $cl = [pscustomobject]@{ Id = 'FI-6'; Title = 'Opened CL'; HasOpenedFiles = $true; HasUnresolvedFiles = $false }
+            $segments = Build-ChangeSegments -Marker ' ' -Change $cl -IsSelected $false
+            $segments[2].Text  | Should -Be '📁'
+            $segments[2].Color | Should -Be 'DarkYellow'
+        }
+
+        It 'clean changelist row reserves state and shelved columns without glyphs' {
             $cl = [pscustomobject]@{ Id = 'FI-6'; Title = 'Clean CL'; HasUnresolvedFiles = $false }
             $segments = Build-ChangeSegments -Marker ' ' -Change $cl -IsSelected $false
             $segments[2].Text  | Should -Be '  '    # two spaces placeholder
             $segments[2].Color | Should -Be 'DarkGray'
+            $segments[3].Text  | Should -Be '  '
+            $segments[3].Color | Should -Be 'DarkGray'
         }
 
         It 'focused unresolved changelist row still shows ⚠ in Yellow' {
-            $cl = [pscustomobject]@{ Id = 'FI-7'; Title = 'Focused Unresolved'; HasUnresolvedFiles = $true }
+            $cl = [pscustomobject]@{ Id = 'FI-7'; Title = 'Focused Unresolved'; HasUnresolvedFiles = $true; HasOpenedFiles = $true }
             $segments = Build-ChangeSegments -Marker ([string][char]0x25B6) -Change $cl -IsSelected $true
             $segments[2].Text  | Should -Be ([string]([char]0x26A0) + ' ')  # ⚠ + space
             $segments[2].Color | Should -Be 'Yellow'
+            (@($segments | Where-Object { $_.Text -eq '📁' })).Count | Should -Be 0
         }
 
-        It 'marked + unresolved row shows both mark badge and ⚠ badge' {
-            $cl = [pscustomobject]@{ Id = 'FI-8'; Title = 'Marked Unresolved'; HasUnresolvedFiles = $true }
+        It 'shelved changelist row shows 📦 in dedicated badge slot' {
+            $cl = [pscustomobject]@{ Id = 'FI-8'; Title = 'Shelved CL'; HasShelvedFiles = $true }
+            $segments = Build-ChangeSegments -Marker ' ' -Change $cl -IsSelected $false
+            $segments[3].Text  | Should -Be '📦'
+            $segments[3].Color | Should -Be 'DarkCyan'
+        }
+
+        It 'marked + unresolved + shelved row shows all three badges' {
+            $cl = [pscustomobject]@{ Id = 'FI-9'; Title = 'Marked Unresolved'; HasUnresolvedFiles = $true; HasShelvedFiles = $true }
             $segments = Build-ChangeSegments -Marker ' ' -Change $cl -IsSelected $false -IsMarked $true
-            # segment[1] = mark badge (●, Yellow), segment[2] = unresolved badge (⚠, Yellow)
+            # segment[1] = mark badge (●), segment[2] = state badge (⚠), segment[3] = shelved badge (📦)
             $segments[1].Color | Should -Be 'Yellow'  # marked badge
             $segments[2].Color | Should -Be 'Yellow'  # unresolved badge
+            $segments[3].Text  | Should -Be '📦'
+            $segments[3].Color | Should -Be 'DarkCyan'
         }
 
         It 'builds detail rows with label and value colors' {

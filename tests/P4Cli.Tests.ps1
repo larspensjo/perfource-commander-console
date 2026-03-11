@@ -141,7 +141,7 @@ Describe 'Get-P4Describe' {
         }
 
         $result = Get-P4Describe -Change 12345
-        $result.Change      | Should -Be 12345
+        $result.Change      | Should -Be '12345'
         $result.User        | Should -Be 'testuser'
         $result.Client      | Should -Be 'testclient'
         $result.Status      | Should -Be 'submitted'
@@ -234,8 +234,8 @@ Describe 'Get-P4OpenedChangeNumbers' {
         }
 
         $result = Get-P4OpenedChangeNumbers
-        $result.Contains(100) | Should -BeTrue
-        $result.Contains(200) | Should -BeTrue
+        $result.Contains('100') | Should -BeTrue
+        $result.Contains('200') | Should -BeTrue
         $result.Count | Should -Be 2
     }
 
@@ -243,7 +243,7 @@ Describe 'Get-P4OpenedChangeNumbers' {
         Mock Invoke-P4 -ModuleName P4Cli { throw 'no such file(s).' }
 
         $result = Get-P4OpenedChangeNumbers
-        ($result -is [System.Collections.Generic.HashSet[int]]) | Should -BeTrue
+        ($result -is [System.Collections.Generic.HashSet[string]]) | Should -BeTrue
         $result.Count | Should -Be 0
     }
 
@@ -251,7 +251,7 @@ Describe 'Get-P4OpenedChangeNumbers' {
         Mock Invoke-P4 -ModuleName P4Cli { return @() }
 
         $result = Get-P4OpenedChangeNumbers
-        ($result -is [System.Collections.Generic.HashSet[int]]) | Should -BeTrue
+        ($result -is [System.Collections.Generic.HashSet[string]]) | Should -BeTrue
         $result.Count | Should -Be 0
     }
 
@@ -287,8 +287,8 @@ Describe 'Get-P4ShelvedChangeNumbers' {
         }
 
         $result = Get-P4ShelvedChangeNumbers
-        $result.Contains(300) | Should -BeTrue
-        $result.Contains(400) | Should -BeTrue
+        $result.Contains('300') | Should -BeTrue
+        $result.Contains('400') | Should -BeTrue
         $result.Count | Should -Be 2
     }
 
@@ -297,7 +297,7 @@ Describe 'Get-P4ShelvedChangeNumbers' {
         Mock Invoke-P4 -ModuleName P4Cli { throw 'no matching changelists.' }
 
         $result = Get-P4ShelvedChangeNumbers
-        ($result -is [System.Collections.Generic.HashSet[int]]) | Should -BeTrue
+        ($result -is [System.Collections.Generic.HashSet[string]]) | Should -BeTrue
         $result.Count | Should -Be 0
     }
 
@@ -306,7 +306,7 @@ Describe 'Get-P4ShelvedChangeNumbers' {
         Mock Invoke-P4 -ModuleName P4Cli { return @() }
 
         $result = Get-P4ShelvedChangeNumbers
-        ($result -is [System.Collections.Generic.HashSet[int]]) | Should -BeTrue
+        ($result -is [System.Collections.Generic.HashSet[string]]) | Should -BeTrue
         $result.Count | Should -Be 0
     }
 
@@ -332,10 +332,10 @@ Describe 'Get-P4ChangelistEntries' {
             )
         }
         Mock Get-P4OpenedFileCounts -ModuleName P4Cli {
-            return [System.Collections.Generic.Dictionary[int,int]]::new()
+            return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
         }
         Mock Get-P4ShelvedFileCounts -ModuleName P4Cli {
-            return [System.Collections.Generic.Dictionary[int,int]]::new()
+            return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
         }
 
         $result = @(Get-P4ChangelistEntries)
@@ -355,13 +355,13 @@ Describe 'Get-P4ChangelistEntries' {
             )
         }
         Mock Get-P4OpenedFileCounts -ModuleName P4Cli {
-            $d = [System.Collections.Generic.Dictionary[int,int]]::new()
-            $d[200] = 3
+            $d = [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $d['200'] = 3
             return $d
         }
         Mock Get-P4ShelvedFileCounts -ModuleName P4Cli {
-            $d = [System.Collections.Generic.Dictionary[int,int]]::new()
-            $d[200] = 2
+            $d = [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $d['200'] = 2
             return $d
         }
 
@@ -371,6 +371,103 @@ Describe 'Get-P4ChangelistEntries' {
         $result[0].HasShelvedFiles  | Should -BeTrue
         $result[0].OpenedFileCount  | Should -Be 3
         $result[0].ShelvedFileCount | Should -Be 2
+    }
+
+    It 'keeps the default changelist as a normal pending entry' {
+        $now = Get-Date
+        Mock Get-P4PendingChangelists -ModuleName P4Cli {
+            return @(
+                New-P4Changelist -Change 'default' -User 'u' -Client 'c' -Time $now -Status 'pending' -Description 'default work'
+            )
+        }
+        Mock Get-P4OpenedFileCounts -ModuleName P4Cli {
+            $d = [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $d['default'] = 2
+            return $d
+        }
+        Mock Get-P4ShelvedFileCounts -ModuleName P4Cli {
+            $d = [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $d['default'] = 1
+            return $d
+        }
+        Mock Get-P4UnresolvedFileCounts -ModuleName P4Cli {
+            $d = [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $d['default'] = 1
+            return $d
+        }
+
+        $result = @(Get-P4ChangelistEntries)
+        $result.Count | Should -Be 1
+        $result[0].Id | Should -Be 'default'
+        $result[0].OpenedFileCount | Should -Be 2
+        $result[0].ShelvedFileCount | Should -Be 1
+        $result[0].UnresolvedFileCount | Should -Be 1
+        $result[0].HasOpenedFiles | Should -BeTrue
+        $result[0].HasShelvedFiles | Should -BeTrue
+        $result[0].HasUnresolvedFiles | Should -BeTrue
+    }
+
+    It 'synthesizes the default changelist when opened files exist but p4 changes omits it' {
+        Mock Get-P4PendingChangelists -ModuleName P4Cli {
+            return @(
+                New-P4Changelist -Change '200' -User 'u' -Client 'c' -Time ([datetime]'2026-03-10T12:00:00') -Status 'pending' -Description 'numbered work'
+            )
+        }
+        Mock Get-P4OpenedFileCounts -ModuleName P4Cli {
+            $d = [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $d['default'] = 2
+            $d['200'] = 1
+            return $d
+        }
+        Mock Get-P4ShelvedFileCounts -ModuleName P4Cli {
+            $d = [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            return $d
+        }
+        Mock Get-P4UnresolvedFileCounts -ModuleName P4Cli {
+            param([string[]]$ChangeNumbers)
+            $ChangeNumbers | Should -Contain 'default'
+            $d = [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $d['default'] = 1
+            return $d
+        }
+        Mock Get-P4Info -ModuleName P4Cli { throw 'should not be called' }
+
+        $result = @(Get-P4ChangelistEntries)
+
+        $result.Count | Should -Be 2
+        $result[0].Id | Should -Be 'default'
+        $result[0].Title | Should -Be 'Default changelist'
+        $result[0].OpenedFileCount | Should -Be 2
+        $result[0].UnresolvedFileCount | Should -Be 1
+        $result[0].HasOpenedFiles | Should -BeTrue
+        $result[0].HasUnresolvedFiles | Should -BeTrue
+        $result[1].Id | Should -Be '200'
+    }
+
+    It 'synthesizes the default changelist from p4 info when no numbered pending changelists exist' {
+        Mock Get-P4PendingChangelists -ModuleName P4Cli { return @() }
+        Mock Get-P4OpenedFileCounts -ModuleName P4Cli {
+            $d = [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $d['default'] = 3
+            return $d
+        }
+        Mock Get-P4ShelvedFileCounts -ModuleName P4Cli {
+            return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        }
+        Mock Get-P4UnresolvedFileCounts -ModuleName P4Cli {
+            return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        }
+        Mock Get-P4Info -ModuleName P4Cli {
+            return [pscustomobject]@{ User = 'alice'; Client = 'ws-main'; Port = 'p'; Root = 'r' }
+        }
+
+        $result = @(Get-P4ChangelistEntries)
+
+        $result.Count | Should -Be 1
+        $result[0].Id | Should -Be 'default'
+        $result[0].OpenedFileCount | Should -Be 3
+        $result[0].HasOpenedFiles | Should -BeTrue
+        Assert-MockCalled Get-P4Info -ModuleName P4Cli -Times 1 -Exactly
     }
 }
 
@@ -396,7 +493,7 @@ Describe 'Get-P4SubmittedChangelists' {
         $result = @(Get-P4SubmittedChangelists -Max 25 -Client 'ws-main')
 
         $result.Count | Should -Be 1
-        $result[0].Change | Should -Be 12345
+        $result[0].Change | Should -Be '12345'
         Assert-MockCalled Get-P4Info -ModuleName P4Cli -Times 0 -Exactly
         Assert-MockCalled Invoke-P4 -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
             $P4Args.Count -eq 7 -and
@@ -464,13 +561,23 @@ Describe 'ConvertFrom-P4OpenedLinesToFileCounts' {
             [pscustomobject]@{ depotFile = '//depot/c.txt'; change = '100'; action = 'edit' }
         )
         $result = InModuleScope P4Cli { ConvertFrom-P4OpenedLinesToFileCounts -Records $args[0] } -ArgumentList @(,$records)
-        $result[100] | Should -Be 2
-        $result[200] | Should -Be 1
+        $result['100'] | Should -Be 2
+        $result['200'] | Should -Be 1
     }
 
     It 'returns empty dictionary for empty input' {
         $result = InModuleScope P4Cli { ConvertFrom-P4OpenedLinesToFileCounts -Records @() }
         $result.Count | Should -Be 0
+    }
+
+    It 'maps default changelist records to the default key' {
+        $records = @(
+            [pscustomobject]@{ depotFile = '//depot/default.txt'; change = 'default'; action = 'edit' },
+            [pscustomobject]@{ depotFile = '//depot/legacy.txt';  change = '0';       action = 'edit' }
+        )
+
+        $result = InModuleScope P4Cli { ConvertFrom-P4OpenedLinesToFileCounts -Records $args[0] } -ArgumentList @(,$records)
+        $result['default'] | Should -Be 2
     }
 }
 
@@ -485,8 +592,8 @@ Describe 'ConvertFrom-P4DescribeShelvedLinesToFileCounts' {
             [pscustomobject]@{ change = '400'; user = 'u'; depotFile = @('//depot/z.txt') }
         )
         $result = InModuleScope P4Cli { ConvertFrom-P4DescribeShelvedLinesToFileCounts -Records $args[0] } -ArgumentList @(,$records)
-        $result[300] | Should -Be 2
-        $result[400] | Should -Be 1
+        $result['300'] | Should -Be 2
+        $result['400'] | Should -Be 1
     }
 
     It 'returns empty dictionary for empty input' {
@@ -499,8 +606,8 @@ Describe 'ConvertFrom-P4DescribeShelvedLinesToFileCounts' {
             [pscustomobject]@{ change = '500'; user = 'u' }
         )
         $result = InModuleScope P4Cli { ConvertFrom-P4DescribeShelvedLinesToFileCounts -Records $args[0] } -ArgumentList @(,$records)
-        $result.ContainsKey(500) | Should -BeTrue
-        $result[500]             | Should -Be 0
+        $result.ContainsKey('500') | Should -BeTrue
+        $result['500']             | Should -Be 0
     }
 
     It 'counts indexed depotFileN properties from describe output' {
@@ -518,8 +625,8 @@ Describe 'ConvertFrom-P4DescribeShelvedLinesToFileCounts' {
         )
 
         $result = InModuleScope P4Cli { ConvertFrom-P4DescribeShelvedLinesToFileCounts -Records $args[0] } -ArgumentList @(,$records)
-        $result.ContainsKey(600) | Should -BeTrue
-        $result[600]             | Should -Be 2
+        $result.ContainsKey('600') | Should -BeTrue
+        $result['600']             | Should -Be 2
     }
 }
 
@@ -537,15 +644,15 @@ Describe 'Get-P4OpenedFileCounts' {
         }
 
         $result = Get-P4OpenedFileCounts
-        $result.ContainsKey(100) | Should -BeTrue
-        $result[100]             | Should -Be 2
+        $result.ContainsKey('100') | Should -BeTrue
+        $result['100']             | Should -Be 2
     }
 
     It 'returns empty dictionary when no files are opened' {
         Mock Invoke-P4 -ModuleName P4Cli { throw 'no such file(s).' }
 
         $result = Get-P4OpenedFileCounts
-        ($result -is [System.Collections.Generic.Dictionary[int,int]]) | Should -BeTrue
+        ($result -is [System.Collections.Generic.Dictionary[string,int]]) | Should -BeTrue
         $result.Count | Should -Be 0
     }
 
@@ -570,7 +677,7 @@ Describe 'Get-P4ShelvedFileCounts' {
 
     It 'returns empty dictionary for empty changelist input' {
         $result = Get-P4ShelvedFileCounts -ChangeNumbers @()
-        ($result -is [System.Collections.Generic.Dictionary[int,int]]) | Should -BeTrue
+        ($result -is [System.Collections.Generic.Dictionary[string,int]]) | Should -BeTrue
         $result.Count | Should -Be 0
     }
 
@@ -583,8 +690,8 @@ Describe 'Get-P4ShelvedFileCounts' {
         }
 
         $result = Get-P4ShelvedFileCounts -ChangeNumbers @(300, 400)
-        $result[300] | Should -Be 2
-        $result[400] | Should -Be 1
+    $result['300'] | Should -Be 2
+    $result['400'] | Should -Be 1
     }
 
     It 'parses indexed shelved files from batched describe output' {
@@ -603,14 +710,14 @@ Describe 'Get-P4ShelvedFileCounts' {
         }
 
         $result = Get-P4ShelvedFileCounts -ChangeNumbers @(610)
-        $result[610] | Should -Be 2
+        $result['610'] | Should -Be 2
     }
 
     It 'degrades gracefully on describe failure and returns empty result' {
         Mock Invoke-P4 -ModuleName P4Cli { throw 'connection refused' }
 
         $result = Get-P4ShelvedFileCounts -ChangeNumbers @(500, 501)
-        ($result -is [System.Collections.Generic.Dictionary[int,int]]) | Should -BeTrue
+        ($result -is [System.Collections.Generic.Dictionary[string,int]]) | Should -BeTrue
         $result.Count | Should -Be 0
     }
 
@@ -630,7 +737,7 @@ Describe 'Get-P4ShelvedFileCounts' {
         Mock Invoke-P4 -ModuleName P4Cli { return @() }
 
         $result = Get-P4ShelvedFileCounts -ChangeNumbers $numbers
-        ($result -is [System.Collections.Generic.Dictionary[int,int]]) | Should -BeTrue
+        ($result -is [System.Collections.Generic.Dictionary[string,int]]) | Should -BeTrue
         Assert-MockCalled Invoke-P4 -ModuleName P4Cli -Times 2 -Exactly
     }
 }
@@ -645,7 +752,7 @@ Describe 'New-P4FileEntry' {
         $entry.DepotPath  | Should -Be '//depot/foo/bar.cs'
         $entry.Action     | Should -Be 'edit'
         $entry.FileType   | Should -Be 'text'
-        $entry.Change     | Should -Be 42
+        $entry.Change     | Should -Be '42'
         $entry.SourceKind | Should -Be 'Opened'
     }
 
@@ -678,7 +785,7 @@ Describe 'New-P4FileEntry' {
 
     It 'Change defaults to 0 when not supplied' {
         $entry = New-P4FileEntry -DepotPath '//depot/c.txt'
-        $entry.Change | Should -Be 0
+        $entry.Change | Should -Be '0'
     }
 
     It 'SourceKind defaults to Opened when not supplied' {
@@ -729,7 +836,7 @@ Describe 'Get-P4OpenedFiles' {
         $result[0].FileName     | Should -Be 'Foo.cs'
         $result[0].Action       | Should -Be 'edit'
         $result[0].FileType     | Should -Be 'text'
-        $result[0].Change       | Should -Be 101
+        $result[0].Change       | Should -Be '101'
         $result[0].SourceKind   | Should -Be 'Opened'
         $result[0].IsUnresolved | Should -BeFalse
     }
@@ -783,7 +890,25 @@ Describe 'Get-P4OpenedFiles' {
         }
 
         $result = Get-P4OpenedFiles -Change 77
-        $result[0].Change | Should -Be 77
+        $result[0].Change | Should -Be '77'
+    }
+
+    It 'supports the default changelist when querying opened files' {
+        Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter {
+            (@($P4Args) -join '|') -eq 'fstat|-Ro|-e|default|-T|change,depotFile,action,type,unresolved|//...'
+        } {
+            return @([pscustomobject]@{
+                depotFile = '//depot/default.txt'
+                action    = 'edit'
+                change    = 'default'
+                type      = 'text'
+            })
+        }
+
+        $result = Get-P4OpenedFiles -Change 'default'
+        $result.Count | Should -Be 1
+        $result[0].Change | Should -Be 'default'
+        $result[0].DepotPath | Should -Be '//depot/default.txt'
     }
 
     It 'rethrows unexpected errors that are not no-opened-files errors' {
@@ -1007,7 +1132,7 @@ Describe 'ConvertFrom-P4FstatUnresolvedRecordsToFileCounts' {
 
     It 'returns empty dictionary for empty input' {
         $result = InModuleScope P4Cli { ConvertFrom-P4FstatUnresolvedRecordsToFileCounts -Records @() }
-        ($result -is [System.Collections.Generic.Dictionary[int,int]]) | Should -BeTrue
+        ($result -is [System.Collections.Generic.Dictionary[string,int]]) | Should -BeTrue
         $result.Count | Should -Be 0
     }
 
@@ -1016,8 +1141,8 @@ Describe 'ConvertFrom-P4FstatUnresolvedRecordsToFileCounts' {
             [pscustomobject]@{ change = '100'; depotFile = '//depot/a.cpp'; unresolved = '' }
         )
         $result = InModuleScope P4Cli { ConvertFrom-P4FstatUnresolvedRecordsToFileCounts -Records $args[0] } -ArgumentList @(,$records)
-        $result.ContainsKey(100) | Should -BeTrue
-        $result[100]             | Should -Be 1
+        $result.ContainsKey('100') | Should -BeTrue
+        $result['100']             | Should -Be 1
     }
 
     It 'aggregates multiple files in the same changelist' {
@@ -1027,8 +1152,8 @@ Describe 'ConvertFrom-P4FstatUnresolvedRecordsToFileCounts' {
             [pscustomobject]@{ change = '300'; depotFile = '//depot/c.cpp'; unresolved = '' }
         )
         $result = InModuleScope P4Cli { ConvertFrom-P4FstatUnresolvedRecordsToFileCounts -Records $args[0] } -ArgumentList @(,$records)
-        $result[200] | Should -Be 2
-        $result[300] | Should -Be 1
+        $result['200'] | Should -Be 2
+        $result['300'] | Should -Be 1
     }
 
     It 'ignores records that have no change property' {
@@ -1039,12 +1164,12 @@ Describe 'ConvertFrom-P4FstatUnresolvedRecordsToFileCounts' {
         $result.Count | Should -Be 0
     }
 
-    It 'ignores records where change is 0 (default changelist)' {
+    It 'maps change 0 records to the default changelist' {
         $records = @(
             [pscustomobject]@{ change = '0'; depotFile = '//depot/default.cpp'; unresolved = '' }
         )
         $result = InModuleScope P4Cli { ConvertFrom-P4FstatUnresolvedRecordsToFileCounts -Records $args[0] } -ArgumentList @(,$records)
-        $result.Count | Should -Be 0
+        $result['default'] | Should -Be 1
     }
 
     It 'ignores records where change is not a parseable integer' {
@@ -1118,8 +1243,8 @@ Describe 'Get-P4UnresolvedFileCounts' {
         }
 
         $result = Get-P4UnresolvedFileCounts -ChangeNumbers @(100, 200)
-        $result[100] | Should -Be 1
-        $result[200] | Should -Be 2
+    $result['100'] | Should -Be 1
+    $result['200'] | Should -Be 2
 
         Should -Invoke Invoke-P4 -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
             (@($P4Args) -join '|') -eq 'fstat|-Ru|-e|100|-T|change,depotFile,unresolved|//...'
@@ -1139,15 +1264,15 @@ Describe 'Get-P4UnresolvedFileCounts' {
         }
 
         $result = Get-P4UnresolvedFileCounts
-        $result[100] | Should -Be 2
-        $result[200] | Should -Be 1
+        $result['100'] | Should -Be 2
+        $result['200'] | Should -Be 1
     }
 
     It 'returns empty dictionary when Invoke-P4 throws the no-such-file empty-result error' {
         Mock Invoke-P4 -ModuleName P4Cli { throw 'no such file(s).' }
 
         $result = Get-P4UnresolvedFileCounts
-        ($result -is [System.Collections.Generic.Dictionary[int,int]]) | Should -BeTrue
+        ($result -is [System.Collections.Generic.Dictionary[string,int]]) | Should -BeTrue
         $result.Count | Should -Be 0
     }
 
@@ -1155,8 +1280,21 @@ Describe 'Get-P4UnresolvedFileCounts' {
         Mock Invoke-P4 -ModuleName P4Cli { throw 'network timeout' }
 
         $result = Get-P4UnresolvedFileCounts
-        ($result -is [System.Collections.Generic.Dictionary[int,int]]) | Should -BeTrue
+        ($result -is [System.Collections.Generic.Dictionary[string,int]]) | Should -BeTrue
         $result.Count | Should -Be 0
+    }
+
+    It 'supports the default changelist when querying unresolved counts explicitly' {
+        Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter {
+            (@($P4Args) -join '|') -eq 'fstat|-Ru|-e|default|-T|change,depotFile,unresolved|//...'
+        } {
+            return @(
+                [pscustomobject]@{ change = '0'; depotFile = '//depot/default.cpp'; unresolved = '' }
+            )
+        }
+
+        $result = Get-P4UnresolvedFileCounts -ChangeNumbers @('default')
+        $result['default'] | Should -Be 1
     }
 
     It 'returns empty dictionary when Invoke-P4 returns empty output' {
@@ -1358,7 +1496,7 @@ Describe 'Set-P4FileEntriesUnresolvedState' {
         $result = Set-P4FileEntriesUnresolvedState -FileEntries $entries -UnresolvedDepotPaths $unresolvedSet
         $result[0].Action     | Should -Be 'integrate'
         $result[0].FileType   | Should -Be 'binary'
-        $result[0].Change     | Should -Be 99
+        $result[0].Change     | Should -Be '99'
         $result[0].SourceKind | Should -Be 'Opened'
     }
 
@@ -1449,9 +1587,9 @@ Describe 'Get-P4ChangelistEntries — unresolved enrichment' {
                 (New-P4Changelist -Change 801 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc 801')
             )
         }
-        Mock Get-P4OpenedFileCounts  -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
-        Mock Get-P4ShelvedFileCounts -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
-        Mock Get-P4UnresolvedFileCounts -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
+        Mock Get-P4OpenedFileCounts  -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase) }
+        Mock Get-P4ShelvedFileCounts -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase) }
+        Mock Get-P4UnresolvedFileCounts -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase) }
 
         $null = @(Get-P4ChangelistEntries)
 
@@ -1464,11 +1602,11 @@ Describe 'Get-P4ChangelistEntries — unresolved enrichment' {
         Mock Get-P4PendingChangelists -ModuleName P4Cli {
             return @(New-P4Changelist -Change 500 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc')
         }
-        Mock Get-P4OpenedFileCounts  -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
-        Mock Get-P4ShelvedFileCounts -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
+        Mock Get-P4OpenedFileCounts  -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase) }
+        Mock Get-P4ShelvedFileCounts -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase) }
         Mock Get-P4UnresolvedFileCounts -ModuleName P4Cli {
-            $d = [System.Collections.Generic.Dictionary[int,int]]::new()
-            $d[500] = 3
+            $d = [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $d['500'] = 3
             return $d
         }
 
@@ -1482,18 +1620,18 @@ Describe 'Get-P4ChangelistEntries — unresolved enrichment' {
             return @(New-P4Changelist -Change 600 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc')
         }
         Mock Get-P4OpenedFileCounts -ModuleName P4Cli {
-            $d = [System.Collections.Generic.Dictionary[int,int]]::new()
-            $d[600] = 4
+            $d = [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $d['600'] = 4
             return $d
         }
         Mock Get-P4ShelvedFileCounts -ModuleName P4Cli {
-            $d = [System.Collections.Generic.Dictionary[int,int]]::new()
-            $d[600] = 1
+            $d = [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $d['600'] = 1
             return $d
         }
         Mock Get-P4UnresolvedFileCounts -ModuleName P4Cli {
-            $d = [System.Collections.Generic.Dictionary[int,int]]::new()
-            $d[600] = 2
+            $d = [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $d['600'] = 2
             return $d
         }
 
@@ -1507,9 +1645,9 @@ Describe 'Get-P4ChangelistEntries — unresolved enrichment' {
         Mock Get-P4PendingChangelists -ModuleName P4Cli {
             return @(New-P4Changelist -Change 700 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc')
         }
-        Mock Get-P4OpenedFileCounts     -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
-        Mock Get-P4ShelvedFileCounts    -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
-        Mock Get-P4UnresolvedFileCounts -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
+        Mock Get-P4OpenedFileCounts     -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase) }
+        Mock Get-P4ShelvedFileCounts    -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase) }
+        Mock Get-P4UnresolvedFileCounts -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase) }
 
         $result = @(Get-P4ChangelistEntries)
         $result[0].UnresolvedFileCount | Should -Be 0
@@ -1518,8 +1656,8 @@ Describe 'Get-P4ChangelistEntries — unresolved enrichment' {
 
     It 'does not call Get-P4UnresolvedFileCounts when there are zero pending changelists' {
         Mock Get-P4PendingChangelists   -ModuleName P4Cli { return @() }
-        Mock Get-P4OpenedFileCounts     -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
-        Mock Get-P4ShelvedFileCounts    -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[int,int]]::new() }
+        Mock Get-P4OpenedFileCounts     -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase) }
+        Mock Get-P4ShelvedFileCounts    -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase) }
         Mock Get-P4UnresolvedFileCounts -ModuleName P4Cli { throw 'should not be called' }
 
         { $result = @(Get-P4ChangelistEntries) } | Should -Not -Throw

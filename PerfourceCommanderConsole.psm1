@@ -51,7 +51,7 @@ Register-WorkflowKind -Kind 'DeleteMarked' -Execute {
     $lastFailureError = ''
 
     foreach ($changeId in $changeIds) {
-        $changeNum = [int]$changeId
+        $changeNum = [string]$changeId
         $deleteCmdLine = Format-P4CommandLine -P4Args @('change', '-d', "$changeNum")
         $result = Invoke-BrowserWorkflowCommand -State $state -CommandLine $deleteCmdLine -WorkItem {
             param($s)
@@ -97,7 +97,7 @@ Register-WorkflowKind -Kind 'MoveMarkedFiles' -Execute {
 
     [string[]]$changeIds  = @($Request.ChangeIds)
     [string]$targetId     = [string]$Request.TargetChangeId
-    [int]$targetChange    = [int]$targetId
+    [string]$targetChange = $targetId
 
     $state = Invoke-BrowserReducer -State $State -Action ([pscustomobject]@{
         Type = 'WorkflowBegin'; Kind = 'MoveMarkedFiles'; TotalCount = $changeIds.Count
@@ -113,7 +113,7 @@ Register-WorkflowKind -Kind 'MoveMarkedFiles' -Execute {
             continue
         }
 
-        $sourceChange = [int]$changeId
+        $sourceChange = [string]$changeId
         try {
             Invoke-P4ReopenFiles -SourceChange $sourceChange -TargetChange $targetChange | Out-Null
             $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowItemComplete' })
@@ -152,7 +152,7 @@ Register-WorkflowKind -Kind 'ShelveFiles' -Execute {
     $lastFailureError = ''
 
     foreach ($changeId in $changeIds) {
-        $changeNum = [int]$changeId
+        $changeNum = [string]$changeId
         $shelveCmdLine = Format-P4CommandLine -P4Args @('shelve', '-f', '-c', "$changeNum")
         $result = Invoke-BrowserWorkflowCommand -State $state -CommandLine $shelveCmdLine -WorkItem {
             param($s)
@@ -198,7 +198,7 @@ Register-WorkflowKind -Kind 'DeleteShelvedFiles' -Execute {
     $lastFailureError = ''
 
     foreach ($changeId in $changeIds) {
-        $changeNum = [int]$changeId
+        $changeNum = [string]$changeId
         $deleteShelvedCmdLine = Format-P4CommandLine -P4Args @('shelve', '-d', '-c', "$changeNum")
         $result = Invoke-BrowserWorkflowCommand -State $state -CommandLine $deleteShelvedCmdLine -WorkItem {
             param($s)
@@ -357,7 +357,7 @@ function Invoke-BrowserSideEffect {
 function ConvertTo-BrowserSubmittedFileEntries {
     param(
         [Parameter(Mandatory = $true)]$Describe,
-        [Parameter(Mandatory = $true)][int]$Change
+        [Parameter(Mandatory = $true)][string]$Change
     )
 
     return @(
@@ -376,7 +376,7 @@ function Invoke-BrowserFilesLoad {
         Justification = 'CacheKey is captured by the WorkItem scriptblock closures below.')]
     param(
         [Parameter(Mandatory = $true)]$State,
-        [Parameter(Mandatory = $true)][int]$Change,
+        [Parameter(Mandatory = $true)][string]$Change,
         [Parameter(Mandatory = $true)][string]$SourceKind,
         [Parameter(Mandatory = $true)][string]$CacheKey
     )
@@ -626,7 +626,7 @@ function Start-P4Browser {
                             }
                         }
                         'LoadFiles' {
-                            $change     = [int]$state.Data.FilesSourceChange
+                            $change     = [string]$state.Data.FilesSourceChange
                             $sourceKind = [string]$state.Data.FilesSourceKind
                             $cacheKey   = "${change}:${sourceKind}"
 
@@ -639,7 +639,7 @@ function Start-P4Browser {
                             # After I/O: if user navigated away, silently stay on current screen
                         }
                         'FetchDescribe' {
-                            $change = ConvertTo-ChangeNumberFromId -Id $req.ChangeId
+                            $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
                             if ($null -ne $change -and -not $state.Data.DescribeCache.ContainsKey($change)) {
                                 $describeCmdLine = Format-P4CommandLine -P4Args @('describe', '-s', "$change")
                                 $state = Invoke-BrowserSideEffect -State $state -CommandLine $describeCmdLine -WorkItem {
@@ -651,7 +651,7 @@ function Start-P4Browser {
                             }
                         }
                         'DeleteChange' {
-                            $change = ConvertTo-ChangeNumberFromId -Id $req.ChangeId
+                            $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
                             if ($null -ne $change) {
                                 $deleteCmdLine = Format-P4CommandLine -P4Args @('change', '-d', "$change")
                                 $state = Invoke-BrowserSideEffect -State $state -CommandLine $deleteCmdLine -WorkItem {
@@ -671,7 +671,7 @@ function Start-P4Browser {
                             }
                         }
                         'DeleteShelvedFiles' {
-                            $change = ConvertTo-ChangeNumberFromId -Id $req.ChangeId
+                            $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
                             if ($null -ne $change) {
                                 $deleteShelvedCmdLine = Format-P4CommandLine -P4Args @('shelve', '-d', '-c', "$change")
                                 $state = Invoke-BrowserSideEffect -State $state -CommandLine $deleteShelvedCmdLine -WorkItem {

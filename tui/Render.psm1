@@ -1,6 +1,7 @@
 ﻿Set-StrictMode -Version Latest
 
 Import-Module (Join-Path $PSScriptRoot 'Theme.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
 
 $_theme                = Get-BrowserUiTheme
 $SCROLLBAR_THUMB_GLYPH = [char]0x2591
@@ -773,8 +774,7 @@ function Build-DetailSegments {
     $detailChangeId = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'DetailChangeId' -Default $null
     $describeCache  = Get-PropertyValueOrDefault -Object $State.Data    -Name 'DescribeCache'  -Default $null
     if (-not [string]::IsNullOrWhiteSpace([string]$detailChangeId) -and $null -ne $describeCache) {
-        $change = $null
-        if ([string]$detailChangeId -match '^\d+$') { $change = [int]$detailChangeId }
+        $change = ConvertTo-P4ChangelistId -Value $detailChangeId
         if ($null -ne $change -and $describeCache.ContainsKey($change)) {
             $desc = $describeCache[$change]
         }

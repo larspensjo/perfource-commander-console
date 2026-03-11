@@ -1741,7 +1741,7 @@ function Invoke-ChangelistReducer {
             if ($next.Derived.VisibleChangeIds.Count -eq 0) { return $next }
             $idx         = [Math]::Max(0, [Math]::Min($next.Cursor.ChangeIndex, $next.Derived.VisibleChangeIds.Count - 1))
             $changeIdStr = $next.Derived.VisibleChangeIds[$idx]
-            $change      = if ($changeIdStr -match '^\d+$') { [int]$changeIdStr } else { 0 }
+            $change      = ConvertTo-P4ChangelistId -Value ([string]$changeIdStr)
             $viewMode    = if (($next.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$next.Ui.ViewMode } else { 'Pending' }
             $sourceKind  = if ($viewMode -eq 'Submitted') { 'Submitted' } else { 'Opened' }
 
@@ -2027,8 +2027,7 @@ function Invoke-BrowserReducer {
 
 function ConvertTo-ChangeNumberFromId {
     param([string]$Id)
-    if ($Id -match '^\d+$') { return [int]$Id }
-    return $null
+    return ConvertTo-P4ChangelistId -Value $Id
 }
 
 Export-ModuleMember -Function New-BrowserState, Copy-BrowserState, Copy-StateObject, `

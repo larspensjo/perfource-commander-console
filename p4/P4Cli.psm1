@@ -22,6 +22,32 @@ $script:P4FstatUnresolvedPathFields  = 'depotFile,unresolved'
 # Signature: { param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs) }
 [scriptblock]$script:P4ExecutionObserver = $null
 
+function ConvertTo-P4ChangelistId {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$Value
+    )
+
+    if ($null -eq $Value) { return $null }
+
+    $changeId = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($changeId)) { return $null }
+
+    if ($changeId -match '^(?i)default$') { return 'default' }
+    if ($changeId -eq '0') { return 'default' }
+    if ($changeId -match '^\d+$') { return $changeId }
+
+    return $null
+}
+
+function New-P4ChangeCountDictionary {
+    return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
+}
+
+function New-P4ChangeIdSet {
+    return ,([System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase))
+}
+
 function Format-P4CommandLine {
     [CmdletBinding()]
     param(
@@ -410,11 +436,14 @@ function Get-P4PendingChangelists {
         if ($null -eq $record.change) { continue }
         if ($null -eq $record.time) { continue }
 
+        $changeId = ConvertTo-P4ChangelistId -Value $record.change
+        if ([string]::IsNullOrWhiteSpace($changeId)) { continue }
+
         $timestamp = [double]$record.time
         $time = [datetime]::UnixEpoch.AddSeconds($timestamp).ToLocalTime()
 
         New-P4Changelist `
-            -Change ([int]$record.change) `
+            -Change $changeId `
             -User ([string]$record.user) `
             -Client ([string]$record.client) `
             -Time $time `
@@ -431,9 +460,38 @@ function Get-P4ChangelistEntries {
         [int]$Max = 200
     )
 
-    $changelists     = Get-P4PendingChangelists -Max $Max
+    $changelists     = @(Get-P4PendingChangelists -Max $Max)
     $openedCounts    = Get-P4OpenedFileCounts
-    $changeNumbers   = @($changelists | ForEach-Object { [int]$_.Change })
+
+    $hasDefaultPending = @($changelists | Where-Object { [string]$_.Change -eq 'default' }).Count -gt 0
+    if ($openedCounts.ContainsKey('default') -and -not $hasDefaultPending) {
+        $defaultUser = ''
+        $defaultClient = ''
+        if ($changelists.Count -gt 0) {
+            $defaultUser = [string]$changelists[0].User
+            $defaultClient = [string]$changelists[0].Client
+        } else {
+            $info = Get-P4Info
+            $defaultUser = [string]$info.User
+            $defaultClient = [string]$info.Client
+        }
+
+        $defaultChangelist = New-P4Changelist `
+            -Change 'default' `
+            -User $defaultUser `
+            -Client $defaultClient `
+            -Time (Get-Date) `
+            -Status 'pending' `
+            -Description 'Default changelist'
+
+        $changelists = @($defaultChangelist) + @($changelists)
+    }
+
+    $changeNumbers   = @(
+        $changelists |
+            ForEach-Object { ConvertTo-P4ChangelistId -Value $_.Change } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
     $shelvedCounts   = Get-P4ShelvedFileCounts -ChangeNumbers $changeNumbers
 
     # Workspace-wide unresolved enrichment — degrades gracefully on failure.
@@ -441,11 +499,11 @@ function Get-P4ChangelistEntries {
     $unresolvedCounts = if ($changeNumbers.Count -gt 0) {
         Get-P4UnresolvedFileCounts -ChangeNumbers $changeNumbers
     } else {
-        [System.Collections.Generic.Dictionary[int,int]]::new()
+        New-P4ChangeCountDictionary
     }
 
     $changelists | ForEach-Object {
-        $changeNum        = [int]$_.Change
+        $changeNum        = [string]$_.Change
         $openedCount      = if ($openedCounts.ContainsKey($changeNum))    { $openedCounts[$changeNum]    } else { 0 }
         $shelvedCount     = if ($shelvedCounts.ContainsKey($changeNum))   { $shelvedCounts[$changeNum]   } else { 0 }
         $unresolvedCount  = if ($unresolvedCounts.ContainsKey($changeNum)) { $unresolvedCounts[$changeNum] } else { 0 }
@@ -503,7 +561,7 @@ function ConvertFrom-P4DescribeRecordToFiles {
 function Get-P4Describe {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][int]$Change
+        [Parameter(Mandatory)][string]$Change
     )
 
     $lines = Invoke-P4 -P4Args @('describe', '-s', "$Change")
@@ -518,11 +576,15 @@ function Get-P4Describe {
     } else { Get-Date }
 
     $files = @(ConvertFrom-P4DescribeRecordToFiles -Record $record)
+    $changeId = ConvertTo-P4ChangelistId -Value $record.change
+    if ([string]::IsNullOrWhiteSpace($changeId)) {
+        throw "Failed to parse describe output for CL $Change"
+    }
 
     $descLines = @([string]$record.desc -split "`r?`n" | Where-Object { $_ -ne '' })
 
     [pscustomobject]@{
-        Change      = [int]$record.change
+        Change      = $changeId
         User        = [string]$record.user
         Client      = [string]$record.client
         Status      = [string]$record.status
@@ -530,6 +592,23 @@ function Get-P4Describe {
         Description = $descLines
         Files       = @($files)
     }
+}
+
+function New-P4FstatArgs {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RecursionFlag,
+        [Parameter(Mandatory)][string]$Fields,
+        [string]$Change
+    )
+
+    $p4Args = @('fstat', "-R$RecursionFlag")
+    if ($PSBoundParameters.ContainsKey('Change') -and -not [string]::IsNullOrWhiteSpace($Change)) {
+        $p4Args += @('-e', "$Change")
+    }
+
+    $p4Args += @('-T', $Fields, $script:P4FstatAllFilesSpec)
+    return ,$p4Args
 }
 
 function Test-IsP4NoOpenedFilesError {
@@ -544,16 +623,10 @@ function Test-IsP4NoOpenedFilesError {
 function New-P4FstatOpenedArgs {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][int]$Change
+        [Parameter(Mandatory)][string]$Change
     )
 
-    return @(
-        'fstat',
-        '-Ro',
-        '-e', "$Change",
-        '-T', $script:P4FstatOpenedFileFields,
-        $script:P4FstatAllFilesSpec
-    )
+    return New-P4FstatArgs -RecursionFlag 'o' -Fields $script:P4FstatOpenedFileFields -Change $Change
 }
 
 function Test-P4FstatRecordIsUnresolved {
@@ -593,10 +666,11 @@ function ConvertFrom-P4OpenedLinesToFileCounts {
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Records
     )
 
-    $result = [System.Collections.Generic.Dictionary[int,int]]::new()
+    $result = New-P4ChangeCountDictionary
     foreach ($record in $Records) {
         if ($null -eq ($record.PSObject.Properties['change'])) { continue }
-        $change = [int]$record.change
+        $change = ConvertTo-P4ChangelistId -Value $record.change
+        if ([string]::IsNullOrWhiteSpace($change)) { continue }
         if ($result.ContainsKey($change)) { $result[$change]++ } else { $result[$change] = 1 }
     }
     return $result
@@ -611,10 +685,11 @@ function ConvertFrom-P4DescribeShelvedLinesToFileCounts {
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Records
     )
 
-    $result = [System.Collections.Generic.Dictionary[int,int]]::new()
+    $result = New-P4ChangeCountDictionary
     foreach ($record in $Records) {
         if ($null -eq ($record.PSObject.Properties['change'])) { continue }
-        $change        = [int]$record.change
+        $change        = ConvertTo-P4ChangelistId -Value $record.change
+        if ([string]::IsNullOrWhiteSpace($change)) { continue }
         $describedFiles = @(ConvertFrom-P4DescribeRecordToFiles -Record $record)
         $fileCount     = $describedFiles.Count
         $result[$change] = $fileCount
@@ -639,7 +714,7 @@ function Get-P4OpenedFileCounts {
             throw
         }
         # No files opened is not an error
-        return [System.Collections.Generic.Dictionary[int,int]]::new()
+        return New-P4ChangeCountDictionary
     }
 
     if ($null -eq $lines) { $lines = @() }
@@ -657,7 +732,7 @@ function Get-P4OpenedChangeNumbers {
     param()
 
     $counts = Get-P4OpenedFileCounts
-    $result = [System.Collections.Generic.HashSet[int]]::new()
+    $result = New-P4ChangeIdSet
     foreach ($key in $counts.Keys) {
         [void]$result.Add($key)
     }
@@ -684,12 +759,15 @@ function Get-P4ShelvedChangeNumbers {
         if (-not (Test-IsP4NoShelvedChangesError -Message $errorMessage)) {
             throw
         }
-        return ,([System.Collections.Generic.HashSet[int]]::new())
+        return ,(New-P4ChangeIdSet)
     }
 
-    $result = [System.Collections.Generic.HashSet[int]]::new()
+    $result = New-P4ChangeIdSet
     foreach ($record in $lines) {
-        if ($null -ne ($record.PSObject.Properties['change'])) { [void]$result.Add([int]$record.change) }
+        if ($null -eq ($record.PSObject.Properties['change'])) { continue }
+        $changeId = ConvertTo-P4ChangelistId -Value $record.change
+        if ([string]::IsNullOrWhiteSpace($changeId)) { continue }
+        [void]$result.Add($changeId)
     }
 
     return ,$result
@@ -706,10 +784,10 @@ function Get-P4ShelvedFileCounts {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][AllowEmptyCollection()][int[]]$ChangeNumbers
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ChangeNumbers
     )
 
-    $result = [System.Collections.Generic.Dictionary[int,int]]::new()
+    $result = New-P4ChangeCountDictionary
     if ($null -eq $ChangeNumbers -or $ChangeNumbers.Count -eq 0) {
         return $result
     }
@@ -749,7 +827,7 @@ function Get-P4OpenedFiles {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][int]$Change
+        [Parameter(Mandatory)][string]$Change
     )
 
     $lines = @()
@@ -771,7 +849,12 @@ function Get-P4OpenedFiles {
         $depotPath = [string]$record.depotFile
         $action    = if ($null -ne ($record.PSObject.Properties['action'])) { [string]$record.action } else { '' }
         $fileType  = if ($null -ne ($record.PSObject.Properties['type']))   { [string]$record.type   } else { '' }
-        $recChange = if ($null -ne ($record.PSObject.Properties['change'])) { [int]$record.change    } else { $Change }
+        $recChange = if ($null -ne ($record.PSObject.Properties['change'])) {
+            ConvertTo-P4ChangelistId -Value $record.change
+        } else {
+            ConvertTo-P4ChangelistId -Value $Change
+        }
+        if ([string]::IsNullOrWhiteSpace($recChange)) { $recChange = [string]$Change }
         $isUnresolved = Test-P4FstatRecordIsUnresolved -Record $record
         New-P4FileEntry -DepotPath $depotPath -Action $action -FileType $fileType `
                         -Change $recChange -SourceKind 'Opened' -IsUnresolved $isUnresolved
@@ -801,16 +884,10 @@ function New-P4FstatUnresolvedArgs {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Fields,
-        [AllowNull()][Nullable[int]]$Change
+        [string]$Change
     )
 
-    $p4Args = @('fstat', '-Ru')
-    if ($PSBoundParameters.ContainsKey('Change') -and $null -ne $Change) {
-        $p4Args += @('-e', "$Change")
-    }
-
-    $p4Args += @('-T', $Fields, $script:P4FstatAllFilesSpec)
-    return ,$p4Args
+    return New-P4FstatArgs -RecursionFlag 'u' -Fields $Fields -Change $Change
 }
 
 # Pure helper: convert 'p4 fstat -Ru' records into a per-changelist unresolved file count.
@@ -821,14 +898,12 @@ function ConvertFrom-P4FstatUnresolvedRecordsToFileCounts {
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Records
     )
 
-    $result = [System.Collections.Generic.Dictionary[int,int]]::new()
+    $result = New-P4ChangeCountDictionary
     foreach ($record in $Records) {
         if ($null -eq ($record.PSObject.Properties['change'])) { continue }
-        $changeVal = $record.change
-        $changeInt = 0
-        if (-not [int]::TryParse([string]$changeVal, [ref]$changeInt)) { continue }
-        if ($changeInt -eq 0) { continue }  # ignore default changelist (change: 0)
-        if ($result.ContainsKey($changeInt)) { $result[$changeInt]++ } else { $result[$changeInt] = 1 }
+        $changeId = ConvertTo-P4ChangelistId -Value $record.change
+        if ([string]::IsNullOrWhiteSpace($changeId)) { continue }
+        if ($result.ContainsKey($changeId)) { $result[$changeId]++ } else { $result[$changeId] = 1 }
     }
     return $result
 }
@@ -851,17 +926,21 @@ function Get-P4UnresolvedFileCounts {
     #>
     [CmdletBinding()]
     param(
-        [AllowEmptyCollection()][int[]]$ChangeNumbers = @()
+        [AllowEmptyCollection()][string[]]$ChangeNumbers = @()
     )
 
-    $changesToQuery = @(
-        $ChangeNumbers |
-            Where-Object { $_ -gt 0 } |
-            Sort-Object -Stable -Unique
-    )
+    $changesToQuery = [System.Collections.Generic.List[string]]::new()
+    $seenChanges = New-P4ChangeIdSet
+    foreach ($changeNumber in @($ChangeNumbers)) {
+        $changeId = ConvertTo-P4ChangelistId -Value $changeNumber
+        if ([string]::IsNullOrWhiteSpace($changeId)) { continue }
+        if ($seenChanges.Add($changeId)) {
+            [void]$changesToQuery.Add($changeId)
+        }
+    }
 
     if ($changesToQuery.Count -gt 0) {
-        $result = [System.Collections.Generic.Dictionary[int,int]]::new()
+        $result = New-P4ChangeCountDictionary
 
         foreach ($change in $changesToQuery) {
             try {
@@ -898,10 +977,10 @@ function Get-P4UnresolvedFileCounts {
     catch {
         $errorMessage = [string]$_.Exception.Message
         if (Test-IsP4NoUnresolvedFilesError -Message $errorMessage) {
-            return [System.Collections.Generic.Dictionary[int,int]]::new()
+            return New-P4ChangeCountDictionary
         }
         # Degrade gracefully: return empty counts rather than blocking changelist load
-        return [System.Collections.Generic.Dictionary[int,int]]::new()
+        return New-P4ChangeCountDictionary
     }
 
     if ($null -eq $lines) { $lines = @() }
@@ -921,7 +1000,7 @@ function Get-P4UnresolvedDepotPaths {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][int]$Change
+        [Parameter(Mandatory)][string]$Change
     )
 
     $result = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -933,7 +1012,9 @@ function Get-P4UnresolvedDepotPaths {
         return ,$result
     }
 
-    if ($null -eq $openedFiles) { return ,$result }
+    if ($null -eq $openedFiles) {
+        return ,$result
+    }
 
     foreach ($entry in $openedFiles) {
         if (-not [bool]$entry.IsUnresolved) { continue }
@@ -1033,7 +1114,7 @@ function Set-P4FileEntriesUnresolvedState {
             -DepotPath   $depotPath `
             -Action      ([string]$entry.Action) `
             -FileType    ([string]$entry.FileType) `
-            -Change      ([int]$entry.Change) `
+            -Change      ([string]$entry.Change) `
             -SourceKind  ([string]$entry.SourceKind) `
             -IsUnresolved $isUnresolved
     }
@@ -1071,7 +1152,7 @@ function Set-P4FileEntriesContentModifiedState {
             -DepotPath         $depotPath `
             -Action            ([string]$entry.Action) `
             -FileType          ([string]$entry.FileType) `
-            -Change            ([int]$entry.Change) `
+            -Change            ([string]$entry.Change) `
             -SourceKind        ([string]$entry.SourceKind) `
             -IsUnresolved      ([bool]$entry.IsUnresolved) `
             -IsContentModified $isContentModified
@@ -1090,7 +1171,7 @@ function Remove-P4Changelist {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][int]$Change
+        [Parameter(Mandatory)][string]$Change
     )
 
     Invoke-P4 -P4Args @('change', '-d', "$Change") | Out-Null
@@ -1109,7 +1190,7 @@ function Invoke-P4ShelveFiles {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][int]$Change
+        [Parameter(Mandatory)][string]$Change
     )
 
     Invoke-P4 -P4Args @('shelve', '-f', '-c', "$Change") | Out-Null
@@ -1127,7 +1208,7 @@ function Remove-P4ShelvedFiles {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][int]$Change
+        [Parameter(Mandatory)][string]$Change
     )
 
     Invoke-P4 -P4Args @('shelve', '-d', '-c', "$Change") | Out-Null
@@ -1173,13 +1254,16 @@ function Get-P4SubmittedChangelists {
         if ($null -eq $record.change) { continue }
         if ($null -eq $record.time) { continue }
 
+        $changeId = ConvertTo-P4ChangelistId -Value $record.change
+        if ([string]::IsNullOrWhiteSpace($changeId)) { continue }
+
         $timestamp = [double]$record.time
         $time = [datetime]::UnixEpoch.AddSeconds($timestamp).ToLocalTime()
 
         $desc = [string]$record.desc
         if ([string]::IsNullOrWhiteSpace($desc)) { $desc = '(no description)' }
         New-P4Changelist `
-            -Change ([int]$record.change) `
+            -Change $changeId `
             -User ([string]$record.user) `
             -Client ([string]$record.client) `
             -Time $time `
@@ -1233,8 +1317,8 @@ function Invoke-P4ReopenFiles {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][int]$SourceChange,
-        [Parameter(Mandatory)][int]$TargetChange
+        [Parameter(Mandatory)][string]$SourceChange,
+        [Parameter(Mandatory)][string]$TargetChange
     )
 
     $files = @(Get-P4OpenedFiles -Change $SourceChange)
@@ -1248,4 +1332,4 @@ function Invoke-P4ReopenFiles {
     return @{ MovedCount = $depotPaths.Count; Files = $depotPaths }
 }
 
-Export-ModuleMember -Function Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Get-P4ModifiedDepotPaths, Set-P4FileEntriesUnresolvedState, Set-P4FileEntriesContentModifiedState, Remove-P4Changelist, Invoke-P4ShelveFiles, Remove-P4ShelvedFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles
+Export-ModuleMember -Function ConvertTo-P4ChangelistId, Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Get-P4ModifiedDepotPaths, Set-P4FileEntriesUnresolvedState, Set-P4FileEntriesContentModifiedState, Remove-P4Changelist, Invoke-P4ShelveFiles, Remove-P4ShelvedFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles

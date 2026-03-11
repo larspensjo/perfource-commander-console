@@ -3,7 +3,7 @@ Set-StrictMode -Version Latest
 function New-P4Changelist {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][int]$Change,
+        [Parameter(Mandatory)][string]$Change,
         [Parameter(Mandatory)][string]$User,
         [Parameter(Mandatory)][string]$Client,
         [Parameter(Mandatory)][datetime]$Time,
@@ -80,7 +80,7 @@ function New-P4FileEntry {
         [Parameter(Mandatory)][string]$DepotPath,
         [Parameter(Mandatory = $false)][string]$Action       = '',
         [Parameter(Mandatory = $false)][string]$FileType     = '',
-        [Parameter(Mandatory = $false)][int]$Change          = 0,
+        [Parameter(Mandatory = $false)][string]$Change = '0',
         [Parameter(Mandatory = $false)][string]$SourceKind   = 'Opened',
         [Parameter(Mandatory = $false)][bool]$IsUnresolved   = $false,
         [Parameter(Mandatory = $false)][bool]$IsContentModified = $false

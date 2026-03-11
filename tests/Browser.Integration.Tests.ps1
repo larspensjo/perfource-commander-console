@@ -83,9 +83,9 @@ Describe 'Start-P4Browser integration' {
         }
 
         Mock Get-P4Describe -ModuleName PerfourceCommanderConsole {
-            param([int]$Change)
+            param([string]$Change)
             switch ($Change) {
-                1002 {
+                '1002' {
                     return [pscustomobject]@{
                         Change      = 1002
                         User        = 'alice'
@@ -99,7 +99,7 @@ Describe 'Start-P4Browser integration' {
                         )
                     }
                 }
-                2001 {
+                '2001' {
                     return [pscustomobject]@{
                         Change      = 2001
                         User        = 'alice'
@@ -124,7 +124,7 @@ Describe 'Start-P4Browser integration' {
         $script:KeyQueue = [System.Collections.Generic.Queue[System.ConsoleKeyInfo]]::new()
         $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new(' ', [System.ConsoleKey]::Tab, $false, $false, $false))
         $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new(' ', [System.ConsoleKey]::DownArrow, $false, $false, $false))
-        $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new('d', [System.ConsoleKey]::D, $false, $false, $false))
+        $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new([char]13, [System.ConsoleKey]::Enter, $false, $false, $false))
         $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new('q', [System.ConsoleKey]::Q, $false, $false, $false))
 
         Mock Test-BrowserConsoleKeyAvailable -ModuleName PerfourceCommanderConsole {

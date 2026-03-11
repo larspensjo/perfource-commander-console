@@ -212,7 +212,15 @@ Describe 'ConvertTo-ChangeNumberFromId' {
     }
 
     It 'extracts change number from numeric id' {
-        ConvertTo-ChangeNumberFromId -Id '12345' | Should -Be 12345
+        ConvertTo-ChangeNumberFromId -Id '12345' | Should -Be '12345'
+    }
+
+    It 'preserves the default changelist id' {
+        ConvertTo-ChangeNumberFromId -Id 'default' | Should -Be 'default'
+    }
+
+    It 'maps 0 to the default changelist id' {
+        ConvertTo-ChangeNumberFromId -Id '0' | Should -Be 'default'
     }
 
     It 'returns null for a non-numeric id' {
@@ -526,7 +534,16 @@ Describe 'Files screen reducer — Step 1' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
-        $next.Data.FilesSourceChange | Should -Be 102
+        $next.Data.FilesSourceChange | Should -Be '102'
+    }
+
+    It 'OpenFilesScreen keeps the default changelist id intact' {
+        $defaultState = New-BrowserState -Changes @(
+            [pscustomobject]@{ Id = 'default'; Title = 'Default'; HasShelvedFiles = $false; HasOpenedFiles = $true; Captured = [datetime]'2026-02-10' }
+        ) -InitialWidth 120 -InitialHeight 40
+
+        $next = Invoke-BrowserReducer -State $defaultState -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $next.Data.FilesSourceChange | Should -Be 'default'
     }
 
     It 'OpenFilesScreen stores FilesSourceKind Opened for pending view' {

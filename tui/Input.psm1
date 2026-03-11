@@ -67,7 +67,6 @@ function ConvertFrom-KeyInfoToAction {
         'End' { return [pscustomobject]@{ Type = 'MoveEnd' } }
         'Spacebar' { return [pscustomobject]@{ Type = 'ToggleFilter' } }
         'Enter' { return [pscustomobject]@{ Type = 'Describe' } }
-        'D' { return [pscustomobject]@{ Type = 'Describe' } }
         'E' { return [pscustomobject]@{ Type = 'ToggleChangelistView' } }
         'Delete' { return [pscustomobject]@{ Type = 'DeleteChange' } }
         'X' { return [pscustomobject]@{ Type = 'DeleteChange' } }

@@ -62,9 +62,9 @@ Describe 'ConvertFrom-KeyInfoToAction' {
         $action.Type | Should -Be 'Describe'
     }
 
-    It 'D maps to Describe' {
+    It 'D has no direct binding' {
         $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key D)
-        $action.Type | Should -Be 'Describe'
+        $action | Should -BeNullOrEmpty
     }
 
     It 'E maps to ToggleChangelistView' {

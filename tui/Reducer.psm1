@@ -22,15 +22,11 @@ $script:BrowserGlobalActionTypes = @(
 $script:MenuDefinitions = @{
     'File' = @(
         [pscustomobject]@{
-            Id         = 'DeleteMarked'
-            Label      = 'Delete marked changelists'
-            Accelerator = 'D'
+            Id         = 'DeleteChange'
+            Label      = 'Delete focused / marked changelists'
+            Accelerator = 'X'
             IsSeparator = $false
-            IsEnabled   = { param($s)
-                $mcProp = $s.Query.PSObject.Properties['MarkedChangeIds']
-                $viewMode = if ($s.Ui.PSObject.Properties['ViewMode']) { [string]$s.Ui.ViewMode } else { 'Pending' }
-                ($null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0) -and ($viewMode -ne 'Submitted')
-            }
+            IsEnabled   = { param($s) Test-CanDeleteSelectedChanges -State $s }
         },
         [pscustomobject]@{
             Id          = 'MoveMarkedFiles'
@@ -124,6 +120,70 @@ function Test-ChangeHasOpenedFiles {
     }
 
     return $false
+}
+
+function Get-DeleteActionableChangeIds {
+    param($State)
+
+    $viewMode = if ($State.Ui.PSObject.Properties['ViewMode']) { [string]$State.Ui.ViewMode } else { 'Pending' }
+    if ($viewMode -ne 'Pending') { return @() }
+
+    $mcProp = $State.Query.PSObject.Properties['MarkedChangeIds']
+    $hasMarks = $null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0
+    if ($hasMarks) {
+        return @($mcProp.Value | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+    }
+
+    $visibleIdsProp = $State.Derived.PSObject.Properties['VisibleChangeIds']
+    if ($null -eq $visibleIdsProp -or $null -eq $visibleIdsProp.Value) { return @() }
+
+    [object[]]$visibleIds = @($visibleIdsProp.Value)
+    if ($visibleIds.Count -eq 0) { return @() }
+
+    $focusedIndex = [Math]::Max(0, [Math]::Min([int]$State.Cursor.ChangeIndex, $visibleIds.Count - 1))
+    return @([string]$visibleIds[$focusedIndex])
+}
+
+function Test-CanDeleteSelectedChanges {
+    param($State)
+
+    return @(Get-DeleteActionableChangeIds -State $State).Count -gt 0
+}
+
+function New-DeleteMarkedConfirmPayload {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][string[]]$ChangeIds
+    )
+
+    $count = $ChangeIds.Count
+    $summaryLines = @(
+        "Selected: $count changelist$(if ($count -ne 1) { 's' } else { '' })"
+        'Will attempt deletion in sequence'
+    )
+
+    $visibleIdsProp = $State.Derived.PSObject.Properties['VisibleChangeIds']
+    [object[]]$visibleIds = if ($null -ne $visibleIdsProp -and $null -ne $visibleIdsProp.Value) { @($visibleIdsProp.Value) } else { @() }
+    if ($visibleIds.Count -gt 0) {
+        $focusedIndex = [Math]::Max(0, [Math]::Min([int]$State.Cursor.ChangeIndex, $visibleIds.Count - 1))
+        $focusedId = [string]$visibleIds[$focusedIndex]
+        if (-not [string]::IsNullOrWhiteSpace($focusedId) -and $ChangeIds -notcontains $focusedId) {
+            $summaryLines += "Focused: changelist $focusedId is not marked and will not be deleted"
+        }
+    }
+
+    return [pscustomobject]@{
+        Title            = "Delete $count marked changelist$(if ($count -ne 1) { 's' } else { '' })?"
+        SummaryLines     = $summaryLines
+        ConsequenceLines = @('Only empty changelists can be deleted')
+        ConfirmLabel     = 'Y / Enter = confirm'
+        CancelLabel      = 'N / Esc = cancel'
+        OnAccept         = [pscustomobject]@{
+            Kind         = 'ExecuteWorkflow'
+            WorkflowKind = 'DeleteMarked'
+            ChangeIds    = $ChangeIds
+        }
+    }
 }
 
 function Get-ShelveActionableChanges {
@@ -987,6 +1047,7 @@ function Invoke-ChangelistReducer {
             # Dispatch the underlying action
             $itemId = [string]$item.Id
             switch ($itemId) {
+                'DeleteChange'      { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'DeleteChange' }) }
                 'MarkAllVisible'    { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'MarkAllVisible' }) }
                 'ClearMarks'        { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ClearMarks' }) }
                 'Refresh'           { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'Reload' }) }
@@ -997,26 +1058,6 @@ function Invoke-ChangelistReducer {
                 'ToggleHideFilters' { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleHideUnavailableFilters' }) }
                 'ExpandCollapse'    { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleChangelistView' }) }
                 'Help'              { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleHelpOverlay' }) }
-                'DeleteMarked'      {
-                    [string[]]$changeIds = @($next.Query.MarkedChangeIds | ForEach-Object { [string]$_ } | Sort-Object)
-                    $markedCount = $changeIds.Count
-                    $payload = [pscustomobject]@{
-                        Title            = "Delete $markedCount marked changelist$(if ($markedCount -ne 1) { 's' } else { '' })?"
-                        SummaryLines     = @(
-                            "Selected: $markedCount changelist$(if ($markedCount -ne 1) { 's' } else { '' })"
-                            'Will attempt deletion in sequence'
-                        )
-                        ConsequenceLines = @('Only empty changelists can be deleted')
-                        ConfirmLabel     = 'Y / Enter = confirm'
-                        CancelLabel      = 'N / Esc = cancel'
-                        OnAccept         = [pscustomobject]@{
-                            Kind         = 'ExecuteWorkflow'
-                            WorkflowKind = 'DeleteMarked'
-                            ChangeIds    = $changeIds
-                        }
-                    }
-                    return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenConfirmDialog'; Payload = $payload })
-                }
                 'MoveMarkedFiles'   {
                     [string[]]$changeIds   = @($next.Query.MarkedChangeIds | ForEach-Object { [string]$_ } | Sort-Object)
                     [object[]]$visibleIds  = @($next.Derived.VisibleChangeIds)
@@ -1362,10 +1403,17 @@ function Invoke-ChangelistReducer {
         'DeleteChange' {
             $currentViewMode = if (($next.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$next.Ui.ViewMode } else { 'Pending' }
             if ($currentViewMode -eq 'Submitted') { return $next }  # No-op in submitted view
-            if ($next.Derived.VisibleChangeIds.Count -eq 0) { return $next }
-            $idx = [Math]::Max(0, [Math]::Min($next.Cursor.ChangeIndex,
-                                               $next.Derived.VisibleChangeIds.Count - 1))
-            $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'DeleteChange'; ChangeId = $next.Derived.VisibleChangeIds[$idx] }
+            [string[]]$changeIds = @(Get-DeleteActionableChangeIds -State $next)
+            if ($changeIds.Count -eq 0) { return $next }
+
+            $mcProp = $next.Query.PSObject.Properties['MarkedChangeIds']
+            $hasMarks = $null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0
+            if ($hasMarks) {
+                $payload = New-DeleteMarkedConfirmPayload -State $next -ChangeIds $changeIds
+                return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenConfirmDialog'; Payload = $payload })
+            }
+
+            $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'DeleteChange'; ChangeId = $changeIds[0] }
             return Update-BrowserDerivedState -State $next
         }
         'ToggleMarkCurrent' {

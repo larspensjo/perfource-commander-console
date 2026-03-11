@@ -663,6 +663,8 @@ Describe 'Build-HelpOverlayRows' {
         $allText | Should -Match 'M / Ins\s+Mark/unmark current changelist'
         $allText | Should -Match 'Shift\+M\s+Mark all visible changelists'
         $allText | Should -Match 'C\s+Clear all changelist marks'
+        $allText | Should -Match 'Enter\s+Describe CL'
+        $allText | Should -Match 'X / Del\s+Delete focused CL / marked CLs'
     }
 
     It 'aligns descriptions to the same column' {
@@ -1474,7 +1476,7 @@ Describe 'Build-MenuOverlayRows and Apply-MenuOverlay' {
     }
 
     It 'Build-MenuOverlayRows disabled item does not get focus indicator' {
-        [object[]]$items = @(New-MenuItem -Id 'DeleteMarked' -Label 'Delete' -Accel 'D' -Enabled $false)
+        [object[]]$items = @(New-MenuItem -Id 'DeleteChange' -Label 'Delete' -Accel 'X' -Enabled $false)
         $payload = New-MenuPayload -Name 'File' -Focus 0 -Items $items
         $rows = @(Build-MenuOverlayRows -Payload $payload -Width 30)
         # Even though focused, disabled item should still appear

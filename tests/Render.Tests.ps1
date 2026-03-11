@@ -482,10 +482,12 @@ Describe 'Frame helpers' {
                 (($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n") | Should -Match 'No matching changelists'
             }
 
-            It 'applies selected row background in changelists pane' {
+            It 'uses cursor-only selection in changelists pane' {
                 $state = New-RenderStateFixture -ChangeIndex 1
                 $frame = Build-FrameFromState -State $state
-                @($frame.Rows | Where-Object { @($_.Segments | Where-Object { $_.BackgroundColor -eq 'DarkCyan' }).Count -gt 0 }).Count | Should -BeGreaterThan 0
+                $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+                $allText | Should -Match ([string][char]0x25B6)
+                @($frame.Rows | Where-Object { @($_.Segments | Where-Object { $_.BackgroundColor -eq 'DarkCyan' }).Count -gt 0 }).Count | Should -Be 0
             }
         }
 
@@ -970,20 +972,22 @@ Describe 'Expanded changelist frame rendering' {
             $allText | Should -Not -Match '2025-01-10'
         }
 
-        It 'selected CL has DarkCyan background on its title row in expanded mode' {
+        It 'selected CL title row stays unhighlighted in expanded mode' {
             $state = New-ExpandedStateFixture -Expanded $true
             $frame = Build-FrameFromState -State $state
             # Row 1 (inner row 0) is the title row for CL-1 (selected)
             $row1 = $frame.Rows[1]
-            ($row1.Segments | Where-Object { $_.BackgroundColor -eq 'DarkCyan' }).Count | Should -BeGreaterThan 0
+            (($row1.Segments | ForEach-Object { $_.Text }) -join '') | Should -Match ([string][char]0x25B6)
+            @($row1.Segments | Where-Object { $_.BackgroundColor -eq 'DarkCyan' }).Count | Should -Be 0
         }
 
-        It 'selected CL detail row also has DarkCyan background in expanded mode' {
+        It 'selected CL detail row stays unhighlighted in expanded mode' {
             $state = New-ExpandedStateFixture -Expanded $true
             $frame = Build-FrameFromState -State $state
             # Row 2 (inner row 1) is the detail row for CL-1 (selected)
             $row2 = $frame.Rows[2]
-            ($row2.Segments | Where-Object { $_.BackgroundColor -eq 'DarkCyan' }).Count | Should -BeGreaterThan 0
+            (($row2.Segments | ForEach-Object { $_.Text }) -join '') | Should -Match ([string][char]0x25B6)
+            @($row2.Segments | Where-Object { $_.BackgroundColor -eq 'DarkCyan' }).Count | Should -Be 0
         }
 
         It 'status bar shows [E] Expand when compressed' {

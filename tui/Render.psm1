@@ -2181,9 +2181,6 @@ function Build-FrameFromState {
                         $changeInnerSegments = Build-ChangeSegments -Marker $changeMarker -Change $cl -IsSelected $isSelectedChange -IsMarked $isMarkedChange
                     }
                     $rightSegments = Build-BorderedRowSegments -InnerSegments $changeInnerSegments -Width $layout.ListPane.W -BorderColor $changeBorderColor
-                    if ($isSelectedChange) {
-                        $rightBackgroundColor = 'DarkCyan'
-                    }
                 }
             }
         } elseif ($globalRow -eq $layout.ListPane.H) {

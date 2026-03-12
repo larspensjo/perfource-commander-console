@@ -278,7 +278,12 @@ function Invoke-P4 {
         # Milliseconds to wait before killing the p4 process. Defaults to 30 s.
         [int]$TimeoutMs = 30000,
         [int[]]$AllowedExitCodes = @(0),
-        [AllowEmptyCollection()][string[]]$InputLines = @()
+        [AllowEmptyCollection()][string[]]$InputLines = @(),
+        # Per-invocation observer callback (M0.2).  When provided, called instead of
+        # the session-global $script:P4ExecutionObserver.  Enables safe async execution
+        # where concurrent workers each carry their own observer without clobbering each other.
+        # Signature: { param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs) }
+        [scriptblock]$Observer = $null
     )
 
     $globalArgs = @('-ztag', '-Mj')
@@ -373,9 +378,13 @@ function Invoke-P4 {
     $endedAt   = Get-Date
     $durationMs = [int](($endedAt - $startedAt).TotalMilliseconds)
 
-    if ($script:P4ExecutionObserver) {
+    # Per-invocation observer (M0.2): use explicit $Observer when provided, otherwise fall back
+    # to the session-global slot.  Async workers pass their own observer so concurrent callers
+    # do not clobber each other.
+    $effectiveObserver = if ($null -ne $Observer) { $Observer } else { $script:P4ExecutionObserver }
+    if ($effectiveObserver) {
         try {
-            & $script:P4ExecutionObserver -CommandLine $commandLine -RawLines $rawLines `
+            & $effectiveObserver -CommandLine $commandLine -RawLines $rawLines `
                 -ExitCode $effectiveExitCode -ErrorOutput $effectiveErrorOutput `
                 -StartedAt $startedAt -EndedAt $endedAt -DurationMs $durationMs
         } catch { <# observer must not break p4 operations #> }

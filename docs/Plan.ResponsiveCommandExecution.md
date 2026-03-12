@@ -2,15 +2,17 @@
 
 ## Purpose
 
-This is a revised, code-accurate plan for making long-running Perforce operations more understandable, faster to recover from, and eventually non-blocking.
+This plan makes long-running Perforce operations more understandable, faster to
+recover from, and eventually non-blocking.
 
-It keeps the original direction, but adjusts the milestones to match the **current implementation**:
+It is written against the **current implementation** (2026-03-12):
 
-- reducer-driven UDF,
-- a synchronous side-effect gateway,
-- a separate command log surface,
-- shared-by-reference caches,
-- and workflow executors that are not yet fully normalized.
+- reducer-driven UDF with `Invoke-BrowserReducer`,
+- a synchronous side-effect gateway (`Invoke-BrowserSideEffect`),
+- two command-history surfaces (modal history + command log),
+- shared-by-reference append-only caches,
+- a workflow registry (`Register-WorkflowKind`) with four built-in executors,
+- and a single-shot `PendingRequest` slot for side-effect signaling.
 
 The plan prioritizes **elegance, robustness, flexibility, and testability**.
 
@@ -18,19 +20,20 @@ The plan prioritizes **elegance, robustness, flexibility, and testability**.
 
 ## Problem Summary
 
-The current TUI is still effectively blocked while a long-running `p4` command executes.
+The TUI is blocked while any `p4` command executes.
 
 Observed symptoms:
 
-- the busy modal renders one frame and then stops updating,
-- keyboard input is not processed until the command returns,
-- resize handling also pauses during I/O,
-- opening the files screen can block on both:
-  - the initial `p4 fstat` load,
-  - follow-up content-diff enrichment (`p4 diff -sa`),
-- pending changelist loading can also be expensive because enrichment currently includes opened, shelved, and unresolved counts.
+- The busy modal renders one frame and then stops updating.
+- Keyboard input is not processed until the command returns.
+- Resize handling pauses during I/O.
+- Opening the files screen blocks on both the initial `p4 fstat` load and
+  follow-up content-diff enrichment (`p4 diff -sa`).
+- Pending changelist loading is expensive because enrichment includes opened,
+  shelved, and unresolved counts — the latter can degrade to one `p4 fstat`
+  query per changelist.
 
-The goal is not just “make it async”, but to reach a solution that is:
+The goal is to reach a solution that is:
 
 - correct by construction,
 - reducer-authoritative,
@@ -45,7 +48,8 @@ The goal is not just “make it async”, but to reach a solution that is:
 1. Make slow operations understandable instead of feeling frozen.
 2. Reduce synchronous wait time on common workflows.
 3. Give users control during long operations.
-4. Reach a long-term model where the UI remains responsive while read-heavy commands run.
+4. Reach a long-term model where the UI remains responsive while read-heavy
+   commands run.
 5. Support true cancellation with clear user-facing outcomes.
 6. Keep the reducer authoritative even after background execution is introduced.
 
@@ -67,104 +71,101 @@ Those can come later if the background model proves stable.
 
 ## Current Architecture Baseline
 
-## Main loop
-
-The main loop is still fundamentally:
+### Main Loop
 
 ```text
 State → Render → Poll Input/Resize → Map Action → Reducer → Consume PendingRequest → State'
 ```
 
-Important detail:
+During synchronous I/O the loop is not alive — neither input nor periodic UI
+updates can happen. Future async support requires an explicit **idle tick** that
+drains completions even when no key is pressed.
 
-- during synchronous I/O, the loop is not alive,
-- so neither input nor periodic UI updates can happen,
-- and future async support will require an explicit **idle tick** that can drain completions even when no key is pressed.
-
-## Side-effect gateway
+### Side-Effect Gateway
 
 `Invoke-BrowserSideEffect` currently:
 
 1. dispatches `CommandStart`,
-2. renders the busy modal,
+2. renders the busy modal (one frame),
 3. registers a `p4` observer,
 4. runs the work item synchronously,
 5. logs observer events through `LogCommandExecution`,
 6. dispatches `CommandFinish`.
 
-This remains the core synchronous orchestration path.
+### Workflow Registry and Execution
 
-### Important correction
-
-Not every user-visible command currently goes through one uniform wrapper:
-
-- startup `Get-P4Info` happens outside it,
-- `MoveMarkedFiles` does not use the same workflow command helper as other workflows.
-
-That inconsistency should be fixed before async behavior is layered on.
-
-## Reducer and command surfaces
-
-The code currently has **two command-history surfaces**:
-
-1. **Busy/history modal**
-   - backed by `Runtime.ModalPrompt.History`
-   - populated by `CommandFinish`
-
-2. **Command Log view**
-   - backed by `Runtime.CommandLog`
-   - populated by `LogCommandExecution`
-
-This distinction matters. Timeout classes, slow-command buckets, and cancel/timeout outcomes must be designed to work for both surfaces.
-
-## Caches and state copying
-
-Current cache behavior:
-
-- `DescribeCache`, `FileCache`, and `CommandOutputCache` are intentionally shared by reference across copied states,
-- that works today because they are treated largely as append-only shared data.
-
-This is acceptable in the synchronous model, but it becomes a hazard once async work and richer status transitions are introduced.
-
-## File loading
-
-For opened files, loading is currently one blocking unit:
-
-1. `Get-P4OpenedFiles`
-2. `Get-P4ModifiedDepotPaths`
-3. `Set-P4FileEntriesContentModifiedState`
-
-That is the clearest first-paint hotspot in the current UI.
-
-## Pending changelist loading
-
-`Get-P4ChangelistEntries` currently performs multiple enrichment steps:
-
-1. pending changelists,
-2. opened file counts,
-3. shelved file counts,
-4. unresolved counts,
-5. and sometimes `Get-P4Info` for default changelist synthesis.
-
-In particular, unresolved enrichment can devolve into one `p4 fstat` query per changelist.
-
-## Workflows
-
-Workflow progress already exists conceptually:
+All four built-in workflows (`DeleteMarked`, `MoveMarkedFiles`, `ShelveFiles`,
+`DeleteShelvedFiles`) are registered via `Register-WorkflowKind` and follow
+the same lifecycle:
 
 ```text
 WorkflowBegin → (WorkflowItemComplete | WorkflowItemFailed)* → WorkflowEnd
 ```
 
-That gives useful checkpoint boundaries, but the command execution path is not yet fully uniform across all workflows.
+Three of the four (`DeleteMarked`, `ShelveFiles`, `DeleteShelvedFiles`) route
+individual items through `Invoke-BrowserWorkflowCommand`, which delegates to
+`Invoke-BrowserSideEffect` — so each item gets observer logging and modal
+history entries.
+
+**Remaining gap:** `MoveMarkedFiles` calls `Invoke-P4ReopenFiles` directly in a
+try/catch, bypassing the side-effect gateway for individual items. Startup
+`Get-P4Info` also runs outside the gateway.
+
+### Two Command-History Surfaces
+
+1. **Busy/history modal** — backed by `Runtime.ModalPrompt.History`, populated by
+   `CommandFinish`.
+2. **Command Log view** — backed by `Runtime.CommandLog`, populated by
+   `LogCommandExecution`.
+
+Timeout/duration classes, outcomes, and cancel semantics must work for both.
+
+### Caches and State Copying
+
+- `DescribeCache`, `FileCache`, and `CommandOutputCache` are `IDictionary`
+  instances shared by reference across copied states.
+- `Copy-StateObject` deep-copies `PSCustomObject` trees but passes dictionaries
+  by reference (append-only contract) and clones `HashSet<string>` instances.
+- This is safe in the synchronous model because only the main thread writes.
+  **Under async execution, shared dictionaries become a hazard** — the plan
+  addresses this in Milestone 4.
+
+### File Loading
+
+For opened files, loading is currently one blocking unit inside
+`Invoke-BrowserFilesLoad`:
+
+1. `Get-P4OpenedFiles` — base `fstat` query
+2. `Get-P4ModifiedDepotPaths` — `diff -sa` query
+3. `Set-P4FileEntriesContentModifiedState` — enrichment merge
+
+This is the clearest first-paint hotspot.
+
+### Pending Changelist Loading
+
+`Get-P4ChangelistEntries` performs:
+
+1. `Get-P4PendingChangelists` (includes `Get-P4Info` for user/client scoping)
+2. `Get-P4OpenedFileCounts`
+3. `Get-P4ShelvedFileCounts` (batched in groups of 50)
+4. `Get-P4UnresolvedFileCounts` (can degrade to one `p4 fstat` per CL)
+5. Default changelist synthesis if needed.
+
+### Observer Pattern
+
+`Register-P4Observer` installs a single module-scoped `$script:P4ExecutionObserver`
+scriptblock. This is session-global, not per-request. **This must be replaced
+before async execution** because overlapping `Invoke-P4` calls from different
+workers would clobber each other's observer.
 
 ---
 
 ## Constraints
 
-### C1 — The main loop currently stops during I/O
+### C1 — The main loop stops during I/O
 
-No live timer, no input, no resize handling while a synchronous `p4` command is running.
+No live timer, no input, no resize handling while a synchronous `p4` command
+is active.
 
 ### C2 — Only the main thread should write to `[Console]`
 
@@ -172,19 +173,32 @@ Background workers must not render directly.
 
 ### C3 — Thread-job runspaces are isolated
 
-Modules must be imported explicitly, and background work should return **data**, not mutated application state.
+Modules must be imported explicitly. Background work must return **data**,
+not mutated application state.
 
-### C4 — Shared caches are safe only under a narrow contract today
+### C4 — Shared caches are safe only under single-thread access
 
-The current shared-reference cache model is manageable while writes are simple and synchronous. It becomes much more fragile if async jobs or richer cache-entry status transitions are introduced carelessly.
+PowerShell hashtables are not thread-safe. Under async execution, all cache
+writes **must** happen on the main thread (via completion-queue drain), never
+from a background worker.
 
 ### C5 — `Escape` currently means dismiss, not cancel
 
-Busy-state cancellation semantics do not exist yet and must be introduced explicitly.
+The `HideCommandModal` action already handles overlay precedence (dismiss
+overlay first, then close modal). Cancel semantics must be layered on
+explicitly.
 
-### C6 — A single `PendingRequest` slot is enough for sync sequencing, but not for general async orchestration
+### C6 — Single `PendingRequest` slot
 
-The current one-shot signal is a good synchronous pattern, but later milestones need request identity, generation tracking, and explicit completion events.
+The current one-shot signal is sufficient for synchronous sequencing. Async
+orchestration needs request identity, generation tracking, and explicit
+conflict resolution (see Milestone 4).
+
+### C7 — `$script:P4ExecutionObserver` is session-global
+
+Only one observer can be registered. Async workers that call `Invoke-P4`
+independently would clobber the observer. This must be replaced with a
+per-invocation callback (see Milestone 0).
 
 ---
 
@@ -194,23 +208,20 @@ These rules apply to every milestone.
 
 ### Rule 1 — The reducer stays authoritative
 
-Background workers may gather data or execute commands, but they must not own application state mutations.
+Background workers may gather data or execute commands, but they must not own
+application state mutations.
 
 ### Rule 2 — No background state mutation
 
-A worker returns typed payloads such as `FilesBaseLoaded`, `PendingChangesLoaded`, or `CommandFailed`. The reducer integrates them.
+A worker returns typed payloads (`FilesBaseLoaded`, `PendingChangesLoaded`,
+`CommandFailed`). The reducer integrates them. Cache writes happen on the
+main thread only.
 
 ### Rule 3 — Keep live handles out of copied state
 
-Reducer state may store:
-
-- `RequestId`
-- timestamps
-- display strings
-- scalar IDs
-- status fields
-
-Live job objects, queues, or process objects should stay in module-scoped registries keyed by `RequestId`.
+Reducer state may store `RequestId`, timestamps, display strings, scalar IDs,
+and status fields. Live job objects, queues, or process objects stay in
+module-scoped registries keyed by `RequestId`.
 
 ### Rule 4 — Prefer first paint over full enrichment
 
@@ -219,33 +230,41 @@ Partial but clearly-labeled data is better than perfect-but-late data.
 ### Rule 5 — Treat stale results as normal
 
 Once background work exists, stale results are expected, not exceptional.
+Generation-based filtering is the primary defense.
 
-### Rule 6 — Normalize access before changing data shape
+### Rule 6 — Use sibling metadata dictionaries, not cache-shape changes
 
-If `FileCache` or other caches need richer metadata, first introduce accessors/helpers or a sibling metadata dictionary.
+To track richer lifecycle metadata (load phase, enrichment status), add a
+separate dictionary keyed by `cacheKey` instead of changing `FileCache` value
+shape. This preserves current `FileCache` assumptions and avoids a broad
+migration.
 
 ### Rule 7 — Use DI for orchestration
 
-The same orchestration layer should run inline in tests and via workers in production.
+The same orchestration layer should run inline in tests and via workers in
+production.
 
-### Rule 8 — Add no naked constants
+### Rule 8 — No naked constants
 
-Timeouts, thresholds, durations, debounce intervals, and state labels should come from shared named policy objects.
+Timeouts, thresholds, durations, debounce intervals, and state labels come
+from shared named policy objects.
+
+### Rule 9 — Per-invocation observation, not session-global
+
+Replace the single `$script:P4ExecutionObserver` slot with a per-invocation
+callback parameter on `Invoke-P4` (or on the side-effect wrapper) so that
+concurrent async callers do not interfere.
 
 ---
 
 ## Strategy Summary
 
-Deliver the work in six milestones:
-
 1. **Milestone 0 — Foundation**
-2. **Milestone 1 — Instrumentation and static UX**
-3. **Milestone 2 — Faster synchronous first paint**
-4. **Milestone 3 — Busy-state control and semantics**
-5. **Milestone 4 — Async read-only execution**
-6. **Milestone 5 — Async mutation and true cancellation**
-
-This keeps the rollout incremental and shippable.
+2. **Milestone 1 — Instrumentation and Static UX**
+3. **Milestone 2 — Faster Synchronous First Paint**
+4. **Milestone 3 — Busy-State Control and Semantics**
+5. **Milestone 4 — Async Read-Only Execution**
+6. **Milestone 5 — Async Mutation and True Cancellation**
 
 ---
 
@@ -253,55 +272,49 @@ This keeps the rollout incremental and shippable.
 
 ## Objective
 
-Prepare the codebase for later async work without changing the execution model yet.
-
-This milestone is small but important: it removes architectural ambiguity that would otherwise make M4-M5 brittle.
+Prepare the codebase for later async work without changing the execution model.
 
 ## Scope
 
-### 0.1 Normalize workflow command execution
+### 0.1 Normalize remaining workflow execution gaps
 
-Make all workflow items use one common execution helper so they all get the same:
+**Current state:** Three of four workflows route individual items through
+`Invoke-BrowserWorkflowCommand`. `MoveMarkedFiles` calls `Invoke-P4ReopenFiles`
+directly, bypassing observer logging and modal history for per-item commands.
+Startup `Get-P4Info` runs outside the side-effect gateway.
 
-- modal behavior,
-- logging behavior,
-- error capture,
-- and later checkpoint/cancel semantics.
+**Work required:**
 
-In practice, `MoveMarkedFiles` should be brought onto the same conceptual path as the other workflows.
+- Make `MoveMarkedFiles` use `Invoke-BrowserWorkflowCommand` for each
+  `Invoke-P4ReopenFiles` call, matching the other three workflows.
+- Wrap startup `Get-P4Info` in `Invoke-BrowserSideEffect` so it appears in
+  the command log.
 
-### 0.2 Introduce a typed request envelope
+### 0.2 Introduce observer-per-invocation support
 
-Replace bare request objects like:
+Add an optional `Observer` parameter to `Invoke-P4` that, when provided,
+is called instead of the module-scoped `$script:P4ExecutionObserver`. Existing
+callers continue to work via the module-scoped default. This removes the
+session-global observer bottleneck (C7) and enables safe async execution later.
+
+Signature addition:
 
 ```powershell
-@{ Kind = 'LoadFiles' }
-```
-
-with a richer envelope shape such as:
-
-```powershell
-@{
-    RequestId   = 'req-17'
-    Kind        = 'LoadFilesBase'
-    Scope       = 'Files'
-    CacheKey    = '123:Opened'
-    Generation  = 4
-    CommandLine = 'p4 fstat ...'
+function Invoke-P4 {
+    param(
+        ...existing params...
+        [scriptblock]$Observer = $null
+    )
+    # At observer invocation point:
+    $effectiveObserver = if ($null -ne $Observer) { $Observer } else { $script:P4ExecutionObserver }
+    if ($effectiveObserver) { & $effectiveObserver ... }
 }
 ```
 
-This still works in the synchronous model, but creates the identity needed later for stale-result handling.
-
 ### 0.3 Define shared command/result records
 
-Create one shared conceptual model for command results, used by both:
-
-- the busy/history modal,
-- the command log,
-- later async completion actions.
-
-Recommended fields:
+Create one shared command-result shape used by both the busy/history modal and
+the command log:
 
 ```powershell
 @{
@@ -319,43 +332,80 @@ Recommended fields:
 }
 ```
 
-### 0.4 Add cache access helpers or a sibling metadata dictionary
+Both command-history surfaces consume this record, ensuring consistent taxonomy.
 
-Do **not** immediately replace `FileCache[$cacheKey] = FileEntry[]` everywhere.
+### 0.4 Add a cache-status sibling dictionary
 
-Instead, do one of these first:
+Introduce `State.Data.FileCacheStatus` as a separate dictionary keyed by
+`cacheKey`. Values are string status labels:
 
-- add cache accessor helpers, or
-- keep dynamic load/enrichment state in a separate dictionary keyed by `cacheKey`.
+```text
+'NotLoaded' | 'LoadingBase' | 'BaseReady' | 'LoadingEnrichment' | 'Ready' | 'EnrichmentFailed'
+```
 
-The second option is especially attractive because it preserves current `FileCache` assumptions while allowing richer status tracking.
+Keep `FileCache` itself as raw `FileEntry[]` — no shape change needed.
 
 ### 0.5 Add an executor seam and idle-tick helper
 
-Add DI for the execution orchestrator early, even if production still runs synchronously.
+Define a DI seam for command execution. Production uses
+`Invoke-BrowserSideEffect`. Tests use an inline executor that runs
+synchronously and returns deterministic completions.
 
-This gives the code a stable place to attach:
+Suggested interface shape:
 
-- fake executors,
-- fake clocks,
-- fake completion queues,
-- future thread-job implementations.
+```powershell
+[pscustomobject]@{
+    Execute    = [scriptblock]  # { param($CommandLine, $WorkItem, $State) → state }
+    IsComplete = [scriptblock]  # { param($RequestId) → $bool }
+    GetResult  = [scriptblock]  # { param($RequestId) → completion payload }
+}
+```
 
-## Suggested Files
+### 0.6 Introduce request envelope for PendingRequest
 
-- `PerfourceCommanderConsole.psm1`
-- `tui/Reducer.psm1`
-- `tui/Input.psm1`
-- `tui/Render.psm1`
-- `p4/P4Cli.psm1`
-- optionally a new helper module such as `tui/CommandRuntime.psm1`
+Enrich the `PendingRequest` signal with identity and scope:
+
+```powershell
+@{
+    RequestId   = 'req-17'
+    Kind        = 'LoadFilesBase'
+    Scope       = 'Files'
+    CacheKey    = '123:Opened'
+    Generation  = 4
+}
+```
+
+This still works synchronously, but creates the identity needed for M4
+stale-result handling.
+
+## Affected Files
+
+- `PerfourceCommanderConsole.psm1` — workflow normalization, executor seam
+- `tui/Reducer.psm1` — request envelope, cache status
+- `p4/P4Cli.psm1` — observer-per-invocation
 
 ## Acceptance Criteria
 
-- All workflows use a consistent execution path.
-- Requests have stable identity and scope.
-- Modal history and command log can share one outcome taxonomy.
-- A future async executor can be swapped in without redesigning the reducer contract.
+- All workflows use `Invoke-BrowserWorkflowCommand` for individual items.
+- Startup `Get-P4Info` goes through the side-effect gateway.
+- `Invoke-P4` accepts an optional per-invocation observer callback.
+- `FileCacheStatus` dictionary tracks load phases.
+- Requests carry stable identity and scope.
+- Modal history and command log share one outcome taxonomy.
+- A future async executor can be swapped in without redesigning the reducer.
+
+## Tests
+
+- Workflow execution: verify all four workflows produce observer events for
+  each individual item (via mock `Register-P4Observer`).
+- Request envelope: verify `RequestId` and `Generation` are populated.
+- Shared command record: verify outcome taxonomy covers Completed, Failed,
+  TimedOut, Cancelled.
+- Cache status: verify `FileCacheStatus` transitions for opened-file load path.
+- Executor seam: verify inline test executor produces identical state as
+  production path.
+- `Copy-BrowserState` round-trip: verify new `FileCacheStatus` dictionary
+  survives deep copy (shared by reference, same as other dictionaries).
 
 ---
 
@@ -363,19 +413,14 @@ This gives the code a stable place to attach:
 
 ## Objective
 
-Make waits more understandable and diagnosable without changing the synchronous execution model.
+Make waits more understandable and diagnosable without changing the synchronous
+execution model.
 
 ## Scope
 
-### 1.1 Add shared thresholds and timeout policy
+### 1.1 Add shared thresholds and command-category policy
 
-Define named shared policy objects in `P4Cli.psm1` for:
-
-- duration buckets,
-- timeout buckets,
-- command categories.
-
-For example:
+Define named policy objects in `P4Cli.psm1`:
 
 ```powershell
 $script:CommandThresholds = [pscustomobject]@{
@@ -392,20 +437,45 @@ $script:P4TimeoutByCategory = @{
 }
 ```
 
-And resolve command category from arguments via a shared helper.
+Add a command-category resolver:
 
-### 1.2 Improve the static busy modal copy
+```powershell
+function Get-P4CommandCategory {
+    param([string[]]$P4Args)
+    switch ($P4Args[0]) {
+        { $_ -in 'fstat','opened','filelog','diff' } { return 'FileQuery' }
+        { $_ -in 'change','reopen','shelve' }        { return 'Mutating' }
+        'describe'                                    { return 'Describe' }
+        default                                       { return 'Metadata' }
+    }
+}
+```
 
-The modal is still static in this milestone, so keep the improvement static and honest.
+Add a duration-class resolver:
 
-Suggested content:
+```powershell
+function Get-DurationClass {
+    param([int]$DurationMs)
+    if ($DurationMs -ge $script:CommandThresholds.CriticalMs) { return 'Critical' }
+    if ($DurationMs -ge $script:CommandThresholds.WarningMs)  { return 'Warning' }
+    if ($DurationMs -ge $script:CommandThresholds.InfoMs)     { return 'Info' }
+    return 'Normal'
+}
+```
 
-- header/body: `[⏳] Running: p4 fstat ...`
-- footer: `[ℹ] Waiting for Perforce. Timeout: 30s`
+### 1.2 Improve the static busy modal
 
-If a workflow is active, the footer can already include static step progress text.
+The modal is still static in this milestone. Improve the text to be
+informative and honest:
 
-### 1.3 Improve both command-history surfaces together
+- Header/body: `[⏳] Running: p4 fstat ...`
+- Footer: `[ℹ] Waiting for Perforce. Timeout: 30s`
+
+When a workflow is active, show static step progress:
+
+- `[⏳] Working… (step 2/5)`
+
+### 1.3 Improve both command-history surfaces
 
 Apply the shared classification model to:
 
@@ -414,23 +484,33 @@ Apply the shared classification model to:
 - command detail pane,
 - command log filters.
 
-That includes:
+Include:
 
-- duration color classes,
-- explicit `TimedOut` vs `Failed`,
+- duration color classes (Normal / Info / Warning / Critical),
+- explicit `TimedOut` and `Cancelled` outcomes alongside `Completed` and `Failed`,
 - prominent subcommand display,
-- status filters beyond just `OK` and `Error`.
+- status filters in the command log beyond just OK/Error.
 
-### 1.4 Keep timeout override behavior explicit
+### 1.4 Category-aware default timeouts
 
-Allow low-level callers to override timeout explicitly, but let `Invoke-P4` resolve a category-aware default when none is supplied.
+Allow `Invoke-P4` callers to override timeout explicitly. When no override is
+supplied, resolve a category-aware default via `Get-P4CommandCategory` +
+`$script:P4TimeoutByCategory`.
 
 ## Acceptance Criteria
 
-- Busy modal shows clearer static text and timeout information.
+- Busy modal shows static text with command name and timeout.
 - Command log and modal history use the same duration/outcome taxonomy.
 - Timeouts are category-aware and centrally defined.
-- Existing command flows still behave normally.
+- Existing command flows behave normally.
+
+## Tests
+
+- `Get-P4CommandCategory` returns correct category for each p4 subcommand.
+- `Get-DurationClass` returns correct class for boundary values.
+- Timeout resolution uses category default when no explicit override is given.
+- Command log filter predicates handle new outcome values.
+- Busy modal copy includes command name and step progress text.
 
 ---
 
@@ -438,79 +518,99 @@ Allow low-level callers to override timeout explicitly, but let `Invoke-P4` reso
 
 ## Objective
 
-Reduce blocking time in common workflows without introducing background execution yet.
+Reduce blocking time in common workflows without introducing background
+execution.
 
 ## Scope
 
-### 2.1 Split opened-files loading into base load and enrichment
+### 2.1 Split opened-files loading into base load + enrichment
 
-Change the opened-files path from:
+Change `Invoke-BrowserFilesLoad` from:
 
 ```text
-Load files = fstat + diff enrichment + state update
+fstat + diff -sa enrichment + state update
 ```
 
 to:
 
 ```text
 Request A: base file load (fstat)
+→ set FileCacheStatus = 'BaseReady'
 → return to main loop and render
+
 Request B: content-diff enrichment (diff -sa)
+→ set FileCacheStatus = 'Ready'
 → re-render when done
 ```
 
-This is the highest-value synchronous UX improvement.
+The reducer signals enrichment as a follow-up `PendingRequest` after base load
+completes. A new `PendingRequest.Kind = 'LoadFilesEnrichment'` is added.
 
-### 2.2 Introduce explicit file-load status
+### 2.2 Use FileCacheStatus for load-phase tracking
 
-Track file-loading phases explicitly, for example:
+Use the sibling dictionary from M0.4:
 
 ```text
 NotLoaded → LoadingBase → BaseReady → LoadingEnrichment → Ready
                                           └────────────→ EnrichmentFailed
 ```
 
-Recommended implementation:
-
-- keep `FileCache` as raw `FileEntry[]` for now,
-- store phase/status in a separate dictionary keyed by `cacheKey`, or behind accessors.
-
-That avoids an immediate broad cache-shape migration.
+The reducer sets status at each transition. Render logic reads it.
 
 ### 2.3 Render partially enriched state clearly
 
-When content status is not yet known:
+When `FileCacheStatus[$cacheKey]` is `BaseReady` or `LoadingEnrichment`:
 
-- render a pending glyph such as `…`,
-- show a clear inspector/status-bar note,
-- avoid pretending “clean” when the data is simply not loaded yet.
+- Render a pending glyph (`…`) in the content-modified column.
+- Show a status-bar note: "Content status: loading…"
+- Do not show "clean" as the content-modified state.
 
 ### 2.4 Make enrichment idempotent and demand-driven
 
-If enrichment is already loading or ready, do not re-request it.
+The reducer checks `FileCacheStatus` before signaling enrichment:
 
-Good triggers:
+- If status is already `LoadingEnrichment` or `Ready`, do not re-request.
+- Good triggers: files screen opened, content-status column visible,
+  user explicitly reloads.
 
-- files screen opened,
-- content-status column visible,
-- future file filter depends on content-modified state,
-- user explicitly reloads.
+### 2.5 Per-enrichment-step timeout budget
 
-### 2.5 Optional future branch: progressive changelist enrichment
+For `Get-P4ChangelistEntries` unresolved enrichment, add a time budget:
 
-After the files split proves useful, the same idea can later be applied to pending changelists:
+```powershell
+$enrichmentBudget = $script:EnrichmentBudgetMs  # e.g. 5000
+$enrichmentStarted = Get-Date
+foreach ($changeNumber in $changeNumbers) {
+    if (((Get-Date) - $enrichmentStarted).TotalMilliseconds -gt $enrichmentBudget) {
+        break  # abandon remaining enrichment gracefully
+    }
+    # ... per-CL fstat
+}
+```
 
-- load base changelists first,
-- enrich counts progressively.
-
-That is a good extension, but it should not distract from the files-screen hotspot first.
+This provides a ceiling for the worst-case synchronous enrichment path.
 
 ## Acceptance Criteria
 
-- Opening the files screen reaches first paint without waiting for `p4 diff -sa`.
-- UI distinguishes “pending enrichment” from “clean”.
+- Opening the files screen reaches first paint without waiting for
+  `p4 diff -sa`.
+- UI distinguishes "pending enrichment" from "clean".
 - Reload and re-entry stay idempotent.
-- Tests cover status transitions and partially enriched rendering.
+- Unresolved enrichment respects a time budget.
+
+## Tests
+
+- File-load status transitions: `NotLoaded → LoadingBase → BaseReady →
+  LoadingEnrichment → Ready`.
+- `EnrichmentFailed` status when `diff -sa` throws.
+- Files first paint: state after base load has entries but `IsContentModified`
+  is not set.
+- Enrichment idempotence: second load request when status is already `Ready`
+  does not trigger a new request.
+- Pending indicator rendering: render output includes `…` when status is
+  `BaseReady`.
+- Time-budget: enrichment loop stops when budget is exceeded; remaining CLs
+  have `UnresolvedFileCount = 0`.
 
 ---
 
@@ -518,64 +618,86 @@ That is a good extension, but it should not distract from the files-screen hotsp
 
 ## Objective
 
-Improve user control within the synchronous architecture by acting at safe checkpoints.
+Improve user control within the synchronous architecture by acting at safe
+checkpoints.
 
 ## Scope
 
-### 3.1 Add `RequestCancel` and deferred quit semantics
+### 3.1 Add `CancelRequested` and `QuitRequested` state
 
-Introduce explicit state for:
+Add to `Runtime`:
 
-- `CancelRequested`
-- `QuitRequested`
+```powershell
+CancelRequested = $false
+QuitRequested   = $false
+```
 
-While still synchronous, cancel only means:
-
-- stop after the current safe step,
-- not interrupt the currently running native process.
+While still synchronous, cancel means: stop after the current safe step,
+not interrupt the currently running native process.
 
 ### 3.2 Define busy-state key precedence
 
-When busy, recommended precedence is:
+When busy:
 
-1. `Escape` cancels overlay if one is open,
-2. otherwise `Escape` means `RequestCancel`,
-3. `Q` means deferred quit,
-4. hide/dismiss behavior applies only when not busy.
+1. `Escape` cancels active overlay if one is open.
+2. Otherwise `Escape` sets `CancelRequested = $true`.
+3. `Q` sets `QuitRequested = $true`.
+4. Hide/dismiss behavior only applies when not busy.
 
-### 3.3 Poll between workflow items
+### 3.3 Poll between workflow items via injected cancel check
 
-Workflow executors already have item boundaries.
+Workflow executors currently have natural checkpoint boundaries (the
+`foreach ($changeId in $changeIds)` loops). Between items:
 
-Between items:
+- Check for cancel/quit via an injected `$CheckCancel` callback (not direct
+  `[Console]::KeyAvailable`, for testability).
+- If cancelled, dispatch `WorkflowEnd` cleanly and return.
 
-- poll for key input,
-- accept cancel/quit requests,
-- update reducer state accordingly.
+Suggested callback shape:
 
-### 3.4 Split more compound synchronous work into checkpoints
+```powershell
+$CheckCancel = {
+    while ([Console]::KeyAvailable) {
+        $key = [Console]::ReadKey($true)
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo $key -State $state
+        if ($action.Type -eq 'HideCommandModal') { return 'Cancel' }
+        if ($action.Type -eq 'Quit')             { return 'Quit' }
+    }
+    return 'Continue'
+}
+```
 
-The file-load split from Milestone 2 is the first case.
+In tests, the callback returns a deterministic sequence.
 
-Additional candidates later:
-
-- pending changelist enrichment phases,
-- multi-step mutating workflows.
-
-### 3.5 Improve modal messaging for workflow state
-
-Examples:
+### 3.4 Improve modal messaging for workflow state
 
 - `[⏳] Working… (step 2/5)`
 - `[⚠] Cancel requested — finishing current step…`
 - `[⚠] Will quit after current command…`
 
+### 3.5 Split more compound synchronous work into checkpoints
+
+The file-load split (M2) is the first case. Additional candidates:
+
+- Pending changelist enrichment phases.
+- Multi-file workflow operations.
+
 ## Acceptance Criteria
 
 - User can request cancel between workflow steps.
 - User can request quit while busy and exit cleanly afterwards.
-- Modal/footer language reflects busy-state intent clearly.
+- Modal/footer language reflects busy-state intent.
 - All workflows use the same busy/cancel semantics.
+- Cancel-check is injected (DI-friendly), not hardcoded to `[Console]`.
+
+## Tests
+
+- Busy-state key precedence: overlay dismiss before cancel.
+- Cancel request between workflow items: workflow stops after current item.
+- Deferred quit: `QuitRequested` is set; loop exits after command completes.
+- Injected cancel callback: test executor returns 'Cancel' on second item;
+  verify `WorkflowEnd` is dispatched with partial completion.
+- Workflow progress footer: verify correct step count in modal text.
 
 ---
 
@@ -585,15 +707,14 @@ Examples:
 
 Keep the UI responsive during long-running **read-only** operations.
 
-Start with read-only commands only. That yields most of the user benefit with much lower correctness risk than async mutation.
+Start with read-only commands only. That yields most of the user benefit with
+much lower correctness risk than async mutation.
 
 ## Scope
 
 ### 4.1 Introduce one foreground async lane
 
-Start with exactly one active foreground request at a time.
-
-That request can be:
+One active foreground request at a time. Candidates:
 
 - pending reload,
 - submitted reload,
@@ -605,37 +726,51 @@ Do not start with multiple simultaneous foreground commands.
 
 ### 4.2 Use an executor abstraction
 
-Production executor:
+**Production executor:**
 
-- starts a background worker (likely `Start-ThreadJob`),
-- imports required modules,
-- runs typed read-only work,
-- publishes typed completion payloads.
+- Starts a background worker via `Start-ThreadJob` (built-in since PS 7.0).
+- Imports required modules in the worker runspace.
+- Runs typed read-only work.
+- Returns typed completion payloads via a thread-safe queue or `Receive-Job`.
+- Uses per-invocation observer callback (from M0.2) — the worker passes its
+  own observer, captured observation data is returned with the completion
+  payload.
 
-Test executor:
+**Test executor:**
 
-- runs inline,
-- returns deterministic completions,
-- avoids thread timing flakiness.
+- Runs inline, synchronously.
+- Returns deterministic completions.
+- No thread timing flakiness.
 
 ### 4.3 Redesign the main loop to drain completions during idle
 
-The loop must explicitly do work even when the user is not pressing keys:
+The loop must do work even when no key is pressed:
 
 ```text
 Render
-Poll Input
+Poll Input (non-blocking)
 Check Resize
-Drain Completion Queue
+Drain Completion Queue   ← NEW
 Dispatch Reducer Actions
 Sleep 50 ms
 ```
 
-That redesign is mandatory for responsive async behavior.
+The completion drain step checks whether the active foreground job has
+completed. If so, it extracts the typed payload and dispatches the
+corresponding reducer action.
 
-### 4.4 Keep only scalar async state in reducer state
+### 4.4 Main-thread-only cache writes (critical safety rule)
 
-Recommended foreground state shape:
+Background workers return data payloads. **Only the main thread writes to
+shared caches** (FileCache, DescribeCache, CommandOutputCache). This is
+enforced by the completion-queue pattern: the worker returns data, the
+main-loop drain step calls the reducer, and the reducer updates state
+(including caches).
+
+This avoids all PowerShell hashtable thread-safety issues without requiring
+`ConcurrentDictionary`.
+
+### 4.5 Keep only scalar async state in reducer state
 
 ```powershell
 Runtime.ActiveCommand = @{
@@ -651,54 +786,104 @@ Runtime.ActiveCommand = @{
 }
 ```
 
-Actual job/process handles live outside reducer state.
+Live job handles and process objects live in a module-scoped registry keyed by
+`RequestId`, outside reducer state.
 
-### 4.5 Use typed completion actions, not background state mutation
+### 4.6 Use typed completion actions
 
-Examples:
+```text
+PendingChangesLoaded   — carries fresh AllChanges array
+FilesBaseLoaded        — carries FileEntry[] for CacheKey
+FilesEnrichmentDone    — carries enriched FileEntry[] for CacheKey
+DescribeLoaded         — carries describe data for Change
+CommandFailed          — carries error details
+CommandObserved        — carries observer data for command log integration
+```
 
-- `PendingChangesLoaded`
-- `FilesBaseLoaded`
-- `FilesEnrichmentCompleted`
-- `DescribeLoaded`
-- `CommandFailed`
+Workers return payload data only. The reducer updates state.
 
-The worker returns payload data only. The reducer updates state.
+### 4.7 Generation-based stale-result protection
 
-### 4.6 Add generation-based stale-result protection
+Define generation counters:
 
-Use request identity plus scope/generation to discard results that are no longer relevant.
+- `State.Data.PendingGeneration` — incremented on pending reload or view switch.
+- `State.Data.SubmittedGeneration` — incremented on submitted reload.
+- `State.Data.FilesGeneration` — incremented per cache key when a new file
+  load request is issued.
 
-Suggested generations:
+Each async completion carries the generation it was requested under. The
+reducer drops completions where `completion.Generation < currentGeneration`.
 
-- pending-view generation,
-- submitted-view generation,
-- per-file-cache-key generation.
+### 4.8 Request conflict resolution
 
-### 4.7 Enable live elapsed-time display
+When a new request arrives while an in-flight request is active:
 
-Once the main loop stays alive, the busy modal can show a true live timer.
+- **Same scope:** Cancel the in-flight request (set `Cancelling` status,
+  attempt to kill the background job). The new request becomes active.
+  The old request's completion, if it arrives, is dropped via generation check.
+- **Different scope:** Queue the new request. The single-lane model means it
+  waits until the current request completes.
 
-### 4.8 Preserve command observation and logging
+State shape:
 
-The async worker should still return structured command observation data so:
+```powershell
+Runtime.ActiveCommand  = ...   # currently in-flight (nullable)
+Runtime.PendingRequest = ...   # next-up (nullable, latest-wins per scope)
+```
 
-- command log remains useful,
-- modal history remains coherent,
-- subcommand, duration, outcome, and output preview remain available.
+### 4.9 Enable live elapsed-time display
 
-This can be implemented via:
+Once the main loop stays alive, the busy modal reads
+`Runtime.ActiveCommand.StartedAt` and displays a live timer:
 
-- an observer capture helper inside the worker, or
-- richer `Invoke-P4` hooks such as `OnProcessStarted` / `OnProcessFinished` / `OnCommandObserved`.
+```text
+[⏳] Running: p4 fstat ...  (3.2s)
+```
+
+Elapsed time is recomputed on each render tick. No state mutation needed —
+the render function computes it from the immutable `StartedAt` value.
+
+### 4.10 Preserve command observation and logging
+
+The async worker captures observer events using its per-invocation observer
+callback (from M0.2). On completion, the payload includes structured
+observation data:
+
+```powershell
+@{
+    ObservedCommands = @(
+        @{ CommandLine = ...; DurationMs = ...; ExitCode = ...; ... }
+    )
+}
+```
+
+The main-loop drain step dispatches `LogCommandExecution` actions for each
+observed command, preserving command log functionality.
 
 ## Acceptance Criteria
 
 - UI stays responsive during long-running read-only commands.
 - Completions are applied without requiring a keypress.
 - Live elapsed time updates in the busy modal.
-- Stale results are safely ignored.
+- Stale results are safely ignored via generation checks.
 - Command logging still works.
+- All cache writes happen on the main thread only.
+
+## Tests
+
+- **Idle loop drains completions:** fake executor completes; reducer action
+  dispatched without keypress.
+- **Active command lifecycle:** `Running → Completed` transition.
+- **Stale-result dropping:** completion with old generation is ignored.
+- **Request conflict:** new same-scope request cancels in-flight request.
+- **Live elapsed time:** render function computes correct elapsed from
+  `StartedAt`.
+- **Command observation:** async worker returns observer data; command log
+  entries are created.
+- **Cache write safety:** verify all cache mutations happen via reducer
+  actions, not in worker scriptblocks.
+- **`Copy-BrowserState` round-trip:** verify `ActiveCommand` and generation
+  counters survive deep copy correctly.
 
 ---
 
@@ -714,72 +899,90 @@ This milestone should happen only after read-only async behavior is stable.
 
 ### 5.1 Add process-aware cancellation
 
-When a command is active:
+Factor the existing `taskkill /F /T /PID` logic from `Invoke-P4` into a
+shared helper:
 
-1. user presses `Escape`,
-2. reducer marks the request as cancelling,
-3. runtime looks up the active process handle or PID for that request,
-4. runtime kills the process tree,
-5. runtime stops/cleans up the worker,
-6. reducer receives `CommandCancelled`.
+```powershell
+function Stop-P4ProcessTree {
+    param([int]$ProcessId)
+    try { $null = & taskkill /F /T /PID $ProcessId 2>&1 } catch { }
+}
+```
 
-### 5.2 Report more than one process transition when needed
+Cancel flow:
 
-Compound operations may launch more than one native `p4` process over their lifetime.
+1. User presses `Escape`.
+2. Reducer marks `Runtime.ActiveCommand.Status = 'Cancelling'`.
+3. Main-loop drain step looks up the job handle from the module registry.
+4. Calls `Stop-P4ProcessTree` with the active PID.
+5. Stops/cleans up the background job.
+6. Dispatches `CommandCancelled` action to the reducer.
 
-So the runtime should not assume only one immutable `ProcessId` for the whole request.
+### 5.2 Report process lifecycle events
 
-Instead, allow worker-to-main-thread process lifecycle events such as:
+Compound operations may launch more than one native `p4` process. Allow
+worker-to-main-thread lifecycle events:
 
-- `ProcessStarted`
-- `ProcessFinished`
+- `ProcessStarted { RequestId; ProcessId }`
+- `ProcessFinished { RequestId; ProcessId; ExitCode }`
 
-keyed by `RequestId`.
+The module registry tracks the current PID so cancel can target it.
 
 ### 5.3 Distinguish outcomes clearly
 
-User-visible command outcomes should include at least:
+User-visible outcomes:
 
 - `Completed`
 - `Failed`
 - `TimedOut`
 - `Cancelled`
 
-These should drive:
+These drive modal tags, command log filters, detail pane text, and any
+future analytics.
 
-- modal tags,
-- command log filters,
-- detail pane text,
-- future analytics/telemetry.
+### 5.4 Expand async support to mutating workflows
 
-### 5.4 Expand async support to mutating workflows carefully
+Once cancellation is proven for reads, extend to:
 
-Once cancellation and completion semantics are proven for read-only requests, extend them to:
-
-- delete change,
+- delete changelist,
 - delete shelved files,
 - shelve files,
 - move/reopen workflows.
 
-Keep workflow progress explicit and reducer-driven.
+Keep workflow progress explicit and reducer-driven. The workflow executor
+wraps each item in the async executor and drains completions between items.
 
-### 5.5 Allow limited history interaction while a command runs
+### 5.5 Allow limited interaction while a command runs
 
-Once the main loop is fully alive during async work, limited safe interactions can remain enabled:
+Once the main loop is alive during async work, safe interactions remain
+enabled:
 
-- command log view,
+- command log browsing,
 - command output preview,
 - scrolling history,
 - viewing active command details.
 
-General navigation should remain blocked until explicit conflict rules are designed.
+General navigation (switching views, opening files screen) should remain
+blocked until explicit conflict rules are designed.
 
 ## Acceptance Criteria
 
 - User can truly cancel a running command.
 - Cancelled, timed out, and failed outcomes are distinct everywhere.
-- Async mutation follows the same lifecycle semantics as async reads.
+- Async mutation follows the same lifecycle as async reads.
 - Partial progress and workflow outcome remain understandable.
+- Process-tree kill uses shared helper (no duplication with `Invoke-P4`).
+
+## Tests
+
+- Cancel lifecycle: `Running → Cancelling → Cancelled` transition.
+- `Stop-P4ProcessTree` kills child process tree.
+- Timeout vs cancel vs failure: distinct outcomes in state and command log.
+- Process lifecycle events: `ProcessStarted`/`ProcessFinished` update registry.
+- Race: cancel arrives after completion — completion wins, cancel is no-op.
+- Race: timeout fires after cancel — cancel outcome takes precedence.
+- Async mutation workflow: items complete/fail individually; `WorkflowEnd`
+  dispatched correctly.
 
 ---
 
@@ -787,87 +990,98 @@ General navigation should remain blocked until explicit conflict rules are desig
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Shared-reference caches hide mutable state bugs | stale or incorrect UI updates | keep async handles out of state; use accessors or sibling metadata dictionaries |
-| Completion queue is not drained while idle | async UI appears frozen | redesign main loop around an idle tick |
-| Worker scriptblocks become stateful and hard to reason about | brittle async logic | make workers return typed data, never mutated state |
-| `Stop-Job` does not kill native child process reliably | cancel appears broken | process-tree kill first, job cleanup second |
-| Command outcomes differ between modal and command log | inconsistent UX | shared command record schema and shared classification helpers |
-| Workflow implementations diverge | hard-to-test behavior | normalize workflow execution before async rollout |
-| Thread-job import overhead becomes visible | latency on short commands | accept initially; consider runspace pooling later if measured |
+| Shared-reference caches hide mutable-state bugs | stale or incorrect UI | enforce main-thread-only cache writes via completion queue (M4.4) |
+| Completion queue not drained during idle | async UI appears frozen | redesign main loop around idle tick (M4.3) |
+| Worker scriptblocks become stateful | brittle async logic | workers return typed data only, never mutated state (Rule 2) |
+| `Stop-Job` does not kill native child process | cancel appears broken | use `Stop-P4ProcessTree` (factored from existing `Invoke-P4` logic) |
+| Session-global observer clobbered by concurrent workers | lost command log data | per-invocation observer callback (M0.2, Rule 9) |
+| Command outcomes differ between modal and command log | inconsistent UX | shared command record schema (M0.3) |
+| Thread-job import overhead on short commands | perceptible latency | accept initially; consider runspace pooling later if measured |
+| `PendingRequest` clobbered by rapid user actions | lost request | explicit ActiveCommand + PendingRequest pair with conflict resolution (M4.8) |
 
 ---
 
 ## Testing Strategy
 
-## Guiding Principles
+### Guiding Principles
 
 - Run Pester in a fresh `pwsh -NoProfile` process.
 - Use DI so orchestration tests do not depend on live Perforce.
-- Test behavior and contracts rather than raw constant values.
+- Test behavior and contracts, not raw constant values.
 - Normalize 0..N results with `@(...)` at call boundaries.
+- Add explicit reducer action-contract tests for every new action type
+  (given state S and action A, assert state S').
+- Add state-copy round-trip tests for new properties.
+- Add render contract tests for new UI states.
 
-## Unit Tests
+### Unit Tests by Milestone
 
-### Milestone 0–1
+**Milestone 0–1:**
 
-- workflow execution is normalized,
-- request envelopes carry identity and scope,
-- shared command outcome classification,
-- timeout resolution by command category,
-- busy modal copy and command-history rendering,
-- command log filters support richer outcomes.
+- Workflow execution normalization (observer events for each workflow item).
+- Request envelopes carry identity and scope.
+- Shared command outcome classification.
+- Timeout resolution by command category.
+- Duration-class resolution at boundary values.
+- Command-category resolution for each p4 subcommand.
+- Busy modal copy includes command name and step progress.
+- Command log filters support richer outcomes.
+- `Copy-BrowserState` round-trip for `FileCacheStatus`.
 
-### Milestone 2
+**Milestone 2:**
 
-- file-load state transitions,
-- files first paint before enrichment,
-- enrichment idempotence,
-- pending indicator rendering,
-- reload semantics with partial data.
+- File-load status transitions (full state machine).
+- Files first paint before enrichment.
+- Enrichment idempotence (no duplicate request).
+- Pending indicator rendering (`…` glyph).
+- Reload semantics with partial data.
+- Per-enrichment-step time budget.
 
-### Milestone 3
+**Milestone 3:**
 
-- busy-state key precedence,
-- cancel request between workflow items,
-- deferred quit,
-- workflow progress footer messaging.
+- Busy-state key precedence.
+- Cancel request between workflow items.
+- Deferred quit.
+- Injected cancel callback — deterministic test sequence.
+- Workflow progress footer messaging.
 
-### Milestone 4
+**Milestone 4:**
 
-- idle loop drains completions without keypress,
-- active command lifecycle,
-- stale-result dropping via generation/scope,
-- live elapsed-time formatting,
-- command observation survives async execution.
+- Idle loop drains completions without keypress.
+- Active command lifecycle transitions.
+- Stale-result dropping via generation.
+- Request conflict resolution (same-scope cancellation).
+- Live elapsed-time formatting.
+- Command observation survives async execution.
+- All cache writes via reducer (not worker).
 
-### Milestone 5
+**Milestone 5:**
 
-- cancel lifecycle,
-- timeout vs cancel vs failure distinctions,
-- process lifecycle event handling,
-- async mutation workflow progress,
-- race: cancel vs completion,
-- race: timeout vs completion.
+- Cancel lifecycle (Running → Cancelling → Cancelled).
+- `Stop-P4ProcessTree` behavior.
+- Timeout vs cancel vs failure outcome distinctions.
+- Process lifecycle events.
+- Async mutation workflow progress.
+- Race: cancel vs completion.
+- Race: timeout vs completion.
 
-## Integration Tests
+### Integration Tests
 
-- open files screen: base load first, enrichment later,
-- pending reload while idle receives completion,
-- stale file-load completion ignored after navigation or reload,
-- deferred quit during busy operation,
-- async foreground read completes and updates UI,
-- cancellation reports the correct outcome.
+- Open files screen: base load first, enrichment later.
+- Pending reload while idle receives completion.
+- Stale file-load completion ignored after navigation or reload.
+- Deferred quit during busy operation.
+- Async foreground read completes and updates UI.
+- Cancellation reports the correct outcome.
 
-## Real Async Smoke Tests
+### Async Smoke Tests (keep few and focused)
 
-Keep these few and focused:
+- Completion arrives with no keypress.
+- Stale completion is discarded.
+- Cancel kills the active process.
+- Timeout cleanup path works.
 
-- completion arrives with no keypress,
-- stale completion is discarded,
-- cancel kills the active process,
-- timeout cleanup path works.
-
-Most other async behavior should remain covered by deterministic fake-executor tests.
+Most async behavior should be covered by deterministic fake-executor tests.
 
 ---
 
@@ -875,57 +1089,79 @@ Most other async behavior should remain covered by deterministic fake-executor t
 
 ### Release A
 
-- Milestone 0
-- Milestone 1
-- opened-files split from Milestone 2
+- Milestone 0 (foundation)
+- Milestone 1 (instrumentation)
+- Opened-files base/enrichment split from Milestone 2
 
 ### Release B
 
-- remaining Milestone 2 work
-- Milestone 3
+- Remaining Milestone 2 work (status tracking, time budget, render)
+- Milestone 3 (busy-state control)
 
 ### Release C
 
-- Milestone 4 for read-only requests
+- Milestone 4 (async read-only)
 
 ### Release D
 
-- Milestone 5
+- Milestone 5 (async mutation and cancel)
 
 ---
 
 ## Recommended First Implementation Slice
 
-If implementation starts immediately, the best first slice is:
+If implementation starts immediately:
 
-1. normalize workflow execution,
-2. introduce shared timeout and threshold policy,
-3. improve static busy modal text,
-4. create shared command outcome classification,
-5. split opened-files load into base load + enrichment,
-6. add explicit file-load status without forcing a broad `FileCache` shape change.
+1. Normalize `MoveMarkedFiles` per-item execution (M0.1).
+2. Wrap startup `Get-P4Info` in `Invoke-BrowserSideEffect` (M0.1).
+3. Add per-invocation observer parameter to `Invoke-P4` (M0.2).
+4. Introduce `FileCacheStatus` sibling dictionary (M0.4).
+5. Add command-category resolver and duration-class helpers (M1.1).
+6. Improve static busy modal text (M1.2).
+7. Split opened-files load into base + enrichment (M2.1).
 
-That slice produces user-visible value quickly and also reduces later architectural risk.
+This slice produces user-visible value quickly and reduces later architectural
+risk.
 
 ---
 
 ## Future Extensions
 
-Once the core plan is stable, the following are good next steps:
+Once the core plan is stable:
 
-- progressive enrichment for pending changelists,
-- low-priority background enrichment lane,
-- speculative read-only prefetch,
-- runspace pooling to amortize module-import cost,
-- adaptive timeout policy based on measured command durations,
-- an internal debug surface for active requests, generations, and dropped stale results.
+- **Progressive changelist enrichment:** Load base CLs + opened counts first,
+  enrich shelved and unresolved counts progressively. Same base/enrichment
+  pattern as files.
+- **Speculative describe prefetch:** When user focuses a changelist,
+  speculatively fetch `p4 describe` in a low-priority lane. Generation
+  mechanism handles stale prefetches.
+- **Background re-enrichment on focus:** When returning to the files screen,
+  silently re-verify content-modified status to catch external changes.
+- **Command output streaming:** For very long `p4 fstat` results, show a live
+  record count in the busy modal (e.g., "Loaded 1,234 files…") via a shared
+  counter.
+- **Low-priority background enrichment lane:** A second async lane for
+  non-urgent enrichment that runs behind the foreground request.
+- **Runspace pooling:** Pre-import modules into a runspace pool to reduce
+  per-job overhead for frequent short commands.
+- **Adaptive timeout policy:** Track observed durations per command category
+  and adjust timeouts to 3× the p95 rather than fixed values.
+- **Debug surface:** Internal diagnostics view showing active requests,
+  generations, and dropped stale results.
 
 ---
 
 ## Final Guidance
 
-The most important refinement in this revised plan is simple:
+> Build a small architectural foundation first, then add async read-only
+> execution, and only then extend to true cancel and async mutation.
 
-> Build a small architectural foundation first, then add async read-only execution, and only then extend to true cancel and async mutation.
+The most critical safety rule is **main-thread-only cache writes** (M4.4).
+Honoring this single constraint prevents the entire class of shared-state
+concurrency bugs that would otherwise make the async model fragile.
 
-That ordering fits the current codebase, preserves the reducer contract, and gives the project the best chance of ending up with a solution that is elegant, robust, and flexible.
+The second most important preparation is **per-invocation observer support**
+(M0.2). Without it, async workers cannot safely log commands, and the
+command-log surface breaks under any concurrent execution.
+
+Everything else follows incrementally from these two foundations.

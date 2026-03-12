@@ -15,6 +15,65 @@ $script:BrowserGlobalActionTypes = @(
     'LogCommandExecution'
 )
 
+# ── Request identity (M0.6) ───────────────────────────────────────────────────
+# Monotonically increasing counter for PendingRequest identity.
+$script:NextPendingRequestId = 1
+
+# Scope assigned to each PendingRequest Kind.  Used by New-PendingRequest to
+# derive Scope automatically so callsites don't hard-code a string.
+$script:PendingRequestScopeByKind = @{
+    'LoadFiles'           = 'Files'
+    'LoadFilesEnrichment' = 'Files'
+    'ReloadPending'       = 'Pending'
+    'ReloadSubmitted'     = 'Submitted'
+    'LoadMore'            = 'Submitted'
+    'FetchDescribe'       = 'Describe'
+    'DeleteChange'        = 'Mutation'
+    'DeleteShelvedFiles'  = 'Mutation'
+    'ExecuteWorkflow'     = 'Workflow'
+}
+
+function New-PendingRequest {
+    <#
+    .SYNOPSIS
+        Creates a PendingRequest envelope with stable identity and scope (M0.6).
+    .DESCRIPTION
+        Adds RequestId (monotonically increasing 'req-N'), Scope (derived from Kind via
+        $script:PendingRequestScopeByKind), and Generation to any request properties
+        hashtable.  Call sites pass a plain hashtable; this function returns the enriched
+        [pscustomobject] ready for $State.Runtime.PendingRequest.
+    .PARAMETER Properties
+        Flat hashtable of request fields.  Must include 'Kind'.  Additional fields
+        (e.g. ChangeId, CacheKey, WorkflowKind, ChangeIds) are passed through unchanged.
+    .PARAMETER Generation
+        Generation counter at the time of issue.  Callers read the appropriate
+        State.Data.*Generation field and pass it here so completions can detect stale results.
+    #>
+    param(
+        [Parameter(Mandatory)][hashtable]$Properties,
+        [int]$Generation = 0
+    )
+    $kind  = [string]$Properties['Kind']
+    $scope = if ($script:PendingRequestScopeByKind.ContainsKey($kind)) {
+        $script:PendingRequestScopeByKind[$kind]
+    } else {
+        'Unknown'
+    }
+
+    $reqId = 'req-' + [string]$script:NextPendingRequestId
+    $script:NextPendingRequestId++
+
+    # Merge request-identity fields on top of any caller-supplied properties.
+    # Caller-supplied Kind, Scope, Generation are overridden by the authoritative values.
+    $enriched = $Properties + @{
+        RequestId  = $reqId
+        Scope      = $scope
+        Generation = $Generation
+    }
+
+    return [pscustomobject]$enriched
+}
+
 # ── Menu definitions ─────────────────────────────────────────────────────────
 # Each item: Id, Label, Accelerator, IsSeparator, IsEnabled (scriptblock: param($s))
 # Separators have IsSeparator=$true and are skipped during navigation.
@@ -468,6 +527,13 @@ function New-BrowserState {
             SubmittedOldestId = $null
             # CommandOutputCache: keyed by CommandId (string); append-only, shared across copies.
             CommandOutputCache = @{}
+            # FileCacheStatus: keyed by CacheKey; values are 'Loading' | 'Ready' | 'Error' (M0.4).
+            FileCacheStatus    = @{}
+            # Generation counters incremented whenever the corresponding collection is invalidated.
+            # Main-loop completions read these to detect stale results (M0.6).
+            FilesGeneration     = 0
+            PendingGeneration   = 0
+            SubmittedGeneration = 0
         }
         Ui = [pscustomobject]@{
             ActivePane             = 'Filters'
@@ -1076,7 +1142,11 @@ function Invoke-ChangelistReducer {
             if ($null -ne $acceptPayload) {
                 $onAcceptProp = $acceptPayload.PSObject.Properties['OnAccept']
                 if ($null -ne $onAcceptProp -and $null -ne $onAcceptProp.Value) {
-                    $next.Runtime.PendingRequest = $onAcceptProp.Value
+                    # Convert the pscustomobject OnAccept payload into a hashtable so
+                    # New-PendingRequest can merge identity fields cleanly (M0.6).
+                    $props = @{}
+                    foreach ($p in $onAcceptProp.Value.PSObject.Properties) { $props[$p.Name] = $p.Value }
+                    $next.Runtime.PendingRequest = New-PendingRequest -Properties $props
                 }
             }
             return $next
@@ -1504,7 +1574,7 @@ function Invoke-ChangelistReducer {
             $idx = [Math]::Max(0, [Math]::Min($next.Cursor.ChangeIndex,
                                                $next.Derived.VisibleChangeIds.Count - 1))
             $changeId = $next.Derived.VisibleChangeIds[$idx]
-            $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'FetchDescribe'; ChangeId = $changeId }
+            $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'FetchDescribe'; ChangeId = $changeId }
             $next.Runtime.DetailChangeId = $changeId  # persists for rendering
             return Update-BrowserDerivedState -State $next
         }
@@ -1521,7 +1591,7 @@ function Invoke-ChangelistReducer {
                 return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenConfirmDialog'; Payload = $payload })
             }
 
-            $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'DeleteChange'; ChangeId = $changeIds[0] }
+            $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'DeleteChange'; ChangeId = $changeIds[0] }
             return Update-BrowserDerivedState -State $next
         }
         'DeleteShelvedFiles' {
@@ -1539,7 +1609,7 @@ function Invoke-ChangelistReducer {
                 return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenConfirmDialog'; Payload = $payload })
             }
 
-            $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'DeleteShelvedFiles'; ChangeId = $changeIds[0] }
+            $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'DeleteShelvedFiles'; ChangeId = $changeIds[0] }
             return Update-BrowserDerivedState -State $next
         }
         'ToggleMarkCurrent' {
@@ -1579,9 +1649,9 @@ function Invoke-ChangelistReducer {
             $next.Data.DescribeCache = @{}
             $next.Runtime.DetailChangeId = $null
             if ($currentViewMode -eq 'Submitted') {
-                $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'ReloadSubmitted' }
+                $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'ReloadSubmitted' } -Generation $next.Data.SubmittedGeneration
             } else {
-                $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'ReloadPending' }
+                $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'ReloadPending' } -Generation $next.Data.PendingGeneration
             }
             return Update-BrowserDerivedState -State $next
         }
@@ -1663,7 +1733,7 @@ function Invoke-ChangelistReducer {
                 }
                 $submittedHasMore = if (($next.Data.PSObject.Properties.Match('SubmittedHasMore')).Count -gt 0) { [bool]$next.Data.SubmittedHasMore } else { $true }
                 if ($submittedChanges.Count -eq 0 -and $submittedHasMore) {
-                    $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'LoadMore' }
+                    $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'LoadMore' } -Generation $next.Data.SubmittedGeneration
                 }
             }
 
@@ -1673,7 +1743,7 @@ function Invoke-ChangelistReducer {
             $currentViewMode  = if (($next.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$next.Ui.ViewMode } else { 'Pending' }
             $submittedHasMore = if (($next.Data.PSObject.Properties.Match('SubmittedHasMore')).Count -gt 0) { [bool]$next.Data.SubmittedHasMore } else { $false }
             if ($currentViewMode -eq 'Submitted' -and $submittedHasMore) {
-                $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'LoadMore' }
+                $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'LoadMore' } -Generation $next.Data.SubmittedGeneration
             }
             return $next
         }
@@ -1761,7 +1831,8 @@ function Invoke-ChangelistReducer {
             $next.Cursor.FileScrollTop   = 0
 
             # Signal main loop to trigger the I/O side effect (implemented in Step 2).
-            $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'LoadFiles' }
+            $cacheKey = "${change}:${sourceKind}"
+            $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'LoadFiles'; CacheKey = $cacheKey } -Generation $next.Data.FilesGeneration
 
             return Update-BrowserDerivedState -State $next
         }
@@ -1883,7 +1954,8 @@ function Invoke-FilesReducer {
             if ($null -ne $fileCache -and $fileCache.ContainsKey($cacheKey)) {
                 $fileCache.Remove($cacheKey) | Out-Null
             }
-            $next.Runtime.PendingRequest = [pscustomobject]@{ Kind = 'LoadFiles' }
+            $reloadCacheKey = "$($next.Data.FilesSourceChange)`:$($next.Data.FilesSourceKind)"
+            $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'LoadFiles'; CacheKey = $reloadCacheKey } -Generation $next.Data.FilesGeneration
             return Update-BrowserDerivedState -State $next
         }
         'OpenFilesScreen' {
@@ -2034,6 +2106,7 @@ Export-ModuleMember -Function New-BrowserState, Copy-BrowserState, Copy-StateObj
     Invoke-BrowserReducer, Invoke-ChangelistReducer, Invoke-FilesReducer, Invoke-CommandOutputReducer, `
     Update-BrowserDerivedState, Update-CommandLogDerivedState, Update-OutputDerivedState, `
     Test-IsBrowserGlobalAction, `
+    New-PendingRequest, `
     ConvertTo-ChangeNumberFromId, `
     Get-ChangeInnerViewRows, Get-ChangeRowsPerItem, Get-ChangeViewCapacity, `
     Get-CommandOutputCount, Get-OutputViewportSize, `

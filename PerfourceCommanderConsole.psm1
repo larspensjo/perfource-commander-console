@@ -104,6 +104,7 @@ Register-WorkflowKind -Kind 'MoveMarkedFiles' -Execute {
     })
 
     $successIds = [System.Collections.Generic.List[string]]::new()
+    $lastFailureError = ''
 
     foreach ($changeId in $changeIds) {
         # Skip source == target to avoid a no-op p4 reopen call
@@ -113,12 +114,22 @@ Register-WorkflowKind -Kind 'MoveMarkedFiles' -Execute {
             continue
         }
 
-        $sourceChange = [string]$changeId
-        try {
+        $sourceChange  = [string]$changeId
+        $reopenCmdLine = Format-P4CommandLine -P4Args @('reopen', '-c', $targetChange, '//...')
+        $result = Invoke-BrowserWorkflowCommand -State $state -CommandLine $reopenCmdLine -WorkItem {
+            param($s)
             Invoke-P4ReopenFiles -SourceChange $sourceChange -TargetChange $targetChange | Out-Null
+            return $s
+        }
+        $state = $result.State
+
+        if ($result.Succeeded) {
             $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowItemComplete' })
             [void]$successIds.Add($changeId)
-        } catch {
+        } else {
+            if (-not [string]::IsNullOrWhiteSpace([string]$result.ErrorText)) {
+                $lastFailureError = [string]$result.ErrorText
+            }
             $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
                 Type = 'WorkflowItemFailed'; ChangeId = $changeId
             })
@@ -134,6 +145,10 @@ Register-WorkflowKind -Kind 'MoveMarkedFiles' -Execute {
 
     # Trigger reload so HasOpenedFiles and counts are re-fetched
     $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Reload' })
+
+    if (-not [string]::IsNullOrWhiteSpace($lastFailureError)) {
+        $state.Runtime.LastError = $lastFailureError
+    }
 
     return $state
 }
@@ -263,6 +278,70 @@ function Restore-BrowserConsole {
     [Console]::CursorVisible = [bool]$ConsoleState.CursorVisible
     [Console]::OutputEncoding = $ConsoleState.OutputEncoding
     Clear-Host
+}
+
+# ── Shared command-result helpers (M0.3, M0.5) ───────────────────────────────
+
+function New-BrowserCommandRecord {
+    <#
+    .SYNOPSIS
+        Creates a standardized command-result record (M0.3).
+    .DESCRIPTION
+        Returns a [pscustomobject] with a consistent set of fields representing one
+        completed p4 command execution.  All callers that produce a command result
+        use this factory so the shape is defined in exactly one place.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$CommandLine,
+        [Parameter(Mandatory)][bool]$Succeeded,
+        [int]$ExitCode        = 0,
+        [string]$ErrorText    = '',
+        [object[]]$Output     = @(),
+        [datetime]$StartedAt  = [datetime]::MinValue,
+        [datetime]$EndedAt    = [datetime]::MinValue
+    )
+    $durationMs = if ($StartedAt -ne [datetime]::MinValue -and $EndedAt -ne [datetime]::MinValue) {
+        [int](($EndedAt - $StartedAt).TotalMilliseconds)
+    } else { 0 }
+
+    return [pscustomobject]@{
+        CommandLine = $CommandLine
+        Succeeded   = $Succeeded
+        ExitCode    = if ($Succeeded -and $ExitCode -eq 0) { 0 } else { $ExitCode }
+        ErrorText   = $ErrorText
+        Output      = @($Output)
+        StartedAt   = $StartedAt
+        EndedAt     = $EndedAt
+        DurationMs  = $durationMs
+    }
+}
+
+function New-BrowserSyncExecutor {
+    <#
+    .SYNOPSIS
+        Returns the sync-executor scriptblock used by workflow steps (M0.5).
+    .DESCRIPTION
+        This is a DI seam: callers pass an optional -Override scriptblock; when
+        null, the production executor (Invoke-BrowserSideEffect) is returned.
+        Tests inject a lightweight stub here so workflow logic can be validated
+        without real I/O.
+
+        The returned scriptblock has the signature:
+            param([pscustomobject]$State, [string]$CommandLine, [scriptblock]$WorkItem)
+        and must return an updated state object.
+    .PARAMETER Override
+        Optional replacement executor.  Must accept ($State, $CommandLine, $WorkItem)
+        and return an updated [pscustomobject] state.  Pass $null to get the
+        production executor.
+    #>
+    param([scriptblock]$Override = $null)
+
+    if ($null -ne $Override) { return $Override }
+
+    return {
+        param($State, $CommandLine, $WorkItem)
+        return Invoke-BrowserSideEffect -State $State -CommandLine $CommandLine -WorkItem $WorkItem
+    }
 }
 
 function Invoke-BrowserSideEffect {
@@ -512,13 +591,12 @@ function Start-P4Browser {
     try {
         # Populate session info from p4 info so submitted queries can be scoped
         # to the current workspace mapping from the start of the session.
-        try {
+        $state = Invoke-BrowserSideEffect -State $state -CommandLine 'p4 info' -WorkItem {
+            param($s)
             $p4Info = Get-P4Info
-            $state.Data.CurrentUser = $p4Info.User
-            $state.Data.CurrentClient = $p4Info.Client
-        } catch {
-            $state.Data.CurrentUser = ''
-            $state.Data.CurrentClient = ''
+            $s.Data.CurrentUser   = $p4Info.User
+            $s.Data.CurrentClient = $p4Info.Client
+            return $s
         }
 
         # Initial load

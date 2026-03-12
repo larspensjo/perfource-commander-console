@@ -1,5 +1,38 @@
 # PerFourceCommanderConsole — File Browser + Filtering Plan
 
+> Status: largely implemented.
+>
+> This plan has been updated to reflect the current codebase. Completed phases are
+> summarized and marked [COMPLETE]. Remaining work focuses on the unfinished file
+> filtering MVP and on aligning file loading with the responsive-command strategy
+> described in [Plan.ResponsiveCommandExecution.md](Plan.ResponsiveCommandExecution.md).
+
+## Current Status Summary
+
+### [COMPLETE] Implemented foundation
+
+- Generic state deep-copy exists via `Copy-StateObject` / `Copy-BrowserState`.
+- `Ui.ScreenStack`, file cache, file cursor state, and file filter state exist.
+- Reducer routing is split across changelists, files, and command output screens.
+- `Runtime.ModalPrompt` replaced the older command-only modal shape.
+- `Format-TruncatedDepotPath` exists with dedicated tests.
+
+### [COMPLETE] Implemented file-browser shell
+
+- `RightArrow` / `O` opens the Files screen from the selected changelist.
+- Both pending and submitted changelists load into a shared Files screen.
+- Files render in a virtualized list with a detail inspector.
+- Back navigation from Files to Changelists works.
+- Reload evicts the current file cache entry and re-fetches file data.
+
+### Remaining MVP gaps
+
+- File filter prompt and token parsing are not finished.
+- `SetFileFilter` / `OpenFilterPrompt` remain stubs.
+- `VisibleFileIndices` still defaults to all loaded files.
+- Files status bar is useful but does not yet show the planned visible/total filtered counters.
+- Opened-file loading still performs eager content-modified enrichment; this should now be aligned with the responsive-command plan by deferring or lazily computing expensive enrichment.
+
 ## Goals
 
 1. Browse **very large file lists** (up to ~100k entries) for:
@@ -43,17 +76,17 @@
 
 ### MVP features
 
-1. **File list screen** with:
+1. **File list screen** with: [COMPLETE]
    - Virtualized list rendering (render only visible window)
    - Smooth scrolling: Up/Down, PageUp/PageDown, Home/End
    - Scroll thumb indicator (e.g. `▐` or `█`)
-2. **Load full file list** into memory for the selected changelist.
-3. **Basic filtering**
+2. **Load full file list** into memory for the selected changelist. [COMPLETE]
+3. **Basic filtering** [REMAINING]
    - Substring filter (case-insensitive) across path and filename
    - Optional keyword `action:<value>` (exact match) if action data exists
-4. Status bar counters:
+4. Status bar counters: [PARTIAL]
    - `📁 Files: <visible>/<total>  🔍 Filtered: <filteredCount>`
-5. Minimal file inspector:
+5. Minimal file inspector: [COMPLETE]
    - Full depot path
    - Action (if available)
    - Type (optional)
@@ -65,6 +98,12 @@
 - Complex query parsing (AND/OR groups, parentheses)
 - Background loading / streaming results
 - Preview/diff/history operations
+
+Note:
+- The original MVP treated background loading as out of scope.
+- That remains true for the file-browser MVP itself, but any new enrichment work
+  should now be designed to fit the staged responsive-command plan rather than
+  deepening synchronous blocking behavior.
 
 ---
 
@@ -130,14 +169,25 @@ Design notes:
 ---
 ## Perforce data acquisition
 
+### [COMPLETE] Current implementation note
+
+The implemented pending-file path uses `p4 fstat -Ro` rather than `p4 opened`.
+This has been a good practical choice because it provides the opened-file data and
+unresolved state needed by the current UI in a single stable query.
+
+For submitted changelists, the implementation uses `p4 describe -s` and converts
+the parsed files into shared `FileEntry` objects.
+
 ### MVP commands
 
 1. **Opened files in a pending changelist**
-   - `p4 opened -c <cl> -ztag` (preferred for stable parsing)
-   - Parse `... depotFile`, `... action`, optional `... type`
+  - Original plan: `p4 opened -c <cl> -ztag`
+  - Current implementation: `p4 fstat -Ro -e <cl> -T change,depotFile,action,type,unresolved //...`
+  - Result: implemented and working
 2. **Submitted changelist files**
    - `p4 describe -s -ztag <cl>`
-   - Parse files from `depotFileN`, `actionN`, `typeN` (if available)
+  - Parse files from `depotFileN`, `actionN`, `typeN` (if available)
+  - Result: implemented and working
 
 ### Parsing approach
 
@@ -146,6 +196,26 @@ Design notes:
 - Create `FileEntry` list, compute `FileName`, `SearchKey`.
 
 ### Error handling
+
+### [COMPLETE] Current implementation summary
+
+- Empty pending changelists return an empty file list instead of hard-failing.
+- Submitted describe parsing gracefully handles missing indexed fields.
+- File lists are cached by `<Change>:<SourceKind>`.
+- Reload evicts the active cache entry and forces a fresh fetch.
+
+### Alignment with responsive-command plan
+
+The old plan assumed synchronous side effects and noted that a late `Esc` should
+cache-but-not-render the result. The newer responsive-command plan supersedes that
+assumption.
+
+Going forward:
+
+- avoid adding new synchronous multi-step work inside the initial Files load
+- prefer a fast first paint of the file list
+- treat expensive enrichment as deferred or lazy work
+- design any future background fetches so stale results can be ignored safely
 
 - Empty changelist (no opened files): `p4 opened -c <cl>` returns non-zero with "file(s) not opened" when the changelist has no opened files. Use the existing `Test-IsP4NoOpenedFilesError` helper (already in `P4Cli.psm1`) — return an empty list, not an error.
 - Describe parse failures: Gracefully handle missing `depotFileN` keys (already handled by the `Get-P4Describe` indexed loop).
@@ -162,6 +232,18 @@ Design notes:
 
 ## UI Layout for Files Screen
 
+### [COMPLETE] Current implementation summary
+
+- Left pane shows the active filter text and file-filter hints.
+- Right pane renders the file list plus badges for unresolved / modified state.
+- Bottom-right inspector shows file metadata, resolve state, and content-modified state.
+
+### Remaining polish
+
+- wire the actual filter prompt into the existing left-pane hints
+- update the status bar to show visible/total counters more explicitly
+- if file counts become large, consider using `Format-TruncatedDepotPath` more broadly in the list and inspector for consistently stable tail-focused rendering
+
 ### Left pane: Filters
 
 MVP filter UI should be simple and low risk:
@@ -177,6 +259,10 @@ Input method (MVP):
   - Press `/` → open modal with `Purpose = 'FileFilter'`
   - User types query, Enter applies, Esc cancels
   - Alternatively, `Spacebar` on a left-pane filter item toggles an action facet (consistent with the changelists screen UX).
+
+Status:
+- `ModalPrompt` generalization is complete.
+- The `FileFilter` prompt flow is not yet wired up.
 
 ### Top-right: File list
 
@@ -208,6 +294,15 @@ Show:
 ---
 
 ## Filtering Semantics
+
+### Status
+
+This entire section is still the primary unfinished MVP area.
+
+- `FileFilterTokens` exists in state.
+- `SetFileFilter` currently stores raw text but does not parse or apply tokens.
+- `OpenFilterPrompt` exists as an action but is still a stub.
+- `VisibleFileIndices` still defaults to the full loaded file list.
 
 ### Query grammar (MVP)
 
@@ -257,6 +352,17 @@ $script:FileFilterPredicates = [ordered]@{
 
 ## Input & Keybindings (MVP)
 
+### [COMPLETE] Current implementation summary
+
+- Navigation actions are reused on the Files screen.
+- `RightArrow` / `O` opens Files.
+- `LeftArrow` / `Esc` closes Files.
+- `F1` help and `F5` reload are already integrated.
+
+### Remaining work
+
+- `/` already maps to `OpenFilterPrompt`, but the prompt flow still needs to be implemented.
+
 ### Reuse existing action types
 
 `ConvertFrom-KeyInfoToAction` already emits generic actions (`MoveUp`, `MoveDown`, `PageUp`, `PageDown`, `MoveHome`, `MoveEnd`, `SwitchPane`, `ToggleHelpOverlay`, etc.). The files screen should **reuse these same action types** — no new navigation actions are needed. The reducer discriminates by `$State.Ui.ScreenStack[-1]` to decide which cursor to move, just as it currently discriminates by `$State.Ui.ActivePane`.
@@ -282,6 +388,23 @@ $script:FileFilterPredicates = [ordered]@{
 
 ## Rendering & Performance Notes
 
+### Updated guidance
+
+The original guidance around full-load plus virtual rendering is still sound for the
+base file list.
+
+However, the newer responsive-command plan changes one important recommendation:
+
+- keep the initial file-list load fast
+- defer expensive enrichment, especially content-modified detection
+- avoid expanding synchronous first-load work just because the list itself renders efficiently
+
+So the preferred model is now:
+
+1. load the base file list
+2. render it immediately
+3. enrich lazily or in a later phase when needed
+
 ### Why full-load + virtual rendering is enough
 
 - 100k entries in memory is fine.
@@ -301,83 +424,121 @@ $script:FileFilterPredicates = [ordered]@{
 
 ## Implementation Plan (Step-by-step)
 
-### Step 0 — Preparatory refactors
+### Step 0 — Preparatory refactors [COMPLETE]
 
-1. **Implement Generic Generic Deep-Copy for State.** Replace the boilerplate heavy `Copy-BrowserState` function with a generic implementation that deep copies generic `PSObject.Properties`, correctly handling types such as `HashSet` and `Dictionary`. This satisfies DRY and prevents missing-field class of state bugs.
-2. **Split the reducer.** Extract a thin `Invoke-BrowserReducer` router that dispatches to `Invoke-ChangelistReducer` (existing logic) or `Invoke-FilesReducer` (new) based on `$State.Ui.ScreenStack[-1]`. This prevents the switch block from doubling in size.
-3. **Generalize `Runtime.CommandModal` → `Runtime.ModalPrompt`.** Add a `Purpose` field (`'Command'` | `'FileFilter'`). Rename throughout. The filter modal reuses this mechanism.
-4. **Add `Format-TruncatedDepotPath` utility** in a shared helpers module.
+Completed summary:
 
-Deliverable:
-- No user-visible change; cleaner internal structure ready for file browser.
+- Generic state deep-copy replaced the older boilerplate-heavy copying.
+- Reducer routing is split by active screen.
+- `Runtime.ModalPrompt` generalized the older command modal state.
+- `Format-TruncatedDepotPath` was added in the shared helpers module.
 
-### Step 1 — Add "Files screen" skeleton
+Deliverable achieved:
+- cleaner internal structure ready for the file browser
 
-1. Add `Ui.ScreenStack = @('Changelists')` default to `New-BrowserState`.
-2. Add file-related defaults to state: `Data.FileCache = @{}`, `Query.FileFilterTokens = @()`, `Query.FileFilterText = ''`, `Derived.VisibleFileIndices = @()`, `Cursor.FileIndex = 0`, `Cursor.FileScrollTop = 0`.
-3. Add reducer actions in `Invoke-FilesReducer`:
-   - `OpenFilesScreen` — pushes `'Files'` onto `Ui.ScreenStack`, triggers load side-effect flag, and optionally clears previous file filter text.
-   - `CloseFilesScreen` — pops `'Files'` from `Ui.ScreenStack`, preserves `DetailChangeId`
-   - `SetFileFilter` — parses text into token list, recomputes `VisibleFileIndices`
-4. Extend `Update-BrowserDerivedState` to compute `VisibleFileIndices` when on files screen. **Remember the array-as-value rule using `-NoEnumerate`!**
-5. Route navigation actions (`MoveUp`/`MoveDown`/etc.) to file cursor when active screen is `'Files'`.
-6. Update the main loop to route render function based on `Ui.ScreenStack[-1]`.
+### Step 1 — Files screen skeleton [COMPLETE]
 
-Deliverable:
-- You can switch to the Files screen and back, with placeholder content.
+Completed summary:
 
-### Step 2 — Load file list for pending changelist (Opened)
+- `Ui.ScreenStack` defaults to `@('Changelists')`.
+- file-specific state fields were added to `Data`, `Query`, `Derived`, and `Cursor`.
+- Files screen open/close navigation exists.
+- the render path routes by active screen.
+- Files screen navigation and back-stack behavior are covered by tests.
 
-1. Implement side effect for `OpenFilesScreen` (Opened):
-   - Call `p4 opened -c <cl> -ztag`
-   - Use `Test-IsP4NoOpenedFilesError` for empty CLs
-   - Parse into `FileEntry[]`
-2. Precompute `SearchKey`, `FileName`, `DisplayPath`, `DisplayAction`.
-3. Store in `Data.FileCache['<change>:Opened']`.
-4. Initialize `VisibleFileIndices = all`, default cursor/scroll.
+Deliverable achieved:
+- the user can switch to the Files screen and back
 
-Deliverable:
-- File list appears for pending CLs and can scroll.
+### Step 2 — Pending changelist file loading [COMPLETE]
 
-### Step 3 — Add `describe`-based file list for submitted changelist
+Completed summary:
 
-1. Implement side effect for `OpenFilesScreen` (Submitted):
-   - Call `p4 describe -s -ztag <cl>`
-   - Parse file entries (reuse existing `Get-P4Describe` files extraction)
-2. Store in `Data.FileCache['<change>:Submitted']`.
-3. Reuse the same Files screen and filtering logic.
+- Pending changelists load opened files into `Data.FileCache['<change>:Opened']`.
+- `FileEntry` objects precompute `FileName` and `SearchKey`.
+- unresolved state is captured as part of the base data load.
+- current implementation also enriches content-modified state eagerly.
 
-Deliverable:
-- Submitted CLs open the same Files screen with file list.
+Implementation note:
+- The code uses `p4 fstat -Ro` instead of `p4 opened`, which is acceptable and currently working well.
 
-### Step 4 — Add filter prompt and filtering (substring + action)
+Deliverable achieved:
+- pending changelists open into a working, scrollable Files screen
 
-1. Add `/` key → `OpenFilterPrompt` action → opens modal with `Purpose = 'FileFilter'`.
-2. On Enter:
-   - Parse query into `FileFilterTokens` (token list with `Substring` and `Action` kinds)
-   - Recompute `VisibleFileIndices`
-   - Preserve selection if item still visible; else clamp
-3. `Esc` in modal cancels; `Esc` outside modal clears filter.
-4. Show active filter summary in left pane and status bar.
+### Step 3 — Submitted changelist file loading [COMPLETE]
 
-Deliverable:
-- Users can filter by substring and/or `action:value`, and clear filters.
+Completed summary:
 
-### Step 5 — Polish: status counts + stable selection + rendering
+- Submitted changelists load via `p4 describe -s`.
+- parsed files are converted into shared `FileEntry` objects.
+- the same Files screen renders both opened and submitted file sources.
 
-1. Status bar:
-   - total count, filtered count, selected index / percent
-2. Selection retention:
-   - preserve selection item if still present after filtering
-3. Verify `Sort-Object -Stable` preserves original depot-path order.
-4. Test back-navigation restores changelist cursor and detail pane.
+Deliverable achieved:
+- submitted changelists open in the same Files screen
 
-Deliverable:
-- The UI feels predictable under filtering, scrolling, and screen switching.
+### Step 4 — Filter prompt and filtering (substring + action) [REMAINING]
+
+This is the main unfinished MVP step.
+
+Required work:
+
+1. implement `/` → `OpenFilterPrompt` → modal with `Purpose = 'FileFilter'`
+2. on Enter:
+  - parse query into `FileFilterTokens`
+  - support `Substring` and `Action` token kinds
+  - recompute `VisibleFileIndices`
+  - preserve selection if possible
+3. make `Esc` inside the filter prompt cancel editing
+4. support `Esc` outside the prompt to clear the active file filter
+5. show the active filter summary consistently in the left pane and status bar
+
+Alignment with responsive-command plan:
+
+- filtering should remain fully in-memory once files are loaded
+- do not add new synchronous `p4` calls as part of filter application
+
+Deliverable target:
+- users can filter by substring and/or `action:value`, and clear filters predictably
+
+### Step 5 — Polish and responsive alignment [PARTIAL]
+
+Already done:
+
+- Files screen rendering is stable
+- inspector details exist
+- navigation and back-navigation behavior are tested
+
+Remaining work:
+
+1. update the status bar to show explicit visible/total filtered counters
+2. verify and test selection retention after filtering
+3. verify stable result ordering after filtering
+4. align expensive enrichment with the responsive-command plan:
+  - prefer fast first paint of the file list
+  - defer or lazily compute `IsContentModified`
+  - avoid growing synchronous blocking work during `LoadFiles`
+
+Deliverable target:
+- the UI feels predictable under filtering, scrolling, and screen switching
+- initial file-list load remains as fast as possible
 
 ---
 
 ## Testing Plan
+
+### [COMPLETE] Current coverage summary
+
+- The existing codebase already has strong coverage for:
+  - file-browser state shape
+  - Files screen reducer behavior
+  - opened and submitted file loading paths
+  - file rendering and inspector rows
+  - helper behavior such as depot-path truncation
+
+### Remaining test work
+
+- add focused tests for token parsing and in-memory file filtering
+- add selection-retention tests after filter changes
+- once expensive enrichment is deferred, add tests that distinguish base file loading from later enrichment
 
 ### Unit tests (Pester)
 
@@ -433,9 +594,17 @@ Deliverable:
 
 ## Future Ideas (Post-MVP)
 
+### Alignment with responsive-command plan
+
+The newer responsive-command plan changes the priority of some future ideas:
+
+- lazy enrichment is now preferred over eager enrichment
+- background or staged enrichment is a better fit than adding more blocking work to initial file loads
+- future preview / diff / history viewers should be designed to plug into the same responsive command orchestration rather than directly extending synchronous side effects
+
 ### 1) Screen stack for deep navigation
 
-(Moved to MVP phase to prevent future rewrite overhead).
+[COMPLETE] Moved into MVP and implemented via `Ui.ScreenStack`.
 
 ### 2) Autocomplete for filter tokens
 
@@ -494,7 +663,7 @@ Each opens a scrollable full-screen viewer overlay (screen stack makes this natu
 
 ### 9) Generic deep-copy for state
 
-(Moved to MVP Pre-Refactor phase to ensure reliable state copying and satisfy UDF principles).
+[COMPLETE] Implemented as part of the MVP preparatory refactor phase.
 
 ---
 
@@ -502,12 +671,26 @@ Each opens a scrollable full-screen viewer overlay (screen stack makes this natu
 
 MVP complete when:
 
-- [ ] Preparatory refactors done (reducer split, modal generalization, round-trip test)
-- [ ] Files screen opens from changelist selection (RightArrow / O)
-- [ ] Full file list loads (opened + submitted) with error handling
-- [ ] Virtual scrolling works smoothly with precomputed display fields
+- [x] Preparatory refactors done (reducer split, modal generalization, round-trip test)
+- [x] Files screen opens from changelist selection (RightArrow / O)
+- [x] Full file list loads (opened + submitted) with error handling
+- [x] Virtual scrolling works smoothly with precomputed display fields
 - [ ] `/` filter prompt applies substring + `action:` filters (token-list parsing)
 - [ ] Counts shown in status bar
-- [ ] Back navigation restores changelist screen (cursor, detail pane preserved)
-- [ ] All new Pester tests pass
-- [ ] PSScriptAnalyzer clean
+- [x] Back navigation restores changelist screen (cursor, detail pane preserved)
+- [ ] All new Pester tests pass for the remaining filtering work
+- [ ] PSScriptAnalyzer clean after the remaining filtering work
+
+## Recommended Close-Out Plan
+
+This plan should remain open until the remaining filtering MVP is finished.
+
+Recommended final sequence:
+
+1. implement file-filter prompt and token parsing
+2. compute filtered `VisibleFileIndices` in-memory
+3. update Files status bar counters
+4. defer or lazily compute expensive modified-content enrichment to align with [Plan.ResponsiveCommandExecution.md](Plan.ResponsiveCommandExecution.md)
+5. add focused Pester coverage for filtering and selection retention
+
+Once those items are complete, this plan can be closed and treated as fully superseded by the responsive-command follow-up plan for future file-browser evolution.

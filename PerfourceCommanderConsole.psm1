@@ -111,6 +111,7 @@ $script:AsyncWorkers = @{
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         Register-P4Observer {
             param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs)
+            $null = $RawLines  # positional param required by Invoke-P4; not used here
             $observed.Add([pscustomobject]@{ CommandLine=$CommandLine;ExitCode=$ExitCode;Succeeded=($ExitCode -eq 0)
                 ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
         }
@@ -135,6 +136,7 @@ $script:AsyncWorkers = @{
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         Register-P4Observer {
             param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs)
+            $null = $RawLines
             $observed.Add([pscustomobject]@{ CommandLine=$CommandLine;ExitCode=$ExitCode;Succeeded=($ExitCode -eq 0)
                 ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
         }
@@ -168,6 +170,7 @@ $script:AsyncWorkers = @{
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         Register-P4Observer {
             param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs)
+            $null = $RawLines
             $observed.Add([pscustomobject]@{ CommandLine=$CommandLine;ExitCode=$ExitCode;Succeeded=($ExitCode -eq 0)
                 ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
         }
@@ -211,6 +214,7 @@ $script:AsyncWorkers = @{
         $observed  = [System.Collections.Generic.List[pscustomobject]]::new()
         Register-P4Observer {
             param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs)
+            $null = $RawLines
             $observed.Add([pscustomobject]@{ CommandLine=$CommandLine;ExitCode=$ExitCode;Succeeded=($ExitCode -eq 0)
                 ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
         }
@@ -253,6 +257,7 @@ $script:AsyncWorkers = @{
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         Register-P4Observer {
             param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs)
+            $null = $RawLines
             $observed.Add([pscustomobject]@{ CommandLine=$CommandLine;ExitCode=$ExitCode;Succeeded=($ExitCode -eq 0)
                 ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
         }
@@ -280,6 +285,7 @@ $script:AsyncWorkers = @{
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         Register-P4Observer {
             param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs)
+            $null = $RawLines
             $observed.Add([pscustomobject]@{ CommandLine=$CommandLine;ExitCode=$ExitCode;Succeeded=($ExitCode -eq 0)
                 ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
         }

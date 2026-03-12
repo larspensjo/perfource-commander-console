@@ -56,6 +56,10 @@
     "/^pwsh -NoProfile -Command \"Invoke-Pester -Path tests -Output Minimal 2>&1\"$/": {
       "approve": true,
       "matchCommandLine": true
+    },
+    "/^pwsh -NoProfile -File \"\\$env:USERPROFILE\\\\src\\\\perfource-commander-console\\\\\\.vscode\\\\Invoke-Linter\\.ps1\" 2>&1$/": {
+      "approve": true,
+      "matchCommandLine": true
     }
   }
 }

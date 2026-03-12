@@ -78,6 +78,11 @@ function Get-CommandLogFilterPredicates {
     $result['OK']    = { param($e) [bool]$e.Succeeded }.GetNewClosure()
     $result['Error'] = { param($e) -not [bool]$e.Succeeded }.GetNewClosure()
 
+    # Duration-class filters (M1.3)
+    $result['duration:info']     = { param($e) ([string]$e.DurationClass) -in @('Info', 'Warning', 'Critical') }.GetNewClosure()
+    $result['duration:warning']  = { param($e) ([string]$e.DurationClass) -in @('Warning', 'Critical') }.GetNewClosure()
+    $result['duration:critical'] = { param($e) ([string]$e.DurationClass) -eq 'Critical' }.GetNewClosure()
+
     # Collect unique subcommands
     $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($entry in $CommandLog) {

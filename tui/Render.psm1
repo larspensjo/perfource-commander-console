@@ -895,13 +895,15 @@ function Build-CommandModalRows {
     param(
         [Parameter(Mandatory = $true)]$CommandModal,
         [Parameter(Mandatory = $true)][int]$Width,
-        [Parameter(Mandatory = $true)][int]$MaxRows
+        [Parameter(Mandatory = $true)][int]$MaxRows,
+        [object]$ActiveWorkflow = $null
     )
 
     $borderColor    = 'DarkCyan'
-    $isBusy         = [bool](Get-PropertyValueOrDefault   -Object $CommandModal -Name 'IsBusy'          -Default $false)
-    $currentCommand = [string](Get-PropertyValueOrDefault -Object $CommandModal -Name 'CurrentCommand' -Default '')
-    $history        = @(Get-PropertyValueOrDefault        -Object $CommandModal -Name 'History'        -Default @())
+    $isBusy         = [bool](Get-PropertyValueOrDefault   -Object $CommandModal -Name 'IsBusy'            -Default $false)
+    $currentCommand = [string](Get-PropertyValueOrDefault -Object $CommandModal -Name 'CurrentCommand'    -Default '')
+    $history        = @(Get-PropertyValueOrDefault        -Object $CommandModal -Name 'History'           -Default @())
+    $timeoutMs      = [int](Get-PropertyValueOrDefault    -Object $CommandModal -Name 'CurrentTimeoutMs'  -Default 0)
 
     # Box height: top + inner content rows + bottom border; minimum 4
     $boxHeight = [Math]::Max(4, [Math]::Min($MaxRows, 12))
@@ -910,23 +912,44 @@ function Build-CommandModalRows {
     $contentRows = [System.Collections.Generic.List[object]]::new()
 
     if ($isBusy) {
-        $contentRows.Add(@(
-            @{ Text = 'Running: '; Color = 'DarkGray' },
-            @{ Text = $currentCommand; Color = 'Yellow' }
-        ))
+        # Workflow step progress row (shown when a workflow is active)
+        if ($null -ne $ActiveWorkflow) {
+            $done  = [int]$ActiveWorkflow.DoneCount
+            $total = [int]$ActiveWorkflow.TotalCount
+            $stepDisplay = if ($total -gt 0) { "(step $($done + 1)/$total)" } else { '' }
+            $contentRows.Add(@(
+                @{ Text = [char]0x23F3 + ' Working… '; Color = 'Yellow' },
+                @{ Text = $stepDisplay;                      Color = 'DarkGray' }
+            ))
+        }
+        # Currently running command row
+        if ($contentRows.Count -lt ($innerRows - 1)) {
+            $contentRows.Add(@(
+                @{ Text = [char]0x23F3 + ' Running: '; Color = 'DarkGray' },
+                @{ Text = $currentCommand;                    Color = 'Yellow' }
+            ))
+        }
     }
 
     foreach ($entry in $history) {
         if ($contentRows.Count -ge ($innerRows - 1)) { break }  # reserve 1 row for footer
-        $ts         = ([datetime]$entry.StartedAt).ToString('HH:mm:ss')
-        $tag        = if ([bool]$entry.Succeeded) { '[OK] ' } else { '[ERR]' }
-        $tagColor   = if ([bool]$entry.Succeeded) { 'Green' } else { 'Red' }
-        $durationMs = [int]$entry.DurationMs
-        $cmdLine    = [string]$entry.CommandLine
+        $ts           = ([datetime]$entry.StartedAt).ToString('HH:mm:ss')
+        $tag          = if ([bool]$entry.Succeeded) { '[OK] ' } else { '[ERR]' }
+        $tagColor     = if ([bool]$entry.Succeeded) { 'Green' } else { 'Red' }
+        $durationMs   = [int]$entry.DurationMs
+        $durationClass = if (($entry.PSObject.Properties.Match('DurationClass')).Count -gt 0) { [string]$entry.DurationClass } else { 'Normal' }
+        $durationColor = switch ($durationClass) {
+            'Critical' { 'Red'    }
+            'Warning'  { 'Yellow' }
+            'Info'     { 'Cyan'   }
+            default    { 'Gray'   }
+        }
+        $cmdLine      = [string]$entry.CommandLine
         $contentRows.Add(@(
             @{ Text = "$ts "; Color = 'DarkGray' },
             @{ Text = $tag;   Color = $tagColor },
-            @{ Text = " ${durationMs}ms  $cmdLine"; Color = 'Gray' }
+            @{ Text = " ${durationMs}ms"; Color = $durationColor },
+            @{ Text = "  $cmdLine"; Color = 'Gray' }
         ))
         # For failed entries, append a detail row with the extracted error reason
         if (-not [bool]$entry.Succeeded -and $contentRows.Count -lt ($innerRows - 1)) {
@@ -949,8 +972,14 @@ function Build-CommandModalRows {
     }
 
     # Footer
-    $footerText  = if ($isBusy) { 'Please wait...' } else { '[Esc] Dismiss  [F12] Toggle  [Q] Quit' }
-    $footerColor = if ($isBusy) { 'Yellow' } else { 'DarkGray' }
+    $footerText  = if ($isBusy) {
+        $timeoutSec = if ($timeoutMs -gt 0) { [Math]::Round($timeoutMs / 1000) } else { 0 }
+        $timeoutLabel = if ($timeoutSec -gt 0) { "  Timeout: ${timeoutSec}s" } else { '' }
+        "[i] Waiting for Perforce.…${timeoutLabel}"
+    } else {
+        '[Esc] Dismiss  [F12] Toggle  [Q] Quit'
+    }
+    $footerColor = if ($isBusy) { 'DarkCyan' } else { 'DarkGray' }
     $contentRows.Add(@(@{ Text = $footerText; Color = $footerColor }))
 
     $rows = [System.Collections.Generic.List[object]]::new()
@@ -1336,7 +1365,8 @@ function Apply-ConfirmDialogOverlay {
 function Apply-ModalOverlay {
     param(
         [Parameter(Mandatory = $true)]$Frame,
-        [Parameter(Mandatory = $true)]$ModalPrompt
+        [Parameter(Mandatory = $true)]$ModalPrompt,
+        [object]$ActiveWorkflow = $null
     )
 
     $width      = $Frame.Width
@@ -1346,7 +1376,7 @@ function Apply-ModalOverlay {
     $rightPad   = $width - $leftPad - $modalWidth
 
     $maxRows   = [Math]::Max(4, [Math]::Min([int][Math]::Floor($height / 3), 12))
-    $modalRows = Build-CommandModalRows -CommandModal $ModalPrompt -Width $modalWidth -MaxRows $maxRows
+    $modalRows = Build-CommandModalRows -CommandModal $ModalPrompt -Width $modalWidth -MaxRows $maxRows -ActiveWorkflow $ActiveWorkflow
 
     # Anchor above the status bar (last row)
     $modalStart = $height - 1 - $modalRows.Count
@@ -1648,7 +1678,17 @@ function Build-CommandLogRowSegments {
     # sees only the meaningful subcommand and its arguments.
     $cmdLine   = ([string]$Entry.CommandLine) -replace ' -ztag -Mj', ''
     $mColor    = if ($IsSelected) { 'Cyan' } else { Get-MarkerColor -Marker $Marker }
-    $textColor = if ($IsSelected) { 'White' } else { 'Gray' }
+    $durationClass = if (($Entry.PSObject.Properties.Match('DurationClass')).Count -gt 0) { [string]$Entry.DurationClass } else { 'Normal' }
+    $textColor = if ($IsSelected) {
+        'White'
+    } else {
+        switch ($durationClass) {
+            'Critical' { 'Red'    }
+            'Warning'  { 'Yellow' }
+            'Info'     { 'Cyan'   }
+            default    { 'Gray'   }
+        }
+    }
 
     Write-Output -NoEnumerate @(
         @{ Text = $Marker;         Color = $mColor    },
@@ -2379,7 +2419,8 @@ function Render-BrowserState {
         $nextFrame = Apply-ConfirmDialogOverlay -Frame $nextFrame -Payload $overlayPayload
     }
     if ($null -ne $commandModal -and [bool](Get-PropertyValueOrDefault -Object $commandModal -Name 'IsOpen' -Default $false)) {
-        $nextFrame = Apply-ModalOverlay -Frame $nextFrame -ModalPrompt $commandModal
+        $activeWorkflow = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'ActiveWorkflow' -Default $null
+        $nextFrame = Apply-ModalOverlay -Frame $nextFrame -ModalPrompt $commandModal -ActiveWorkflow $activeWorkflow
     }
 
     $changedRows = Get-FrameDiff -PreviousFrame $script:PreviousFrame -NextFrame $nextFrame

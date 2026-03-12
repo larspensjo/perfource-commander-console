@@ -198,4 +198,39 @@ Describe 'Get-CommandLogFilterPredicates' {
         # Should at minimum contain OK/Error
         $predicates.Contains('OK') | Should -BeTrue
     }
+
+    It 'duration:info predicate matches Info, Warning, and Critical entries' {
+        $entry      = [pscustomobject]@{ Succeeded = $true; CommandLine = 'p4 info'; DurationClass = 'Info' }
+        $predicates = Get-CommandLogFilterPredicates -CommandLog @($entry)
+        $predicates.Contains('duration:info') | Should -BeTrue
+        $predicates['duration:info'].Invoke($entry) | Should -BeTrue
+    }
+
+    It 'duration:info predicate does not match Normal entries' {
+        $entry      = [pscustomobject]@{ Succeeded = $true; CommandLine = 'p4 info'; DurationClass = 'Normal' }
+        $predicates = Get-CommandLogFilterPredicates -CommandLog @($entry)
+        $predicates['duration:info'].Invoke($entry) | Should -BeFalse
+    }
+
+    It 'duration:warning predicate matches Warning and Critical entries' {
+        $warning  = [pscustomobject]@{ Succeeded = $true; CommandLine = 'p4 info'; DurationClass = 'Warning' }
+        $critical = [pscustomobject]@{ Succeeded = $true; CommandLine = 'p4 info'; DurationClass = 'Critical' }
+        $predicates = Get-CommandLogFilterPredicates -CommandLog @($warning)
+        $predicates['duration:warning'].Invoke($warning)  | Should -BeTrue
+        $predicates['duration:warning'].Invoke($critical) | Should -BeTrue
+    }
+
+    It 'duration:warning predicate does not match Info entries' {
+        $info   = [pscustomobject]@{ Succeeded = $true; CommandLine = 'p4 info'; DurationClass = 'Info' }
+        $predicates = Get-CommandLogFilterPredicates -CommandLog @($info)
+        $predicates['duration:warning'].Invoke($info) | Should -BeFalse
+    }
+
+    It 'duration:critical predicate matches only Critical entries' {
+        $critical = [pscustomobject]@{ Succeeded = $true; CommandLine = 'p4 info'; DurationClass = 'Critical' }
+        $warning  = [pscustomobject]@{ Succeeded = $true; CommandLine = 'p4 info'; DurationClass = 'Warning' }
+        $predicates = Get-CommandLogFilterPredicates -CommandLog @($critical)
+        $predicates['duration:critical'].Invoke($critical) | Should -BeTrue
+        $predicates['duration:critical'].Invoke($warning)  | Should -BeFalse
+    }
 }

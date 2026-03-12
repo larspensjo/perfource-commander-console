@@ -1664,3 +1664,85 @@ Describe 'Get-P4ChangelistEntries — unresolved enrichment' {
         Should -Invoke Get-P4UnresolvedFileCounts -ModuleName P4Cli -Times 0 -Exactly
     }
 }
+
+Describe 'Get-P4CommandCategory' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\.\p4\P4Cli.psm1') -Force
+    }
+
+    It 'fstat is FileQuery' {
+        Get-P4CommandCategory -P4Args @('fstat', '//...') | Should -Be 'FileQuery'
+    }
+
+    It 'change is Mutating' {
+        Get-P4CommandCategory -P4Args @('change', '-o') | Should -Be 'Mutating'
+    }
+
+    It 'describe is Describe' {
+        Get-P4CommandCategory -P4Args @('describe', '-s', '12345') | Should -Be 'Describe'
+    }
+
+    It 'info is Metadata' {
+        Get-P4CommandCategory -P4Args @('info') | Should -Be 'Metadata'
+    }
+
+    It 'empty args default to Metadata' {
+        Get-P4CommandCategory -P4Args @() | Should -Be 'Metadata'
+    }
+}
+
+Describe 'Get-DurationClass' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\.\p4\P4Cli.psm1') -Force
+    }
+
+    It 'below InfoMs threshold is Normal' {
+        Get-DurationClass -DurationMs 100 | Should -Be 'Normal'
+    }
+
+    It 'at InfoMs threshold is Info' {
+        Get-DurationClass -DurationMs 500 | Should -Be 'Info'
+    }
+
+    It 'between InfoMs and WarningMs is Info' {
+        Get-DurationClass -DurationMs 1000 | Should -Be 'Info'
+    }
+
+    It 'at WarningMs threshold is Warning' {
+        Get-DurationClass -DurationMs 2000 | Should -Be 'Warning'
+    }
+
+    It 'between WarningMs and CriticalMs is Warning' {
+        Get-DurationClass -DurationMs 3000 | Should -Be 'Warning'
+    }
+
+    It 'at CriticalMs threshold is Critical' {
+        Get-DurationClass -DurationMs 5000 | Should -Be 'Critical'
+    }
+
+    It 'above CriticalMs is Critical' {
+        Get-DurationClass -DurationMs 10000 | Should -Be 'Critical'
+    }
+}
+
+Describe 'Get-P4CommandTimeout' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\.\p4\P4Cli.psm1') -Force
+    }
+
+    It 'fstat command resolves to FileQuery timeout (30000)' {
+        Get-P4CommandTimeout -CommandLine 'p4 fstat //...' | Should -Be 30000
+    }
+
+    It 'describe command resolves to Describe timeout (15000)' {
+        Get-P4CommandTimeout -CommandLine 'p4 describe -s 12345' | Should -Be 15000
+    }
+
+    It 'change command resolves to Mutating timeout (30000)' {
+        Get-P4CommandTimeout -CommandLine 'p4 change -o' | Should -Be 30000
+    }
+
+    It 'info command resolves to Metadata timeout (10000)' {
+        Get-P4CommandTimeout -CommandLine 'p4 info' | Should -Be 10000
+    }
+}

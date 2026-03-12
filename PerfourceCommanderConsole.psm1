@@ -359,9 +359,11 @@ function Invoke-BrowserSideEffect {
         [Parameter(Mandatory = $true)][scriptblock]$WorkItem
     )
 
+    $commandTimeoutMs = Get-P4CommandTimeout -CommandLine $CommandLine
     $s = Invoke-BrowserReducer -State $State -Action ([pscustomobject]@{
         Type        = 'CommandStart'
         CommandLine = $CommandLine
+        TimeoutMs   = $commandTimeoutMs
         StartedAt   = (Get-Date)
     })
     Render-BrowserState -State $s
@@ -405,6 +407,8 @@ function Invoke-BrowserSideEffect {
 
     # Dispatch LogCommandExecution for every p4 invocation captured by the observer
     foreach ($evt in $eventQueue) {
+        $evtDurationClass = Get-DurationClass -DurationMs ([int]$evt.DurationMs)
+        $evtOutcome       = if ([bool]$evt.Succeeded) { 'Completed' } else { 'Failed' }
         $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{
             Type           = 'LogCommandExecution'
             CommandLine    = $evt.CommandLine
@@ -417,17 +421,24 @@ function Invoke-BrowserSideEffect {
             StartedAt      = $evt.StartedAt
             EndedAt        = $evt.EndedAt
             DurationMs     = $evt.DurationMs
+            DurationClass  = $evtDurationClass
+            Outcome        = $evtOutcome
         })
     }
 
+    $outerDurationMs    = [int](($endedAt - $startedAt).TotalMilliseconds)
+    $outerDurationClass = Get-DurationClass -DurationMs $outerDurationMs
+    $outerOutcome       = if ($succeeded) { 'Completed' } else { 'Failed' }
     $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{
-        Type        = 'CommandFinish'
-        CommandLine = $CommandLine
-        StartedAt   = $startedAt
-        EndedAt     = $endedAt
-        ExitCode    = $exitCode
-        Succeeded   = $succeeded
-        ErrorText   = $errorText
+        Type          = 'CommandFinish'
+        CommandLine   = $CommandLine
+        StartedAt     = $startedAt
+        EndedAt       = $endedAt
+        ExitCode      = $exitCode
+        Succeeded     = $succeeded
+        ErrorText     = $errorText
+        DurationClass = $outerDurationClass
+        Outcome       = $outerOutcome
     })
 
     return $s

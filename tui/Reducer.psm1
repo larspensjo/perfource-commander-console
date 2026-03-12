@@ -593,11 +593,12 @@ function New-BrowserState {
             CommandLog               = @()
             CommandOutputCommandId   = $null
             ModalPrompt              = [pscustomobject]@{
-                IsOpen         = $false
-                IsBusy         = $false
-                Purpose        = 'Command'
-                CurrentCommand = ''
-                History        = @()
+                IsOpen            = $false
+                IsBusy            = $false
+                Purpose           = 'Command'
+                CurrentCommand    = ''
+                CurrentTimeoutMs  = 0
+                History           = @()
             }
         }
     }
@@ -1064,6 +1065,7 @@ function Invoke-ChangelistReducer {
             $next.Runtime.ModalPrompt.IsOpen         = $true
             $next.Runtime.ModalPrompt.Purpose        = 'Command'
             $next.Runtime.ModalPrompt.CurrentCommand = [string]$Action.CommandLine
+            $next.Runtime.ModalPrompt.CurrentTimeoutMs = if (($Action.PSObject.Properties.Match('TimeoutMs')).Count -gt 0) { [int]$Action.TimeoutMs } else { 0 }
             return $next
         }
         'CommandFinish' {
@@ -1072,19 +1074,22 @@ function Invoke-ChangelistReducer {
             $durationMs = [int](($endedAt - $startedAt).TotalMilliseconds)
             $succeeded  = [bool]$Action.Succeeded
             $historyItem = [pscustomobject]@{
-                StartedAt   = $startedAt
-                EndedAt     = $endedAt
-                CommandLine = [string]$Action.CommandLine
-                ExitCode    = [int]$Action.ExitCode
-                Succeeded   = $succeeded
-                ErrorText   = [string]$Action.ErrorText
-                DurationMs  = $durationMs
+                StartedAt     = $startedAt
+                EndedAt       = $endedAt
+                CommandLine   = [string]$Action.CommandLine
+                ExitCode      = [int]$Action.ExitCode
+                Succeeded     = $succeeded
+                ErrorText     = [string]$Action.ErrorText
+                DurationMs    = $durationMs
+                DurationClass = if (($Action.PSObject.Properties.Match('DurationClass')).Count -gt 0) { [string]$Action.DurationClass } else { 'Normal' }
+                Outcome       = if (($Action.PSObject.Properties.Match('Outcome')).Count -gt 0) { [string]$Action.Outcome } else { if ($succeeded) { 'Completed' } else { 'Failed' } }
             }
             $trimmed = @($historyItem) + @($next.Runtime.ModalPrompt.History |
                 Select-Object -First ($script:CommandHistoryMaxSize - 1))
-            $next.Runtime.ModalPrompt.History        = $trimmed
-            $next.Runtime.ModalPrompt.IsBusy         = $false
-            $next.Runtime.ModalPrompt.CurrentCommand = ''
+            $next.Runtime.ModalPrompt.History           = $trimmed
+            $next.Runtime.ModalPrompt.IsBusy            = $false
+            $next.Runtime.ModalPrompt.CurrentCommand    = ''
+            $next.Runtime.ModalPrompt.CurrentTimeoutMs  = 0
             if ($succeeded) {
                 $next.Runtime.ModalPrompt.IsOpen = $false
             }
@@ -1758,17 +1763,19 @@ function Invoke-ChangelistReducer {
             $endedAt    = [datetime]$Action.EndedAt
             $durationMs = [int](($endedAt - $startedAt).TotalMilliseconds)
             $metaItem   = [pscustomobject]@{
-                CommandId   = $cmdId
-                StartedAt   = $startedAt
-                EndedAt     = $endedAt
-                CommandLine = [string]$Action.CommandLine
-                ExitCode    = [int]$Action.ExitCode
-                Succeeded   = [bool]$Action.Succeeded
-                ErrorText   = [string]$Action.ErrorText
-                DurationMs  = $durationMs
-                OutputCount = [int]$Action.OutputCount
-                SummaryLine = [string]$Action.SummaryLine
-                OutputRef   = $cmdId
+                CommandId     = $cmdId
+                StartedAt     = $startedAt
+                EndedAt       = $endedAt
+                CommandLine   = [string]$Action.CommandLine
+                ExitCode      = [int]$Action.ExitCode
+                Succeeded     = [bool]$Action.Succeeded
+                ErrorText     = [string]$Action.ErrorText
+                DurationMs    = $durationMs
+                DurationClass = if (($Action.PSObject.Properties.Match('DurationClass')).Count -gt 0) { [string]$Action.DurationClass } else { 'Normal' }
+                Outcome       = if (($Action.PSObject.Properties.Match('Outcome')).Count -gt 0) { [string]$Action.Outcome } else { if ([bool]$Action.Succeeded) { 'Completed' } else { 'Failed' } }
+                OutputCount   = [int]$Action.OutputCount
+                SummaryLine   = [string]$Action.SummaryLine
+                OutputRef     = $cmdId
             }
 
             # Store formatted lines in CommandOutputCache (shared dictionary)

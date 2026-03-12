@@ -22,6 +22,22 @@ $script:P4FstatUnresolvedPathFields  = 'depotFile,unresolved'
 # Signature: { param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs) }
 [scriptblock]$script:P4ExecutionObserver = $null
 
+# ── Command execution policy (M1.1) ──────────────────────────────────────────
+# Duration thresholds for DurationClass classification.
+$script:CommandThresholds = [pscustomobject]@{
+    InfoMs     = 500
+    WarningMs  = 2000
+    CriticalMs = 5000
+}
+
+# Default timeouts (ms) keyed by command category.
+$script:P4TimeoutByCategory = @{
+    Metadata  = 10000
+    FileQuery = 30000
+    Describe  = 15000
+    Mutating  = 30000
+}
+
 function ConvertTo-P4ChangelistId {
     [CmdletBinding()]
     param(
@@ -271,12 +287,76 @@ function Test-P4JsonRecordIsCommandFailure {
     return $false
 }
 
+function Get-P4CommandCategory {
+    <#
+    .SYNOPSIS
+        Resolves the execution category for a p4 subcommand (M1.1).
+    .DESCRIPTION
+        Used to select category-aware default timeouts and duration-class thresholds.
+        Recognised categories: FileQuery, Mutating, Describe, Metadata (default).
+    .PARAMETER P4Args
+        The p4 argument array; only $P4Args[0] (the subcommand) is examined.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$P4Args)
+
+    if ($null -eq $P4Args -or $P4Args.Count -eq 0) { return 'Metadata' }
+    $subcommand = [string]$P4Args[0]
+    if ($subcommand -in @('fstat', 'opened', 'filelog', 'diff')) { return 'FileQuery' }
+    if ($subcommand -in @('change', 'reopen', 'shelve', 'unshelve', 'resolve')) { return 'Mutating' }
+    if ($subcommand -eq 'describe') { return 'Describe' }
+    return 'Metadata'
+}
+
+function Get-DurationClass {
+    <#
+    .SYNOPSIS
+        Classifies a command duration as Normal, Info, Warning, or Critical (M1.1).
+    .DESCRIPTION
+        Compares $DurationMs against the named thresholds in $script:CommandThresholds
+        and returns the highest matching class label.  Used by render and filtering
+        to colour slow commands.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$DurationMs)
+
+    if ($DurationMs -ge $script:CommandThresholds.CriticalMs) { return 'Critical' }
+    if ($DurationMs -ge $script:CommandThresholds.WarningMs)  { return 'Warning'  }
+    if ($DurationMs -ge $script:CommandThresholds.InfoMs)     { return 'Info'     }
+    return 'Normal'
+}
+
+function Get-P4CommandTimeout {
+    <#
+    .SYNOPSIS
+        Resolves the category-aware default timeout (ms) for a p4 command line string (M1.4).
+    .DESCRIPTION
+        Parses the subcommand from a human-readable command line (e.g. 'p4 fstat //...'),
+        resolves category via Get-P4CommandCategory, and returns the matching timeout from
+        $script:P4TimeoutByCategory.  Used by Invoke-BrowserSideEffect so the busy-modal
+        footer can display an honest timeout value.
+    .PARAMETER CommandLine
+        A p4 command string beginning with 'p4 '.  Global flags (-ztag, -Mj, etc.) are
+        skipped when extracting the subcommand.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$CommandLine)
+
+    # Strip leading 'p4 ' and find first non-option token (the subcommand).
+    $cleaned     = $CommandLine -replace '^p4\s+', ''
+    $subcommand  = ($cleaned -split '\s+' | Where-Object { $_ -ne '' -and -not $_.StartsWith('-') } | Select-Object -First 1)
+    if ([string]::IsNullOrWhiteSpace($subcommand)) { $subcommand = '' }
+    $category    = Get-P4CommandCategory -P4Args @($subcommand)
+    return [int]$script:P4TimeoutByCategory[$category]
+}
+
 function Invoke-P4 {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string[]]$P4Args,
-        # Milliseconds to wait before killing the p4 process. Defaults to 30 s.
-        [int]$TimeoutMs = 30000,
+        # Milliseconds to wait before killing the p4 process.
+        # Use -1 (default) to auto-resolve a category-aware timeout (M1.4).
+        [int]$TimeoutMs = -1,
         [int[]]$AllowedExitCodes = @(0),
         [AllowEmptyCollection()][string[]]$InputLines = @(),
         # Per-invocation observer callback (M0.2).  When provided, called instead of
@@ -285,6 +365,15 @@ function Invoke-P4 {
         # Signature: { param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs) }
         [scriptblock]$Observer = $null
     )
+
+    # Resolve effective timeout: caller-supplied value when non-negative, otherwise
+    # the category-aware default from $script:P4TimeoutByCategory (M1.4).
+    $effectiveTimeoutMs = if ($TimeoutMs -ge 0) {
+        $TimeoutMs
+    } else {
+        $category = Get-P4CommandCategory -P4Args $P4Args
+        [int]$script:P4TimeoutByCategory[$category]
+    }
 
     $globalArgs = @('-ztag', '-Mj')
     $fullArgs = @($globalArgs)
@@ -326,7 +415,7 @@ function Invoke-P4 {
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
 
-    $exited = $process.WaitForExit($TimeoutMs)
+    $exited = $process.WaitForExit($effectiveTimeoutMs)
 
     if (-not $exited) {
         # Kill the entire process tree (not just the root) so child processes
@@ -338,7 +427,7 @@ function Invoke-P4 {
         # Dispose closes the redirected stream handles so ReadToEndAsync tasks
         # complete promptly instead of dangling until GC finalizes them.
         try { $process.Dispose() } catch { <# best-effort #> }
-        throw "p4 timed out after ${TimeoutMs} ms. Args: $($psi.Arguments)"
+        throw "p4 timed out after ${effectiveTimeoutMs} ms. Args: $($psi.Arguments)"
     }
 
     $stdout = $stdoutTask.GetAwaiter().GetResult()
@@ -1341,4 +1430,4 @@ function Invoke-P4ReopenFiles {
     return @{ MovedCount = $depotPaths.Count; Files = $depotPaths }
 }
 
-Export-ModuleMember -Function ConvertTo-P4ChangelistId, Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Get-P4ModifiedDepotPaths, Set-P4FileEntriesUnresolvedState, Set-P4FileEntriesContentModifiedState, Remove-P4Changelist, Invoke-P4ShelveFiles, Remove-P4ShelvedFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles
+Export-ModuleMember -Function ConvertTo-P4ChangelistId, Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Get-P4CommandCategory, Get-DurationClass, Get-P4CommandTimeout, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Get-P4ModifiedDepotPaths, Set-P4FileEntriesUnresolvedState, Set-P4FileEntriesContentModifiedState, Remove-P4Changelist, Invoke-P4ShelveFiles, Remove-P4ShelvedFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles

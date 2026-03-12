@@ -549,14 +549,15 @@ Describe 'Frame helpers' {
                 $allText | Should -Match '1000ms'
             }
 
-            It 'footer shows Please wait while busy and dismiss hint when idle' {
+            It 'footer shows Waiting for Perforce while busy and dismiss hint when idle' {
                 $state = New-RenderStateFixture
                 $state.Runtime.ModalPrompt.IsOpen = $true
                 $state.Runtime.ModalPrompt.IsBusy = $true
+                $state.Runtime.ModalPrompt | Add-Member -NotePropertyName CurrentTimeoutMs -NotePropertyValue 0 -Force
                 $frame    = Build-FrameFromState -State $state
                 $overlaid = Apply-ModalOverlay -Frame $frame -ModalPrompt $state.Runtime.ModalPrompt
                 $busyText = ($overlaid.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
-                $busyText | Should -Match 'Please wait'
+                $busyText | Should -Match 'Waiting for Perforce'
 
                 $state.Runtime.ModalPrompt.IsBusy = $false
                 $frame2    = Build-FrameFromState -State $state

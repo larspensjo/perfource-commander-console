@@ -549,7 +549,7 @@ Describe 'Frame helpers' {
                 $allText | Should -Match '1000ms'
             }
 
-            It 'footer shows Waiting for Perforce while busy and dismiss hint when idle' {
+            It 'footer shows cancel-step hint while busy and dismiss hint when idle (M3.4)' {
                 $state = New-RenderStateFixture
                 $state.Runtime.ModalPrompt.IsOpen = $true
                 $state.Runtime.ModalPrompt.IsBusy = $true
@@ -557,7 +557,7 @@ Describe 'Frame helpers' {
                 $frame    = Build-FrameFromState -State $state
                 $overlaid = Apply-ModalOverlay -Frame $frame -ModalPrompt $state.Runtime.ModalPrompt
                 $busyText = ($overlaid.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
-                $busyText | Should -Match 'Waiting for Perforce'
+                $busyText | Should -Match 'Cancel step'
 
                 $state.Runtime.ModalPrompt.IsBusy = $false
                 $frame2    = Build-FrameFromState -State $state
@@ -565,6 +565,29 @@ Describe 'Frame helpers' {
                 $idleText  = ($overlaid2.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
                 $idleText | Should -Match 'Dismiss'
                 $idleText | Should -Match 'Toggle'
+            }
+
+            It 'footer shows cancel-requested banner when CancelRequested is true (M3.4)' {
+                $state = New-RenderStateFixture
+                $state.Runtime.ModalPrompt.IsOpen = $true
+                $state.Runtime.ModalPrompt.IsBusy = $true
+                $state.Runtime.ModalPrompt | Add-Member -NotePropertyName CurrentTimeoutMs -NotePropertyValue 0 -Force
+                $frame    = Build-FrameFromState -State $state
+                $overlaid = Apply-ModalOverlay -Frame $frame -ModalPrompt $state.Runtime.ModalPrompt -CancelRequested $true
+                $text     = ($overlaid.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+                $text | Should -Match 'Cancel requested'
+                $text | Should -Match 'finishing current step'
+            }
+
+            It 'footer shows quit-requested banner when QuitRequested is true (M3.4)' {
+                $state = New-RenderStateFixture
+                $state.Runtime.ModalPrompt.IsOpen = $true
+                $state.Runtime.ModalPrompt.IsBusy = $true
+                $state.Runtime.ModalPrompt | Add-Member -NotePropertyName CurrentTimeoutMs -NotePropertyValue 0 -Force
+                $frame    = Build-FrameFromState -State $state
+                $overlaid = Apply-ModalOverlay -Frame $frame -ModalPrompt $state.Runtime.ModalPrompt -QuitRequested $true
+                $text     = ($overlaid.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+                $text | Should -Match 'Will quit after current command'
             }
 
             It 'renders error detail row for failed history entries' {

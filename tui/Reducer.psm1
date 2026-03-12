@@ -582,10 +582,12 @@ function New-BrowserState {
             }
         }
         Runtime = [pscustomobject]@{
-            IsRunning      = $true
-            LastError      = $null
-            DetailChangeId = $null
-            PendingRequest = $null
+            IsRunning        = $true
+            LastError        = $null
+            DetailChangeId   = $null
+            PendingRequest   = $null
+            CancelRequested  = $false   # set by Esc when busy; cleared by WorkflowEnd (M3.1)
+            QuitRequested    = $false   # set by Q when busy; main loop dispatches Quit when safe (M3.1)
             ActiveWorkflow       = $null   # null | @{ Kind; TotalCount; DoneCount; FailedCount; FailedIds }
             LastWorkflowResult  = $null   # null | @{ Kind; DoneCount; FailedCount; FailedIds }
             ConfiguredMax  = 200
@@ -1106,16 +1108,18 @@ function Invoke-ChangelistReducer {
             return $next
         }
         'HideCommandModal' {
-            # Escape: close any active overlay first; then close modal prompt on second press
+            # Esc priority (M3.2): overlay → cancel-when-busy → close modal
             $overlayMode = if (($next.Ui.PSObject.Properties.Match('OverlayMode')).Count -gt 0) { [string]$next.Ui.OverlayMode } else { 'None' }
             if ($overlayMode -ne 'None') {
                 $next.Ui.OverlayMode    = 'None'
                 $next.Ui.OverlayPayload = $null
                 return $next
             }
-            if (-not $next.Runtime.ModalPrompt.IsBusy) {
-                $next.Runtime.ModalPrompt.IsOpen = $false
+            if ($next.Runtime.ModalPrompt.IsBusy) {
+                $next.Runtime.CancelRequested = $true
+                return $next
             }
+            $next.Runtime.ModalPrompt.IsOpen = $false
             return $next
         }
         'ToggleHelpOverlay' {
@@ -1382,7 +1386,8 @@ function Invoke-ChangelistReducer {
                     FailedIds   = $wf.FailedIds
                 }
             }
-            $next.Runtime.ActiveWorkflow = $null
+            $next.Runtime.ActiveWorkflow  = $null
+            $next.Runtime.CancelRequested = $false  # cancel was acted upon; reset for next workflow (M3.2)
             return $next
         }
         'ReconcileMarks' {
@@ -1399,7 +1404,12 @@ function Invoke-ChangelistReducer {
             return $next
         }
         'Quit' {
-            $next.Runtime.IsRunning = $false
+            # When busy: defer quit until after the active command completes (M3.2)
+            if ($next.Runtime.ModalPrompt.IsBusy) {
+                $next.Runtime.QuitRequested = $true
+            } else {
+                $next.Runtime.IsRunning = $false
+            }
             return $next
         }
         'SwitchPane' {
@@ -1871,14 +1881,18 @@ function Invoke-FilesReducer {
 
     switch ($Action.Type) {
         'HideCommandModal' {
-            # Esc priority: active overlay (help/confirm) → command modal → close files screen.
+            # Esc priority (M3.2): overlay → cancel-when-busy → close modal → close files screen.
             $overlayMode = if (($next.Ui.PSObject.Properties.Match('OverlayMode')).Count -gt 0) { [string]$next.Ui.OverlayMode } else { 'None' }
             if ($overlayMode -ne 'None') {
                 $next.Ui.OverlayMode    = 'None'
                 $next.Ui.OverlayPayload = $null
                 return $next
             }
-            if ($next.Runtime.ModalPrompt.IsOpen -and -not $next.Runtime.ModalPrompt.IsBusy) {
+            if ($next.Runtime.ModalPrompt.IsBusy) {
+                $next.Runtime.CancelRequested = $true
+                return $next
+            }
+            if ($next.Runtime.ModalPrompt.IsOpen) {
                 $next.Runtime.ModalPrompt.IsOpen = $false
                 return $next
             }
@@ -2009,14 +2023,18 @@ function Invoke-CommandOutputReducer {
 
     switch ($Action.Type) {
         'HideCommandModal' {
-            # Esc priority: active overlay (help/confirm) → command modal → close screen.
+            # Esc priority (M3.2): overlay → cancel-when-busy → close modal → close screen.
             $overlayMode = if (($next.Ui.PSObject.Properties.Match('OverlayMode')).Count -gt 0) { [string]$next.Ui.OverlayMode } else { 'None' }
             if ($overlayMode -ne 'None') {
                 $next.Ui.OverlayMode    = 'None'
                 $next.Ui.OverlayPayload = $null
                 return $next
             }
-            if ($next.Runtime.ModalPrompt.IsOpen -and -not $next.Runtime.ModalPrompt.IsBusy) {
+            if ($next.Runtime.ModalPrompt.IsBusy) {
+                $next.Runtime.CancelRequested = $true
+                return $next
+            }
+            if ($next.Runtime.ModalPrompt.IsOpen) {
                 $next.Runtime.ModalPrompt.IsOpen = $false
                 return $next
             }

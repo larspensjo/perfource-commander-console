@@ -897,7 +897,9 @@ function Build-CommandModalRows {
         [Parameter(Mandatory = $true)]$CommandModal,
         [Parameter(Mandatory = $true)][int]$Width,
         [Parameter(Mandatory = $true)][int]$MaxRows,
-        [object]$ActiveWorkflow = $null
+        [object]$ActiveWorkflow    = $null,
+        [bool]$CancelRequested     = $false,   # M3.4
+        [bool]$QuitRequested       = $false    # M3.4
     )
 
     $borderColor    = 'DarkCyan'
@@ -922,6 +924,12 @@ function Build-CommandModalRows {
                 @{ Text = [char]0x23F3 + ' Working… '; Color = 'Yellow' },
                 @{ Text = $stepDisplay;                      Color = 'DarkGray' }
             ))
+        }
+        # Cancel / quit banner row (M3.4)
+        if ($CancelRequested -and $contentRows.Count -lt ($innerRows - 1)) {
+            $contentRows.Add(@(@{ Text = [char]0x26A0 + ' Cancel requested — finishing current step…'; Color = 'Yellow' }))
+        } elseif ($QuitRequested -and $contentRows.Count -lt ($innerRows - 1)) {
+            $contentRows.Add(@(@{ Text = [char]0x26A0 + ' Will quit after current command…'; Color = 'Yellow' }))
         }
         # Currently running command row
         if ($contentRows.Count -lt ($innerRows - 1)) {
@@ -974,13 +982,21 @@ function Build-CommandModalRows {
 
     # Footer
     $footerText  = if ($isBusy) {
-        $timeoutSec = if ($timeoutMs -gt 0) { [Math]::Round($timeoutMs / 1000) } else { 0 }
-        $timeoutLabel = if ($timeoutSec -gt 0) { "  Timeout: ${timeoutSec}s" } else { '' }
-        "[i] Waiting for Perforce.…${timeoutLabel}"
+        if ($CancelRequested) {
+            '[' + [char]0x26A0 + '] Cancel requested — finishing current step…'
+        } elseif ($QuitRequested) {
+            '[' + [char]0x26A0 + '] Will quit after current command…'
+        } else {
+            $timeoutSec = if ($timeoutMs -gt 0) { [Math]::Round($timeoutMs / 1000) } else { 0 }
+            $timeoutLabel = if ($timeoutSec -gt 0) { "  Timeout: ${timeoutSec}s" } else { '' }
+            "[Esc] Cancel step  [Q] Quit after step${timeoutLabel}"
+        }
     } else {
         '[Esc] Dismiss  [F12] Toggle  [Q] Quit'
     }
-    $footerColor = if ($isBusy) { 'DarkCyan' } else { 'DarkGray' }
+    $footerColor = if ($isBusy) {
+        if ($CancelRequested -or $QuitRequested) { 'Yellow' } else { 'DarkCyan' }
+    } else { 'DarkGray' }
     $contentRows.Add(@(@{ Text = $footerText; Color = $footerColor }))
 
     $rows = [System.Collections.Generic.List[object]]::new()
@@ -1367,7 +1383,9 @@ function Apply-ModalOverlay {
     param(
         [Parameter(Mandatory = $true)]$Frame,
         [Parameter(Mandatory = $true)]$ModalPrompt,
-        [object]$ActiveWorkflow = $null
+        [object]$ActiveWorkflow  = $null,
+        [bool]$CancelRequested   = $false,   # M3.4
+        [bool]$QuitRequested     = $false    # M3.4
     )
 
     $width      = $Frame.Width
@@ -1377,7 +1395,7 @@ function Apply-ModalOverlay {
     $rightPad   = $width - $leftPad - $modalWidth
 
     $maxRows   = [Math]::Max(4, [Math]::Min([int][Math]::Floor($height / 3), 12))
-    $modalRows = Build-CommandModalRows -CommandModal $ModalPrompt -Width $modalWidth -MaxRows $maxRows -ActiveWorkflow $ActiveWorkflow
+    $modalRows = Build-CommandModalRows -CommandModal $ModalPrompt -Width $modalWidth -MaxRows $maxRows -ActiveWorkflow $ActiveWorkflow -CancelRequested $CancelRequested -QuitRequested $QuitRequested
 
     # Anchor above the status bar (last row)
     $modalStart = $height - 1 - $modalRows.Count
@@ -2431,8 +2449,10 @@ function Render-BrowserState {
         $nextFrame = Apply-ConfirmDialogOverlay -Frame $nextFrame -Payload $overlayPayload
     }
     if ($null -ne $commandModal -and [bool](Get-PropertyValueOrDefault -Object $commandModal -Name 'IsOpen' -Default $false)) {
-        $activeWorkflow = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'ActiveWorkflow' -Default $null
-        $nextFrame = Apply-ModalOverlay -Frame $nextFrame -ModalPrompt $commandModal -ActiveWorkflow $activeWorkflow
+        $activeWorkflow  = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'ActiveWorkflow'  -Default $null
+        $cancelRequested = [bool](Get-PropertyValueOrDefault -Object $State.Runtime -Name 'CancelRequested' -Default $false)
+        $quitRequested   = [bool](Get-PropertyValueOrDefault -Object $State.Runtime -Name 'QuitRequested'   -Default $false)
+        $nextFrame = Apply-ModalOverlay -Frame $nextFrame -ModalPrompt $commandModal -ActiveWorkflow $activeWorkflow -CancelRequested $cancelRequested -QuitRequested $quitRequested
     }
 
     $changedRows = Get-FrameDiff -PreviousFrame $script:PreviousFrame -NextFrame $nextFrame

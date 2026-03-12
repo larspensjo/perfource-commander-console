@@ -16,6 +16,37 @@ Import-Module (Join-Path $PSScriptRoot 'tui\Render.psm1')    -Force -DisableName
 # They are responsible for dispatching WorkflowBegin, WorkflowItemComplete/Failed, and WorkflowEnd.
 $script:WorkflowRegistry = @{}
 
+# ── Cancel-check injection (M3.3) ─────────────────────────────────────────────
+# Default: poll console keys; return 'Cancel', 'Quit', or 'Continue'.
+# Tests override this via Set-BrowserCheckCancelCallback.
+$script:CheckCancelCallback = {
+    param($State)
+    while ([Console]::KeyAvailable) {
+        $key    = [Console]::ReadKey($true)
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo $key -State $State
+        if ($null -ne $action) {
+            if ($action.Type -eq 'HideCommandModal') { return 'Cancel' }
+            if ($action.Type -eq 'Quit')             { return 'Quit'   }
+        }
+    }
+    return 'Continue'
+}
+
+function Set-BrowserCheckCancelCallback {
+    <#
+    .SYNOPSIS
+        Replaces the between-item cancel-check callback (M3.3).
+    .DESCRIPTION
+        The production callback polls [Console]::KeyAvailable.  In tests, inject a
+        deterministic scriptblock that returns a fixed sequence of 'Cancel', 'Quit',
+        or 'Continue' without touching the console.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Callback
+    )
+    $script:CheckCancelCallback = $Callback
+}
+
 function Register-WorkflowKind {
     <#
     .SYNOPSIS
@@ -70,6 +101,14 @@ Register-WorkflowKind -Kind 'DeleteMarked' -Execute {
             $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
                 Type = 'WorkflowItemFailed'; ChangeId = $changeId
             })
+        }
+
+        # Check for cancel/quit between DeleteMarked items (M3.3)
+        $cancelSignal = & $script:CheckCancelCallback -State $state
+        if ($cancelSignal -ne 'Continue') {
+            $state.Runtime.CancelRequested = $true
+            if ($cancelSignal -eq 'Quit') { $state.Runtime.QuitRequested = $true }
+            break
         }
     }
 
@@ -134,6 +173,14 @@ Register-WorkflowKind -Kind 'MoveMarkedFiles' -Execute {
                 Type = 'WorkflowItemFailed'; ChangeId = $changeId
             })
         }
+
+        # Check for cancel/quit between MoveMarkedFiles items (M3.3)
+        $cancelSignal = & $script:CheckCancelCallback -State $state
+        if ($cancelSignal -ne 'Continue') {
+            $state.Runtime.CancelRequested = $true
+            if ($cancelSignal -eq 'Quit') { $state.Runtime.QuitRequested = $true }
+            break
+        }
     }
 
     # Unmark successfully processed source changelists
@@ -186,6 +233,14 @@ Register-WorkflowKind -Kind 'ShelveFiles' -Execute {
                 Type = 'WorkflowItemFailed'; ChangeId = $changeId
             })
         }
+
+        # Check for cancel/quit between ShelveFiles items (M3.3)
+        $cancelSignal = & $script:CheckCancelCallback -State $state
+        if ($cancelSignal -ne 'Continue') {
+            $state.Runtime.CancelRequested = $true
+            if ($cancelSignal -eq 'Quit') { $state.Runtime.QuitRequested = $true }
+            break
+        }
     }
 
     $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowEnd' })
@@ -231,6 +286,14 @@ Register-WorkflowKind -Kind 'DeleteShelvedFiles' -Execute {
             $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
                 Type = 'WorkflowItemFailed'; ChangeId = $changeId
             })
+        }
+
+        # Check for cancel/quit between DeleteShelvedFiles items (M3.3)
+        $cancelSignal = & $script:CheckCancelCallback -State $state
+        if ($cancelSignal -ne 'Continue') {
+            $state.Runtime.CancelRequested = $true
+            if ($cancelSignal -eq 'Quit') { $state.Runtime.QuitRequested = $true }
+            break
         }
     }
 
@@ -674,6 +737,12 @@ function Start-P4Browser {
         }
 
         while ($state.Runtime.IsRunning) {
+            # Deferred quit: after blocking workflow/command, honour a queued quit request (M3.1)
+            if ([bool]$state.Runtime.QuitRequested) {
+                $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Quit' })
+                continue
+            }
+
             Render-BrowserState -State $state
 
             # Poll for a keypress while also detecting console resize.
@@ -857,4 +926,4 @@ function Start-P4Browser {
     }
 }
 
-Export-ModuleMember -Function Start-P4Browser, Register-WorkflowKind
+Export-ModuleMember -Function Start-P4Browser, Register-WorkflowKind, Set-BrowserCheckCancelCallback

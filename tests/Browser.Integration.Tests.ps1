@@ -495,3 +495,84 @@ Describe 'Workflow error handling' {
         }
     }
 }
+
+Describe 'Workflow cancel semantics (M3.3)' {
+    BeforeEach {
+        InModuleScope PerfourceCommanderConsole {
+            # Reset to always-continue between tests
+            Set-BrowserCheckCancelCallback { return 'Continue' }
+        }
+    }
+
+    It 'workflow stops after cancel signal and does not process remaining items (M3.3)' {
+        InModuleScope PerfourceCommanderConsole {
+            Mock Render-BrowserState { }
+            Mock Remove-P4Changelist { }
+            Mock Get-P4ChangelistEntries {
+                @([pscustomobject]@{
+                    Id = '101'; Title = 'One'; Kind = 'Pending'; User = 'alice'
+                    Captured = [datetime]'2026-03-01'; HasOpenedFiles = $false
+                    HasShelvedFiles = $false; OpenedFileCount = 0; ShelvedFileCount = 0
+                })
+            }
+
+            # Cancel AFTER processing item 101 (first cancel check fires for first item)
+            $script:M3CancelSignals = @('Cancel', 'Continue', 'Continue')
+            $script:M3CancelIdx    = 0
+            Set-BrowserCheckCancelCallback {
+                $sig = if ($script:M3CancelIdx -lt $script:M3CancelSignals.Count) {
+                    $script:M3CancelSignals[$script:M3CancelIdx]
+                } else { 'Continue' }
+                $script:M3CancelIdx++
+                return $sig
+            }
+
+            $changes = @(
+                [pscustomobject]@{ Id = '101'; Title = 'One'; HasShelvedFiles = $false
+                    HasOpenedFiles = $false; Captured = [datetime]'2026-03-01' }
+            )
+            $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+            $state.Runtime.ConfiguredMax = 25
+
+            $next = & $script:WorkflowRegistry['DeleteMarked'] -State $state -Request ([pscustomobject]@{
+                ChangeIds = @('101', '102', '103')
+            })
+
+            # Only item 101 should have been processed (cancelled after first check)
+            Assert-MockCalled Remove-P4Changelist -Times 1 -Exactly
+
+            # WorkflowEnd was dispatched cleanly
+            $next.Runtime.ActiveWorkflow | Should -BeNullOrEmpty
+
+            # CancelRequested cleared by WorkflowEnd
+            $next.Runtime.CancelRequested | Should -BeFalse
+        }
+    }
+
+    It 'deferred quit: QuitRequested survives WorkflowEnd for the main loop to act on (M3.1)' {
+        InModuleScope PerfourceCommanderConsole {
+            Mock Render-BrowserState { }
+            Mock Remove-P4Changelist { }
+            Mock Get-P4ChangelistEntries { @() }
+
+            Set-BrowserCheckCancelCallback { return 'Quit' }
+
+            $changes = @(
+                [pscustomobject]@{ Id = '999'; Title = 'Q'; HasShelvedFiles = $false
+                    HasOpenedFiles = $false; Captured = [datetime]'2026-03-01' }
+            )
+            $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+            $state.Runtime.ConfiguredMax = 25
+
+            $next = & $script:WorkflowRegistry['DeleteMarked'] -State $state -Request ([pscustomobject]@{
+                ChangeIds = @('999')
+            })
+
+            # QuitRequested survives WorkflowEnd so the main loop can check it
+            $next.Runtime.QuitRequested   | Should -BeTrue
+            # CancelRequested cleared by WorkflowEnd; QuitRequested persists
+            $next.Runtime.CancelRequested  | Should -BeFalse
+            $next.Runtime.ActiveWorkflow   | Should -BeNullOrEmpty
+        }
+    }
+}

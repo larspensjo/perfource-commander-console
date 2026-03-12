@@ -347,13 +347,34 @@ Describe 'CommandModal reducer actions' {
         $next.Runtime.ModalPrompt.IsOpen | Should -BeFalse
     }
 
-    It 'HideCommandModal is a no-op while busy' {
+    It 'HideCommandModal when busy sets CancelRequested and keeps modal open (M3.2)' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
             Type = 'CommandStart'; CommandLine = 'p4 changes'; StartedAt = (Get-Date)
         })
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'HideCommandModal' })
         $next.Runtime.ModalPrompt.IsOpen | Should -BeTrue
         $next.Runtime.ModalPrompt.IsBusy | Should -BeTrue
+        $next.Runtime.CancelRequested   | Should -BeTrue
+    }
+
+    It 'HideCommandModal when busy still dismisses active overlay first (M3.2)' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'CommandStart'; CommandLine = 'p4 changes'; StartedAt = (Get-Date)
+        })
+        $state.Ui.OverlayMode = 'Help'
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'HideCommandModal' })
+        $next.Ui.OverlayMode              | Should -Be 'None'
+        $next.Runtime.CancelRequested    | Should -BeFalse
+        $next.Runtime.ModalPrompt.IsBusy | Should -BeTrue
+    }
+
+    It 'Quit when busy sets QuitRequested instead of stopping (M3.2)' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'CommandStart'; CommandLine = 'p4 changes'; StartedAt = (Get-Date)
+        })
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Quit' })
+        $next.Runtime.IsRunning     | Should -BeTrue
+        $next.Runtime.QuitRequested | Should -BeTrue
     }
 
     It 'Copy-BrowserState copies ModalPrompt and History' {
@@ -1507,6 +1528,15 @@ Describe 'Workflow framework actions' {
         })
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowEnd' })
         $next.Runtime.ActiveWorkflow | Should -BeNullOrEmpty
+    }
+
+    It 'WorkflowEnd clears CancelRequested (M3.2)' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'WorkflowBegin'; Kind = 'DeleteMarked'; TotalCount = 2
+        })
+        $state.Runtime.CancelRequested = $true
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'WorkflowEnd' })
+        $next.Runtime.CancelRequested | Should -BeFalse
     }
 
     It 'AcceptDialog with OnAccept queues PendingRequest from OnAccept' {

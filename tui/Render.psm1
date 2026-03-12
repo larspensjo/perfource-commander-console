@@ -18,6 +18,9 @@ $UNRESOLVED_BADGE_WIDTH = 2  # one glyph slot + one trailing space
 # Set to $true via Enable-FrameIntegrityTest to activate the runtime border checker.
 $script:IntegrityTestEnabled = $false
 
+# Set to $true via Disable-RenderFlush (test seam) to suppress all [Console]::Write calls.
+$script:SuppressFlush = $false
+
 function Get-PropertyValueOrDefault {
     param(
         [AllowNull()]$Object,
@@ -388,6 +391,8 @@ function Flush-FrameDiff {
     )
 
     $null = $Frame  # reserved: passed for API symmetry; not yet used in body
+
+    if ($script:SuppressFlush) { return $true }
 
     try {
         foreach ($row in @($ChangedRows)) {
@@ -2401,6 +2406,13 @@ function Enable-FrameIntegrityTest {
     $script:IntegrityTestEnabled = $true
 }
 
+# Test seam: suppress all [Console]::Write calls so render logic can run in unit
+# tests without leaking TUI output to the terminal.  Reset via InModuleScope:
+#   InModuleScope Render { $script:SuppressFlush = $false }
+function Disable-RenderFlush {
+    $script:SuppressFlush = $true
+}
+
 function Render-BrowserState {
     param(
         [Parameter(Mandatory = $true)]$State
@@ -2462,4 +2474,4 @@ function Render-BrowserState {
     }
 }
 
-Export-ModuleMember -Function Render-BrowserState, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Build-ConfirmDialogRows, Apply-ConfirmDialogOverlay, Build-MenuOverlayRows, Apply-MenuOverlay, Get-ActiveChangesList, Build-FilesScreenFrame, Build-FilesStatusBarRow, Build-CommandLogFrame, Build-CommandOutputFrame, Test-FrameIntegrity, Enable-FrameIntegrityTest
+Export-ModuleMember -Function Render-BrowserState, Flush-FrameDiff, Disable-RenderFlush, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Build-ConfirmDialogRows, Apply-ConfirmDialogOverlay, Build-MenuOverlayRows, Apply-MenuOverlay, Get-ActiveChangesList, Build-FilesScreenFrame, Build-FilesStatusBarRow, Build-CommandLogFrame, Build-CommandOutputFrame, Test-FrameIntegrity, Enable-FrameIntegrityTest

@@ -4,11 +4,14 @@ Import-Module $modulePath -Force
 Describe 'Start-P4Browser integration' {
     BeforeEach {
         InModuleScope Render {
-            $script:PreviousFrame = $null
+            $script:PreviousFrame        = $null
             $script:IntegrityTestEnabled = $false
         }
 
-        Mock Flush-FrameDiff -ModuleName Render { $true }
+        # Suppress [Console]::Write in the nested Render module used by PerfourceCommanderConsole.
+        # Cannot use InModuleScope 'Render' here because Render.Tests.ps1 loads a separate
+        # top-level Render instance; PerfourceCommanderConsole uses its own nested instance.
+        InModuleScope PerfourceCommanderConsole { Disable-RenderFlush }
 
         Mock Get-BrowserConsoleSize -ModuleName PerfourceCommanderConsole {
             [pscustomobject]@{ Width = 140; Height = 36 }

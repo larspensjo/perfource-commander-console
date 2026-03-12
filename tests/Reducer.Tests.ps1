@@ -1,7 +1,11 @@
 $modulePath = Join-Path $PSScriptRoot '..\tui\Reducer.psm1'
-Import-Module $modulePath -Force
+Import-Module $modulePath -Force -Global
 
 Describe 'Browser reducer' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+    }
+
     BeforeEach {
         $changes = @(
             [pscustomobject]@{ Id = '101'; Title = 'One';   HasShelvedFiles = $false; HasOpenedFiles = $true;  Captured = [datetime]'2026-02-10' },
@@ -2195,6 +2199,65 @@ Describe 'Browser reducer — M4 async actions' {
         $next.Data.DescribeCache['101'].Description      | Should -Be 'A great change'
     }
 
+    It 'AsyncCommandCancelling marks ActiveCommand as Cancelling' {
+        $state.Runtime.ActiveCommand = [pscustomobject]@{
+            RequestId = 'req-1'; Kind = 'ReloadPending'; Scope = 'Pending'; Generation = 0
+            CommandLine = 'p4 changes -s pending'; StartedAt = (Get-Date); Status = 'Running'
+        }
+
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type      = 'AsyncCommandCancelling'
+            RequestId = 'req-1'
+        })
+
+        $next.Runtime.ActiveCommand.Status | Should -Be 'Cancelling'
+    }
+
+    It 'ProcessStarted and ProcessFinished update active process tracking' {
+        $state.Runtime.ActiveCommand = [pscustomobject]@{
+            RequestId = 'req-1'; Kind = 'DeleteChange'; Scope = 'Mutation'; Generation = 0
+            CommandLine = 'p4 change -d 101'; StartedAt = (Get-Date); Status = 'Running'
+            CurrentProcessId = $null; ProcessIds = @()
+        }
+
+        $started = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'ProcessStarted'; RequestId = 'req-1'; ProcessId = 4242
+        })
+        $started.Runtime.ActiveCommand.CurrentProcessId | Should -Be 4242
+        @($started.Runtime.ActiveCommand.ProcessIds)    | Should -Contain 4242
+
+        $finished = Invoke-BrowserReducer -State $started -Action ([pscustomobject]@{
+            Type = 'ProcessFinished'; RequestId = 'req-1'; ProcessId = 4242; ExitCode = 0
+        })
+        @($finished.Runtime.ActiveCommand.ProcessIds).Count | Should -Be 0
+        $finished.Runtime.ActiveCommand.CurrentProcessId    | Should -BeNullOrEmpty
+    }
+
+    It 'FilesEnrichmentFailed marks cache status and records the error' {
+        $cacheKey = '101:Opened'
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type      = 'FilesEnrichmentFailed'
+            CacheKey  = $cacheKey
+            ErrorText = 'p4 diff timed out'
+        })
+
+        $next.Data.FileCacheStatus[$cacheKey] | Should -Be 'EnrichmentFailed'
+        $next.Runtime.LastError               | Should -Be 'p4 diff timed out'
+    }
+
+    It 'UnmarkChanges removes completed workflow change ids from the mark set' {
+        [void]$state.Query.MarkedChangeIds.Add('101')
+        [void]$state.Query.MarkedChangeIds.Add('102')
+
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type      = 'UnmarkChanges'
+            ChangeIds = @('101')
+        })
+
+        @($next.Query.MarkedChangeIds) | Should -Not -Contain '101'
+        @($next.Query.MarkedChangeIds) | Should -Contain '102'
+    }
+
     It 'M4 async action types are all registered as global actions' {
         (Test-IsBrowserGlobalAction -ActionType 'AsyncCommandStarted')    | Should -BeTrue
         (Test-IsBrowserGlobalAction -ActionType 'PendingChangesLoaded')   | Should -BeTrue
@@ -2202,5 +2265,10 @@ Describe 'Browser reducer — M4 async actions' {
         (Test-IsBrowserGlobalAction -ActionType 'FilesBaseLoaded')        | Should -BeTrue
         (Test-IsBrowserGlobalAction -ActionType 'FilesEnrichmentDone')    | Should -BeTrue
         (Test-IsBrowserGlobalAction -ActionType 'DescribeLoaded')         | Should -BeTrue
+        (Test-IsBrowserGlobalAction -ActionType 'AsyncCommandCancelling') | Should -BeTrue
+        (Test-IsBrowserGlobalAction -ActionType 'CommandCancelled')       | Should -BeTrue
+        (Test-IsBrowserGlobalAction -ActionType 'ProcessStarted')         | Should -BeTrue
+        (Test-IsBrowserGlobalAction -ActionType 'ProcessFinished')        | Should -BeTrue
+        (Test-IsBrowserGlobalAction -ActionType 'MutationCompleted')      | Should -BeTrue
     }
 }

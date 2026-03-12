@@ -115,6 +115,30 @@ Describe 'Invoke-P4' {
         $elapsed = (Get-Date) - $before
         $elapsed.TotalSeconds | Should -BeLessThan 5
     }
+
+    It 'invokes the process observer for process start and finish on success' {
+        $events = InModuleScope P4Cli {
+            $script:ObservedProcessEvents = [System.Collections.Generic.List[pscustomobject]]::new()
+            Invoke-P4 -P4Args @('/c', 'echo', '{"v":"ok"}') -ProcessObserver {
+                param($EventType, $ProcessId, $ExitCode)
+                $script:ObservedProcessEvents.Add([pscustomobject]@{ EventType = $EventType; ProcessId = $ProcessId; ExitCode = $ExitCode }) | Out-Null
+            } | Out-Null
+            return @($script:ObservedProcessEvents)
+        }
+
+        @($events).Count | Should -Be 2
+        $events[0].EventType | Should -Be 'ProcessStarted'
+        $events[1].EventType | Should -Be 'ProcessFinished'
+        $events[0].ProcessId | Should -BeGreaterThan 0
+        $events[1].ExitCode  | Should -Be 0
+    }
+}
+
+Describe 'Timeout helpers' {
+    It 'Test-IsP4TimeoutError identifies timeout messages' {
+        Test-IsP4TimeoutError -Message 'p4 timed out after 123 ms. Args: changes -m 1' | Should -BeTrue
+        Test-IsP4TimeoutError -Message 'network error' | Should -BeFalse
+    }
 }
 
 Describe 'Get-P4Describe' {

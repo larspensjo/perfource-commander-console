@@ -4,8 +4,9 @@ $script:CommandHistoryMaxSize = 50
 $script:CommandLogMaxSize     = 200
 $script:BrowserGlobalActionTypes = @(
     'CommandStart', 'CommandFinish',
-    'AsyncCommandStarted',
-    'PendingChangesLoaded', 'SubmittedChangesLoaded', 'FilesBaseLoaded', 'FilesEnrichmentDone', 'DescribeLoaded',
+    'AsyncCommandStarted', 'AsyncCommandCancelling', 'AsyncCommandFailed', 'CommandCancelled',
+    'PendingChangesLoaded', 'SubmittedChangesLoaded', 'FilesBaseLoaded', 'FilesEnrichmentDone', 'FilesEnrichmentFailed', 'DescribeLoaded', 'MutationCompleted',
+    'ProcessStarted', 'ProcessFinished',
     'ToggleCommandModal', 'ShowCommandModal',
     'SwitchView',
     'Quit', 'Resize',
@@ -13,7 +14,7 @@ $script:BrowserGlobalActionTypes = @(
     'OpenConfirmDialog', 'AcceptDialog', 'CancelDialog',
     'OpenMenu', 'MenuMoveUp', 'MenuMoveDown', 'MenuSwitchLeft', 'MenuSwitchRight', 'MenuSelect', 'MenuAccelerator',
     'WorkflowBegin', 'WorkflowItemComplete', 'WorkflowItemFailed', 'WorkflowEnd',
-    'ReconcileMarks',
+    'ReconcileMarks', 'UnmarkChanges',
     'LogCommandExecution'
 )
 
@@ -32,6 +33,8 @@ $script:PendingRequestScopeByKind = @{
     'FetchDescribe'       = 'Describe'
     'DeleteChange'        = 'Mutation'
     'DeleteShelvedFiles'  = 'Mutation'
+    'ShelveFiles'         = 'Mutation'
+    'MoveFiles'           = 'Mutation'
     'ExecuteWorkflow'     = 'Workflow'
 }
 
@@ -592,7 +595,7 @@ function New-BrowserState {
             QuitRequested    = $false   # set by Q when busy; main loop dispatches Quit when safe (M3.1)
             ActiveWorkflow       = $null   # null | @{ Kind; TotalCount; DoneCount; FailedCount; FailedIds }
             LastWorkflowResult  = $null   # null | @{ Kind; DoneCount; FailedCount; FailedIds }
-            ActiveCommand        = $null   # null | @{ RequestId; Kind; Scope; Generation; CommandLine; StartedAt; Status } (M4.5)
+            ActiveCommand        = $null   # null | @{ RequestId; Kind; Scope; Generation; CommandLine; StartedAt; Status; CurrentProcessId; ProcessIds } (M4.5/M5.2)
             ConfiguredMax  = 200
             NextCommandId            = 1
             CommandLog               = @()
@@ -1098,7 +1101,8 @@ function Invoke-ChangelistReducer {
             if ($succeeded) {
                 $next.Runtime.ModalPrompt.IsOpen = $false
             }
-            $next.Runtime.ActiveCommand = $null   # clear async-command tracking (M4.5)
+            $next.Runtime.ActiveCommand   = $null   # clear async-command tracking (M4.5)
+            $next.Runtime.CancelRequested = $false
             return $next
         }
         'AsyncCommandStarted' {
@@ -1107,7 +1111,7 @@ function Invoke-ChangelistReducer {
             $next.Runtime.ModalPrompt.IsOpen          = $true
             $next.Runtime.ModalPrompt.Purpose         = 'Command'
             $next.Runtime.ModalPrompt.CurrentCommand  = [string]$Action.CommandLine
-            $next.Runtime.ModalPrompt.CurrentTimeoutMs = 0
+            $next.Runtime.ModalPrompt.CurrentTimeoutMs = if (($Action.PSObject.Properties.Match('TimeoutMs')).Count -gt 0) { [int]$Action.TimeoutMs } else { 0 }
             $next.Runtime.ActiveCommand = [pscustomobject]@{
                 RequestId   = [string]$Action.RequestId
                 Kind        = [string]$Action.Kind
@@ -1116,6 +1120,17 @@ function Invoke-ChangelistReducer {
                 CommandLine = [string]$Action.CommandLine
                 StartedAt   = [datetime]$Action.StartedAt
                 Status      = 'Running'
+                CurrentProcessId = $null
+                ProcessIds       = @()
+            }
+            return $next
+        }
+        'AsyncCommandCancelling' {
+            if ($null -ne $next.Runtime.ActiveCommand) {
+                $reqId = if (($Action.PSObject.Properties.Match('RequestId')).Count -gt 0) { [string]$Action.RequestId } else { '' }
+                if ([string]::IsNullOrWhiteSpace($reqId) -or [string]$next.Runtime.ActiveCommand.RequestId -eq $reqId) {
+                    $next.Runtime.ActiveCommand.Status = 'Cancelling'
+                }
             }
             return $next
         }
@@ -1205,10 +1220,61 @@ function Invoke-ChangelistReducer {
             $next.Runtime.ActiveCommand           = $null
             return Update-BrowserDerivedState -State $next
         }
+        'FilesEnrichmentFailed' {
+            $cacheKey = [string]$Action.CacheKey
+            $next.Data.FileCacheStatus[$cacheKey] = 'EnrichmentFailed'
+            $next.Runtime.ActiveCommand           = $null
+            $next.Runtime.LastError               = if (($Action.PSObject.Properties.Match('ErrorText')).Count -gt 0) { [string]$Action.ErrorText } else { '' }
+            return Update-BrowserDerivedState -State $next
+        }
         'DescribeLoaded' {
             $change = [string]$Action.Change
             $next.Data.DescribeCache[$change] = $Action.Describe
             $next.Runtime.ActiveCommand       = $null
+            return $next
+        }
+        'MutationCompleted' {
+            $next.Runtime.ActiveCommand = $null
+            $next.Runtime.LastError     = $null
+            return $next
+        }
+        'AsyncCommandFailed' {
+            $next.Runtime.ActiveCommand = $null
+            $next.Runtime.LastError     = if (($Action.PSObject.Properties.Match('ErrorText')).Count -gt 0) { [string]$Action.ErrorText } else { '' }
+            return $next
+        }
+        'CommandCancelled' {
+            $next.Runtime.ActiveCommand = $null
+            $next.Runtime.LastError     = $null
+            return $next
+        }
+        'ProcessStarted' {
+            if ($null -ne $next.Runtime.ActiveCommand) {
+                $reqId = if (($Action.PSObject.Properties.Match('RequestId')).Count -gt 0) { [string]$Action.RequestId } else { '' }
+                if ([string]$next.Runtime.ActiveCommand.RequestId -eq $reqId) {
+                    $pid = if (($Action.PSObject.Properties.Match('ProcessId')).Count -gt 0) { [int]$Action.ProcessId } else { 0 }
+                    $existing = if (($next.Runtime.ActiveCommand.PSObject.Properties.Match('ProcessIds')).Count -gt 0) {
+                        @($next.Runtime.ActiveCommand.ProcessIds) | ForEach-Object { [int]$_ }
+                    } else { @() }
+                    if ($existing -notcontains $pid) {
+                        $next.Runtime.ActiveCommand.ProcessIds = @($existing + @($pid))
+                    }
+                    $next.Runtime.ActiveCommand.CurrentProcessId = $pid
+                }
+            }
+            return $next
+        }
+        'ProcessFinished' {
+            if ($null -ne $next.Runtime.ActiveCommand) {
+                $reqId = if (($Action.PSObject.Properties.Match('RequestId')).Count -gt 0) { [string]$Action.RequestId } else { '' }
+                if ([string]$next.Runtime.ActiveCommand.RequestId -eq $reqId) {
+                    $pid = if (($Action.PSObject.Properties.Match('ProcessId')).Count -gt 0) { [int]$Action.ProcessId } else { 0 }
+                    $currentProcessIds = if (($next.Runtime.ActiveCommand.PSObject.Properties.Match('ProcessIds')).Count -gt 0) { @($next.Runtime.ActiveCommand.ProcessIds) } else { @() }
+                    $remaining = @($currentProcessIds | Where-Object { [int]$_ -ne $pid })
+                    $next.Runtime.ActiveCommand.ProcessIds = $remaining
+                    $next.Runtime.ActiveCommand.CurrentProcessId = if ($remaining.Count -gt 0) { [int]$remaining[-1] } else { $null }
+                }
+            }
             return $next
         }
         'ShowCommandModal' {
@@ -1513,6 +1579,17 @@ function Invoke-ChangelistReducer {
                 if ($null -ne $markedProp -and $null -ne $markedProp.Value) {
                     $staleIds = @($markedProp.Value | Where-Object { -not $validSet.Contains([string]$_) })
                     foreach ($staleId in $staleIds) { [void]$markedProp.Value.Remove($staleId) }
+                }
+            }
+            return $next
+        }
+        'UnmarkChanges' {
+            [string[]]$changeIds = if (($Action.PSObject.Properties.Match('ChangeIds')).Count -gt 0) {
+                @($Action.ChangeIds | ForEach-Object { [string]$_ })
+            } else { @() }
+            foreach ($changeId in $changeIds) {
+                if (-not [string]::IsNullOrWhiteSpace($changeId)) {
+                    [void]$next.Query.MarkedChangeIds.Remove($changeId)
                 }
             }
             return $next

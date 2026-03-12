@@ -604,3 +604,129 @@ Describe 'Workflow cancel semantics (M3.3)' {
         }
     }
 }
+
+Describe 'Async cancellation races (M5.5)' {
+    BeforeEach {
+        InModuleScope PerfourceCommanderConsole {
+            $script:AsyncJobRegistry = @{}
+            Set-BrowserAsyncExecutor -Executor ([pscustomobject]@{
+                Execute = {
+                    param([pscustomobject]$Envelope, [scriptblock]$Worker)
+                    throw 'Execute should not be called in this test.'
+                }
+                Poll = {
+                    param([string]$RequestId)
+                    if ($script:AsyncJobRegistry.ContainsKey($RequestId)) {
+                        $result = $script:AsyncJobRegistry[$RequestId]
+                        [void]$script:AsyncJobRegistry.Remove($RequestId)
+                        return $result
+                    }
+                    return $null
+                }
+                Cancel = {
+                    param([string]$RequestId)
+                    [void]$script:AsyncJobRegistry.Remove($RequestId)
+                }
+            })
+        }
+    }
+
+    It 'cancel arriving after completion is a no-op' {
+        InModuleScope PerfourceCommanderConsole {
+            $startedAt = [datetime]'2026-03-12T10:00:00'
+            $state = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                Type        = 'AsyncCommandStarted'
+                RequestId   = 'req-1'
+                Kind        = 'DeleteChange'
+                Scope       = 'Mutation'
+                Generation  = 0
+                CommandLine = 'p4 change -d 101'
+                StartedAt   = $startedAt
+                TimeoutMs   = 30000
+            })
+
+            $script:AsyncJobRegistry['req-1'] = [pscustomobject]@{
+                Type             = 'MutationCompleted'
+                RequestId        = 'req-1'
+                Generation       = 0
+                Success          = $true
+                Outcome          = 'Completed'
+                ObservedCommands = @()
+            }
+
+            $drainResult = Invoke-BrowserCompletionDrain -State $state
+            $drainResult.Completion.Type | Should -Be 'MutationCompleted'
+
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                Type          = 'CommandFinish'
+                CommandLine   = 'p4 change -d 101'
+                StartedAt     = $startedAt
+                EndedAt       = $startedAt.AddMilliseconds(250)
+                ExitCode      = 0
+                Succeeded     = $true
+                ErrorText     = ''
+                DurationClass = 'Info'
+                Outcome       = 'Completed'
+            })
+            $state = Invoke-BrowserReducer -State $state -Action $drainResult.Completion
+
+            $state.Runtime.ActiveCommand | Should -BeNullOrEmpty
+            $cancelResult = Invoke-BrowserCancelActiveCommand -State $state
+            $cancelResult | Should -BeNullOrEmpty
+        }
+    }
+
+    It 'cancel takes precedence over a queued timeout completion' {
+        InModuleScope PerfourceCommanderConsole {
+            $startedAt = [datetime]'2026-03-12T10:05:00'
+            $state = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                Type        = 'AsyncCommandStarted'
+                RequestId   = 'req-2'
+                Kind        = 'DeleteChange'
+                Scope       = 'Mutation'
+                Generation  = 0
+                CommandLine = 'p4 change -d 202'
+                StartedAt   = $startedAt
+                TimeoutMs   = 30000
+            })
+
+            $script:AsyncJobRegistry['req-2'] = [pscustomobject]@{
+                Type             = 'AsyncCommandFailed'
+                RequestId        = 'req-2'
+                Generation       = 0
+                ErrorText        = 'p4 timed out after 10 ms. Args: change -d 202'
+                Success          = $false
+                Outcome          = 'TimedOut'
+                ObservedCommands = @()
+            }
+
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                Type      = 'AsyncCommandCancelling'
+                RequestId = 'req-2'
+            })
+            $cancelResult = Invoke-BrowserCancelActiveCommand -State $state
+
+            $cancelResult.Completion.Type | Should -Be 'CommandCancelled'
+            $cancelResult.Completion.Outcome | Should -Be 'Cancelled'
+
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                Type          = 'CommandFinish'
+                CommandLine   = 'p4 change -d 202'
+                StartedAt     = $startedAt
+                EndedAt       = $startedAt.AddMilliseconds(150)
+                ExitCode      = 1
+                Succeeded     = $false
+                ErrorText     = 'Command cancelled.'
+                DurationClass = 'Info'
+                Outcome       = 'Cancelled'
+            })
+            $state = Invoke-BrowserReducer -State $state -Action $cancelResult.Completion
+
+            $state.Runtime.ActiveCommand | Should -BeNullOrEmpty
+            $state.Runtime.LastError | Should -BeNullOrEmpty
+            (Invoke-BrowserCompletionDrain -State $state) | Should -BeNullOrEmpty
+        }
+    }
+}

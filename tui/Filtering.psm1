@@ -77,6 +77,10 @@ function Get-CommandLogFilterPredicates {
     # Status filters
     $result['OK']    = { param($e) [bool]$e.Succeeded }.GetNewClosure()
     $result['Error'] = { param($e) -not [bool]$e.Succeeded }.GetNewClosure()
+    $result['status:completed'] = { param($e) ([string]$e.Outcome) -eq 'Completed' }.GetNewClosure()
+    $result['status:failed']    = { param($e) ([string]$e.Outcome) -eq 'Failed' }.GetNewClosure()
+    $result['status:timedout']  = { param($e) ([string]$e.Outcome) -eq 'TimedOut' }.GetNewClosure()
+    $result['status:cancelled'] = { param($e) ([string]$e.Outcome) -eq 'Cancelled' }.GetNewClosure()
 
     # Duration-class filters (M1.3)
     $result['duration:info']     = { param($e) ([string]$e.DurationClass) -in @('Info', 'Warning', 'Critical') }.GetNewClosure()

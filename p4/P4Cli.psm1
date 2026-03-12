@@ -354,6 +354,25 @@ function Get-P4CommandTimeout {
     return [int]$script:P4TimeoutByCategory[$category]
 }
 
+function Stop-P4ProcessTree {
+    <#
+    .SYNOPSIS
+        Best-effort kill of a p4 child-process tree.
+    #>
+    [CmdletBinding()]
+    param([int]$ProcessId)
+
+    if ($ProcessId -le 0) { return }
+    try { $null = & taskkill /F /T /PID $ProcessId 2>&1 } catch { }
+}
+
+function Test-IsP4TimeoutError {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$Message)
+
+    return ([string]$Message -match '(?i)\bp4 timed out after\b')
+}
+
 function Invoke-P4 {
     [CmdletBinding()]
     param(
@@ -367,7 +386,10 @@ function Invoke-P4 {
         # the session-global $script:P4ExecutionObserver.  Enables safe async execution
         # where concurrent workers each carry their own observer without clobbering each other.
         # Signature: { param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs) }
-        [scriptblock]$Observer = $null
+        [scriptblock]$Observer = $null,
+        # Per-invocation process lifecycle callback (M5.2).
+        # Signature: { param($EventType,$ProcessId,$ExitCode) }
+        [scriptblock]$ProcessObserver = $null
     )
 
     # Resolve effective timeout: caller-supplied value when non-negative, otherwise
@@ -405,6 +427,10 @@ function Invoke-P4 {
         throw 'Failed to start p4.exe'
     }
 
+    if ($ProcessObserver) {
+        try { & $ProcessObserver -EventType 'ProcessStarted' -ProcessId $process.Id -ExitCode $null } catch { }
+    }
+
     if ($InputLines.Count -gt 0) {
         foreach ($line in $InputLines) {
             $process.StandardInput.WriteLine([string]$line)
@@ -426,8 +452,11 @@ function Invoke-P4 {
         # such as p4d helpers don't keep stdout/stderr pipe handles open.
         # Process.Kill() alone only terminates the direct process; on Windows
         # this leaves children alive and leaks pipe handles / async tasks.
-        try { $null = & taskkill /F /T /PID $process.Id 2>&1 } catch { <# best-effort #> }
+        Stop-P4ProcessTree -ProcessId $process.Id
         try { if (-not $process.HasExited) { $process.Kill() } } catch { <# fallback #> }
+        if ($ProcessObserver) {
+            try { & $ProcessObserver -EventType 'ProcessFinished' -ProcessId $process.Id -ExitCode -1 } catch { }
+        }
         # Dispose closes the redirected stream handles so ReadToEndAsync tasks
         # complete promptly instead of dangling until GC finalizes them.
         try { $process.Dispose() } catch { <# best-effort #> }
@@ -437,6 +466,9 @@ function Invoke-P4 {
     $stdout = $stdoutTask.GetAwaiter().GetResult()
     $stderr = $stderrTask.GetAwaiter().GetResult()
     $exitCode = $process.ExitCode
+    if ($ProcessObserver) {
+        try { & $ProcessObserver -EventType 'ProcessFinished' -ProcessId $process.Id -ExitCode $exitCode } catch { }
+    }
     $process.Dispose()
 
     $rawLines  = @(($stdout -split "`r?`n") | Where-Object { $_ -ne '' })
@@ -503,9 +535,11 @@ function Invoke-P4 {
 
 function Get-P4Info {
     [CmdletBinding()]
-    param()
+    param(
+        [scriptblock]$ProcessObserver = $null
+    )
 
-    $lines = Invoke-P4 -P4Args @('info')
+    $lines = Invoke-P4 -P4Args @('info') -ProcessObserver $ProcessObserver
 
     $record = $lines | Select-Object -First 1
 
@@ -520,10 +554,11 @@ function Get-P4Info {
 function Get-P4PendingChangelists {
     [CmdletBinding()]
     param(
-        [int]$Max = 200
+        [int]$Max = 200,
+        [scriptblock]$ProcessObserver = $null
     )
 
-    $info = Get-P4Info
+    $info = Get-P4Info -ProcessObserver $ProcessObserver
     $lines = Invoke-P4 -P4Args @(
         'changes',
         '-l',
@@ -531,7 +566,7 @@ function Get-P4PendingChangelists {
         '-u', $info.User,
         '-c', $info.Client,
         '-m', "$Max"
-    )
+    ) -ProcessObserver $ProcessObserver
 
     $records = $lines
     $result = foreach ($record in $records) {
@@ -559,11 +594,12 @@ function Get-P4PendingChangelists {
 function Get-P4ChangelistEntries {
     [CmdletBinding()]
     param(
-        [int]$Max = 200
+        [int]$Max = 200,
+        [scriptblock]$ProcessObserver = $null
     )
 
-    $changelists     = @(Get-P4PendingChangelists -Max $Max)
-    $openedCounts    = Get-P4OpenedFileCounts
+    $changelists     = @(Get-P4PendingChangelists -Max $Max -ProcessObserver $ProcessObserver)
+    $openedCounts    = Get-P4OpenedFileCounts -ProcessObserver $ProcessObserver
 
     $hasDefaultPending = @($changelists | Where-Object { [string]$_.Change -eq 'default' }).Count -gt 0
     if ($openedCounts.ContainsKey('default') -and -not $hasDefaultPending) {
@@ -573,7 +609,7 @@ function Get-P4ChangelistEntries {
             $defaultUser = [string]$changelists[0].User
             $defaultClient = [string]$changelists[0].Client
         } else {
-            $info = Get-P4Info
+            $info = Get-P4Info -ProcessObserver $ProcessObserver
             $defaultUser = [string]$info.User
             $defaultClient = [string]$info.Client
         }
@@ -594,12 +630,12 @@ function Get-P4ChangelistEntries {
             ForEach-Object { ConvertTo-P4ChangelistId -Value $_.Change } |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
     )
-    $shelvedCounts   = Get-P4ShelvedFileCounts -ChangeNumbers $changeNumbers
+    $shelvedCounts   = Get-P4ShelvedFileCounts -ChangeNumbers $changeNumbers -ProcessObserver $ProcessObserver
 
     # Workspace-wide unresolved enrichment — degrades gracefully on failure.
     # Short-circuit when there are no pending changelists to avoid unnecessary p4 fstat calls.
     $unresolvedCounts = if ($changeNumbers.Count -gt 0) {
-        Get-P4UnresolvedFileCounts -ChangeNumbers $changeNumbers
+        Get-P4UnresolvedFileCounts -ChangeNumbers $changeNumbers -ProcessObserver $ProcessObserver
     } else {
         New-P4ChangeCountDictionary
     }
@@ -663,10 +699,11 @@ function ConvertFrom-P4DescribeRecordToFiles {
 function Get-P4Describe {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$Change
+        [Parameter(Mandatory)][string]$Change,
+        [scriptblock]$ProcessObserver = $null
     )
 
-    $lines = Invoke-P4 -P4Args @('describe', '-s', "$Change")
+    $lines = Invoke-P4 -P4Args @('describe', '-s', "$Change") -ProcessObserver $ProcessObserver
 
     $record = $lines | Select-Object -First 1
     if ($null -eq $record -or $null -eq ($record.PSObject.Properties['change'])) {
@@ -806,10 +843,12 @@ function Get-P4OpenedFileCounts {
         Returns a dictionary mapping changelist number to the count of opened files in that CL.
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [scriptblock]$ProcessObserver = $null
+    )
 
     try {
-        $lines = Invoke-P4 -P4Args @('opened')
+        $lines = Invoke-P4 -P4Args @('opened') -ProcessObserver $ProcessObserver
     }
     catch {
         $errorMessage = [string]$_.Exception.Message
@@ -887,7 +926,8 @@ function Get-P4ShelvedFileCounts {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ChangeNumbers
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ChangeNumbers,
+        [scriptblock]$ProcessObserver = $null
     )
 
     $result = New-P4ChangeCountDictionary
@@ -901,7 +941,7 @@ function Get-P4ShelvedFileCounts {
         $chunk = $ChangeNumbers[$i..$end]
         $p4Args = @('describe', '-S', '-s') + @($chunk | ForEach-Object { "$_" })
         try {
-            $lines = Invoke-P4 -P4Args $p4Args
+            $lines = Invoke-P4 -P4Args $p4Args -ProcessObserver $ProcessObserver
             if ($null -eq $lines) { $lines = @() }
             $chunkCounts = ConvertFrom-P4DescribeShelvedLinesToFileCounts -Records $lines
             foreach ($kvp in $chunkCounts.GetEnumerator()) {
@@ -930,12 +970,13 @@ function Get-P4OpenedFiles {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$Change
+        [Parameter(Mandatory)][string]$Change,
+        [scriptblock]$ProcessObserver = $null
     )
 
     $lines = @()
     try {
-        $lines = @(Invoke-P4 -P4Args (New-P4FstatOpenedArgs -Change $Change))
+        $lines = @(Invoke-P4 -P4Args (New-P4FstatOpenedArgs -Change $Change) -ProcessObserver $ProcessObserver)
     }
     catch {
         $errorMessage = [string]$_.Exception.Message
@@ -1033,7 +1074,8 @@ function Get-P4UnresolvedFileCounts {
     [CmdletBinding()]
     param(
         [AllowEmptyCollection()][string[]]$ChangeNumbers = @(),
-        [int]$BudgetMs = -1
+        [int]$BudgetMs = -1,
+        [scriptblock]$ProcessObserver = $null
     )
 
     $effectiveBudgetMs = if ($BudgetMs -ge 0) { $BudgetMs } else { $script:EnrichmentBudgetMs }
@@ -1060,7 +1102,7 @@ function Get-P4UnresolvedFileCounts {
             }
 
             try {
-                $lines = Invoke-P4 -P4Args (New-P4FstatUnresolvedArgs -Fields $script:P4FstatUnresolvedCountFields -Change $change)
+                $lines = Invoke-P4 -P4Args (New-P4FstatUnresolvedArgs -Fields $script:P4FstatUnresolvedCountFields -Change $change) -ProcessObserver $ProcessObserver
             }
             catch {
                 $errorMessage = [string]$_.Exception.Message
@@ -1088,7 +1130,7 @@ function Get-P4UnresolvedFileCounts {
     }
 
     try {
-        $lines = Invoke-P4 -P4Args (New-P4FstatUnresolvedArgs -Fields $script:P4FstatUnresolvedCountFields)
+        $lines = Invoke-P4 -P4Args (New-P4FstatUnresolvedArgs -Fields $script:P4FstatUnresolvedCountFields) -ProcessObserver $ProcessObserver
     }
     catch {
         $errorMessage = [string]$_.Exception.Message
@@ -1166,7 +1208,8 @@ function Get-P4ModifiedDepotPaths {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][object[]]$FileEntries
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][object[]]$FileEntries,
+        [scriptblock]$ProcessObserver = $null
     )
 
     $result = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -1187,7 +1230,7 @@ function Get-P4ModifiedDepotPaths {
     }
 
     try {
-        $lines = @(Invoke-P4 -P4Args @('diff', '-sa') -AllowedExitCodes @(0, 1) -InputLines $depotPaths)
+        $lines = @(Invoke-P4 -P4Args @('diff', '-sa') -AllowedExitCodes @(0, 1) -InputLines $depotPaths -ProcessObserver $ProcessObserver)
     }
     catch {
         return ,$result
@@ -1287,10 +1330,11 @@ function Remove-P4Changelist {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$Change
+        [Parameter(Mandatory)][string]$Change,
+        [scriptblock]$ProcessObserver = $null
     )
 
-    Invoke-P4 -P4Args @('change', '-d', "$Change") | Out-Null
+    Invoke-P4 -P4Args @('change', '-d', "$Change") -ProcessObserver $ProcessObserver | Out-Null
 }
 
 function Invoke-P4ShelveFiles {
@@ -1306,10 +1350,11 @@ function Invoke-P4ShelveFiles {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$Change
+        [Parameter(Mandatory)][string]$Change,
+        [scriptblock]$ProcessObserver = $null
     )
 
-    Invoke-P4 -P4Args @('shelve', '-f', '-c', "$Change") | Out-Null
+    Invoke-P4 -P4Args @('shelve', '-f', '-c', "$Change") -ProcessObserver $ProcessObserver | Out-Null
 }
 
 function Remove-P4ShelvedFiles {
@@ -1324,10 +1369,11 @@ function Remove-P4ShelvedFiles {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$Change
+        [Parameter(Mandatory)][string]$Change,
+        [scriptblock]$ProcessObserver = $null
     )
 
-    Invoke-P4 -P4Args @('shelve', '-d', '-c', "$Change") | Out-Null
+    Invoke-P4 -P4Args @('shelve', '-d', '-c', "$Change") -ProcessObserver $ProcessObserver | Out-Null
 }
 
 function Get-P4SubmittedChangelists {
@@ -1350,11 +1396,12 @@ function Get-P4SubmittedChangelists {
     param(
         [int]$Max = 50,
         [int]$BeforeChange = 0,
-        [string]$Client = ''
+        [string]$Client = '',
+        [scriptblock]$ProcessObserver = $null
     )
 
     if ([string]::IsNullOrWhiteSpace($Client)) {
-        $info = Get-P4Info
+        $info = Get-P4Info -ProcessObserver $ProcessObserver
         $Client = [string]$info.Client
     }
 
@@ -1363,7 +1410,7 @@ function Get-P4SubmittedChangelists {
 
     $p4Args = @('changes', '-l', '-s', 'submitted', '-m', "$Max", $querySpec)
 
-    $lines = Invoke-P4 -P4Args $p4Args
+    $lines = Invoke-P4 -P4Args $p4Args -ProcessObserver $ProcessObserver
     $records = $lines
 
     $result = foreach ($record in $records) {
@@ -1406,10 +1453,11 @@ function Get-P4SubmittedChangelistEntries {
     param(
         [int]$Max = 50,
         [int]$BeforeChange = 0,
-        [string]$Client = ''
+        [string]$Client = '',
+        [scriptblock]$ProcessObserver = $null
     )
 
-    $changelists = Get-P4SubmittedChangelists -Max $Max -BeforeChange $BeforeChange -Client $Client
+    $changelists = Get-P4SubmittedChangelists -Max $Max -BeforeChange $BeforeChange -Client $Client -ProcessObserver $ProcessObserver
 
     $changelists | ForEach-Object {
         ConvertTo-SubmittedChangelistEntry -Changelist $_
@@ -1434,18 +1482,19 @@ function Invoke-P4ReopenFiles {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$SourceChange,
-        [Parameter(Mandatory)][string]$TargetChange
+        [Parameter(Mandatory)][string]$TargetChange,
+        [scriptblock]$ProcessObserver = $null
     )
 
-    $files = @(Get-P4OpenedFiles -Change $SourceChange)
+    $files = @(Get-P4OpenedFiles -Change $SourceChange -ProcessObserver $ProcessObserver)
     if ($files.Count -eq 0) {
         return @{ MovedCount = 0; Files = @() }
     }
 
     [string[]]$depotPaths = @($files | ForEach-Object { [string]$_.DepotPath })
-    Invoke-P4 -P4Args (@('reopen', '-c', "$TargetChange") + $depotPaths) | Out-Null
+    Invoke-P4 -P4Args (@('reopen', '-c', "$TargetChange") + $depotPaths) -ProcessObserver $ProcessObserver | Out-Null
 
     return @{ MovedCount = $depotPaths.Count; Files = $depotPaths }
 }
 
-Export-ModuleMember -Function ConvertTo-P4ChangelistId, Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Get-P4CommandCategory, Get-DurationClass, Get-P4CommandTimeout, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Get-P4ModifiedDepotPaths, Set-P4FileEntriesUnresolvedState, Set-P4FileEntriesContentModifiedState, Remove-P4Changelist, Invoke-P4ShelveFiles, Remove-P4ShelvedFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles
+Export-ModuleMember -Function ConvertTo-P4ChangelistId, Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Get-P4CommandCategory, Get-DurationClass, Get-P4CommandTimeout, Stop-P4ProcessTree, Test-IsP4TimeoutError, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Get-P4ModifiedDepotPaths, Set-P4FileEntriesUnresolvedState, Set-P4FileEntriesContentModifiedState, Remove-P4Changelist, Invoke-P4ShelveFiles, Remove-P4ShelvedFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles

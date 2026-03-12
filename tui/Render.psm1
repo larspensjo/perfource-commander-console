@@ -952,8 +952,13 @@ function Build-CommandModalRows {
     foreach ($entry in $history) {
         if ($contentRows.Count -ge ($innerRows - 1)) { break }  # reserve 1 row for footer
         $ts           = ([datetime]$entry.StartedAt).ToString('HH:mm:ss')
-        $tag          = if ([bool]$entry.Succeeded) { '[OK] ' } else { '[ERR]' }
-        $tagColor     = if ([bool]$entry.Succeeded) { 'Green' } else { 'Red' }
+        $outcome      = if (($entry.PSObject.Properties.Match('Outcome')).Count -gt 0) { [string]$entry.Outcome } else { if ([bool]$entry.Succeeded) { 'Completed' } else { 'Failed' } }
+        switch ($outcome) {
+            'Completed' { $tag = '[OK] '; $tagColor = 'Green'  }
+            'TimedOut'  { $tag = '[TMO]'; $tagColor = 'Yellow' }
+            'Cancelled' { $tag = '[CXL]'; $tagColor = 'Yellow' }
+            default     { $tag = '[ERR]'; $tagColor = 'Red'    }
+        }
         $durationMs   = [int]$entry.DurationMs
         $durationClass = if (($entry.PSObject.Properties.Match('DurationClass')).Count -gt 0) { [string]$entry.DurationClass } else { 'Normal' }
         $durationColor = switch ($durationClass) {
@@ -970,7 +975,7 @@ function Build-CommandModalRows {
             @{ Text = "  $cmdLine"; Color = 'Gray' }
         ))
         # For failed entries, append a detail row with the extracted error reason
-        if (-not [bool]$entry.Succeeded -and $contentRows.Count -lt ($innerRows - 1)) {
+        if ($outcome -in @('Failed', 'TimedOut') -and $contentRows.Count -lt ($innerRows - 1)) {
             $errMsg     = [string]$entry.ErrorText
             $stderrLine = ($errMsg -split '\r?\n' | Where-Object { $_ -match '^STDERR:' } | Select-Object -First 1)
             if ($stderrLine) {
@@ -1711,9 +1716,13 @@ function Build-CommandLogRowSegments {
     }
 
     $timeStr   = ([datetime]$Entry.StartedAt).ToString('HH:mm:ss')
-    $succeeded = [bool]$Entry.Succeeded
-    $tag       = if ($succeeded) { [char]0x2713 } else { [char]0x2717 }  # ✓ / ✗
-    $tagColor  = if ($succeeded) { 'Green' } else { 'Red' }
+    $outcome   = if (($Entry.PSObject.Properties.Match('Outcome')).Count -gt 0) { [string]$Entry.Outcome } else { if ([bool]$Entry.Succeeded) { 'Completed' } else { 'Failed' } }
+    switch ($outcome) {
+        'Completed' { $tag = [char]0x2713; $tagColor = 'Green'  }
+        'TimedOut'  { $tag = [char]0x23F1; $tagColor = 'Yellow' }
+        'Cancelled' { $tag = [char]0x26A0; $tagColor = 'Yellow' }
+        default     { $tag = [char]0x2717; $tagColor = 'Red'    }
+    }
     # Strip p4 global metadata flags added by Invoke-P4 (-ztag -Mj) so the user
     # sees only the meaningful subcommand and its arguments.
     $cmdLine   = ([string]$Entry.CommandLine) -replace ' -ztag -Mj', ''

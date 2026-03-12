@@ -168,6 +168,18 @@ Describe 'Get-CommandLogFilterPredicates' {
         $predicates['Error'].Invoke($entry) | Should -BeTrue
     }
 
+    It 'returns explicit outcome predicates for cancelled and timed-out entries' {
+        $cancelled = [pscustomobject]@{ Succeeded = $false; Outcome = 'Cancelled'; CommandLine = 'p4 change -d 123' }
+        $timedOut  = [pscustomobject]@{ Succeeded = $false; Outcome = 'TimedOut';  CommandLine = 'p4 diff -sa' }
+        $predicates = Get-CommandLogFilterPredicates -CommandLog @($cancelled, $timedOut)
+
+        $predicates.Contains('status:cancelled') | Should -BeTrue
+        $predicates.Contains('status:timedout')  | Should -BeTrue
+        $predicates['status:cancelled'].Invoke($cancelled) | Should -BeTrue
+        $predicates['status:cancelled'].Invoke($timedOut)  | Should -BeFalse
+        $predicates['status:timedout'].Invoke($timedOut)   | Should -BeTrue
+    }
+
     It 'extracts command-type predicates from CommandLine' {
         $log = @(
             [pscustomobject]@{ Succeeded = $true; CommandLine = 'p4 changes -s pending' },

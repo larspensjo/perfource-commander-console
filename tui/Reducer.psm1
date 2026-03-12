@@ -1703,6 +1703,8 @@ function Invoke-ChangelistReducer {
             $idx = [Math]::Max(0, [Math]::Min($next.Cursor.ChangeIndex,
                                                $next.Derived.VisibleChangeIds.Count - 1))
             $changeId = $next.Derived.VisibleChangeIds[$idx]
+            # The default CL cannot be described via p4 describe — skip the request.
+            if ($changeId -eq 'default') { return $next }
             $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'FetchDescribe'; ChangeId = $changeId }
             $next.Runtime.DetailChangeId = $changeId  # persists for rendering
             return Update-BrowserDerivedState -State $next

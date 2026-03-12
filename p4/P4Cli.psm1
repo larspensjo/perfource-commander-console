@@ -670,7 +670,8 @@ function Get-P4Describe {
 
     $record = $lines | Select-Object -First 1
     if ($null -eq $record -or $null -eq ($record.PSObject.Properties['change'])) {
-        throw "Failed to parse describe output for CL $Change"
+        $msg = Get-P4JsonRecordMessageText -Record $record -FallbackText "Failed to parse describe output for CL $Change"
+        throw $msg
     }
 
     $time = if ($null -ne ($record.PSObject.Properties['time'])) {

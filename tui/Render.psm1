@@ -904,7 +904,8 @@ function Build-CommandModalRows {
         [Parameter(Mandatory = $true)][int]$MaxRows,
         [object]$ActiveWorkflow    = $null,
         [bool]$CancelRequested     = $false,   # M3.4
-        [bool]$QuitRequested       = $false    # M3.4
+        [bool]$QuitRequested       = $false,   # M3.4
+        [datetime]$StartedAt       = [datetime]::MinValue   # M4: elapsed time
     )
 
     $borderColor    = 'DarkCyan'
@@ -938,9 +939,12 @@ function Build-CommandModalRows {
         }
         # Currently running command row
         if ($contentRows.Count -lt ($innerRows - 1)) {
+            $elapsedSec   = if ($StartedAt -ne [datetime]::MinValue) { [int]((Get-Date) - $StartedAt).TotalSeconds } else { 0 }
+            $elapsedLabel = if ($elapsedSec -gt 0) { "  ($($elapsedSec)s)" } else { '' }
             $contentRows.Add(@(
                 @{ Text = [char]0x23F3 + ' Running: '; Color = 'DarkGray' },
-                @{ Text = $currentCommand;                    Color = 'Yellow' }
+                @{ Text = $currentCommand;               Color = 'Yellow' },
+                @{ Text = $elapsedLabel;                  Color = 'DarkGray' }
             ))
         }
     }
@@ -1390,7 +1394,8 @@ function Apply-ModalOverlay {
         [Parameter(Mandatory = $true)]$ModalPrompt,
         [object]$ActiveWorkflow  = $null,
         [bool]$CancelRequested   = $false,   # M3.4
-        [bool]$QuitRequested     = $false    # M3.4
+        [bool]$QuitRequested     = $false,   # M3.4
+        [datetime]$StartedAt     = [datetime]::MinValue   # M4: elapsed time
     )
 
     $width      = $Frame.Width
@@ -1400,7 +1405,7 @@ function Apply-ModalOverlay {
     $rightPad   = $width - $leftPad - $modalWidth
 
     $maxRows   = [Math]::Max(4, [Math]::Min([int][Math]::Floor($height / 3), 12))
-    $modalRows = Build-CommandModalRows -CommandModal $ModalPrompt -Width $modalWidth -MaxRows $maxRows -ActiveWorkflow $ActiveWorkflow -CancelRequested $CancelRequested -QuitRequested $QuitRequested
+    $modalRows = Build-CommandModalRows -CommandModal $ModalPrompt -Width $modalWidth -MaxRows $maxRows -ActiveWorkflow $ActiveWorkflow -CancelRequested $CancelRequested -QuitRequested $QuitRequested -StartedAt $StartedAt
 
     # Anchor above the status bar (last row)
     $modalStart = $height - 1 - $modalRows.Count
@@ -2464,7 +2469,8 @@ function Render-BrowserState {
         $activeWorkflow  = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'ActiveWorkflow'  -Default $null
         $cancelRequested = [bool](Get-PropertyValueOrDefault -Object $State.Runtime -Name 'CancelRequested' -Default $false)
         $quitRequested   = [bool](Get-PropertyValueOrDefault -Object $State.Runtime -Name 'QuitRequested'   -Default $false)
-        $nextFrame = Apply-ModalOverlay -Frame $nextFrame -ModalPrompt $commandModal -ActiveWorkflow $activeWorkflow -CancelRequested $cancelRequested -QuitRequested $quitRequested
+        $startedAt = if ($null -ne $State.Runtime.ActiveCommand) { [datetime]$State.Runtime.ActiveCommand.StartedAt } else { [datetime]::MinValue }
+        $nextFrame = Apply-ModalOverlay -Frame $nextFrame -ModalPrompt $commandModal -ActiveWorkflow $activeWorkflow -CancelRequested $cancelRequested -QuitRequested $quitRequested -StartedAt $startedAt
     }
 
     $changedRows = Get-FrameDiff -PreviousFrame $script:PreviousFrame -NextFrame $nextFrame

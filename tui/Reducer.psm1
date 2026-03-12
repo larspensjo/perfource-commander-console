@@ -4,6 +4,8 @@ $script:CommandHistoryMaxSize = 50
 $script:CommandLogMaxSize     = 200
 $script:BrowserGlobalActionTypes = @(
     'CommandStart', 'CommandFinish',
+    'AsyncCommandStarted',
+    'PendingChangesLoaded', 'SubmittedChangesLoaded', 'FilesBaseLoaded', 'FilesEnrichmentDone', 'DescribeLoaded',
     'ToggleCommandModal', 'ShowCommandModal',
     'SwitchView',
     'Quit', 'Resize',
@@ -590,6 +592,7 @@ function New-BrowserState {
             QuitRequested    = $false   # set by Q when busy; main loop dispatches Quit when safe (M3.1)
             ActiveWorkflow       = $null   # null | @{ Kind; TotalCount; DoneCount; FailedCount; FailedIds }
             LastWorkflowResult  = $null   # null | @{ Kind; DoneCount; FailedCount; FailedIds }
+            ActiveCommand        = $null   # null | @{ RequestId; Kind; Scope; Generation; CommandLine; StartedAt; Status } (M4.5)
             ConfiguredMax  = 200
             NextCommandId            = 1
             CommandLog               = @()
@@ -1095,6 +1098,117 @@ function Invoke-ChangelistReducer {
             if ($succeeded) {
                 $next.Runtime.ModalPrompt.IsOpen = $false
             }
+            $next.Runtime.ActiveCommand = $null   # clear async-command tracking (M4.5)
+            return $next
+        }
+        'AsyncCommandStarted' {
+            # M4: background read-only command started — update modal and track active request
+            $next.Runtime.ModalPrompt.IsBusy          = $true
+            $next.Runtime.ModalPrompt.IsOpen          = $true
+            $next.Runtime.ModalPrompt.Purpose         = 'Command'
+            $next.Runtime.ModalPrompt.CurrentCommand  = [string]$Action.CommandLine
+            $next.Runtime.ModalPrompt.CurrentTimeoutMs = 0
+            $next.Runtime.ActiveCommand = [pscustomobject]@{
+                RequestId   = [string]$Action.RequestId
+                Kind        = [string]$Action.Kind
+                Scope       = [string]$Action.Scope
+                Generation  = [int]$Action.Generation
+                CommandLine = [string]$Action.CommandLine
+                StartedAt   = [datetime]$Action.StartedAt
+                Status      = 'Running'
+            }
+            return $next
+        }
+        'PendingChangesLoaded' {
+            # M4.7: drop stale completions by generation
+            $generation = [int]$Action.Generation
+            if ($generation -lt $next.Data.PendingGeneration) {
+                $next.Runtime.ActiveCommand = $null
+                return $next
+            }
+            # Reconcile marks: remove stale IDs no longer in the fresh set
+            [string[]]$freshIds = @($Action.AllChanges | ForEach-Object { [string]$_.Id })
+            $validSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            foreach ($id in $freshIds) { [void]$validSet.Add($id) }
+            $markedProp = $next.Query.PSObject.Properties['MarkedChangeIds']
+            if ($null -ne $markedProp -and $null -ne $markedProp.Value) {
+                $staleIds = @($markedProp.Value | Where-Object { -not $validSet.Contains([string]$_) })
+                foreach ($staleId in $staleIds) { [void]$markedProp.Value.Remove($staleId) }
+            }
+            $next.Data.AllChanges      = @($Action.AllChanges)
+            $next.Runtime.LastError    = $null
+            $next.Runtime.ActiveCommand = $null
+            return Update-BrowserDerivedState -State $next
+        }
+        'SubmittedChangesLoaded' {
+            # M4.7: drop stale completions
+            $generation = [int]$Action.Generation
+            if ($generation -lt $next.Data.SubmittedGeneration) {
+                $next.Runtime.ActiveCommand = $null
+                return $next
+            }
+            $entries    = @($Action.Entries)
+            $appendMode = if (($Action.PSObject.Properties.Match('AppendMode')).Count -gt 0) { [bool]$Action.AppendMode } else { $false }
+            if ($appendMode) {
+                $next.Data.SubmittedChanges = @($next.Data.SubmittedChanges) + $entries
+            } else {
+                # Replace: reconcile marks so stale IDs are removed
+                [string[]]$freshIds = @($entries | ForEach-Object { [string]$_.Id })
+                $validSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                foreach ($id in $freshIds) { [void]$validSet.Add($id) }
+                $markedProp = $next.Query.PSObject.Properties['MarkedChangeIds']
+                if ($null -ne $markedProp -and $null -ne $markedProp.Value) {
+                    $staleIds = @($markedProp.Value | Where-Object { -not $validSet.Contains([string]$_) })
+                    foreach ($staleId in $staleIds) { [void]$markedProp.Value.Remove($staleId) }
+                }
+                $next.Data.SubmittedChanges = $entries
+            }
+            if (($Action.PSObject.Properties.Match('HasMore')).Count -gt 0) { $next.Data.SubmittedHasMore  = [bool]$Action.HasMore  }
+            if (($Action.PSObject.Properties.Match('OldestId')).Count -gt 0) { $next.Data.SubmittedOldestId = $Action.OldestId }
+            $next.Runtime.LastError     = $null
+            $next.Runtime.ActiveCommand = $null
+            return Update-BrowserDerivedState -State $next
+        }
+        'FilesBaseLoaded' {
+            # M4.7: drop stale completions
+            $cacheKey   = [string]$Action.CacheKey
+            $generation = [int]$Action.Generation
+            if ($generation -lt $next.Data.FilesGeneration) {
+                $next.Runtime.ActiveCommand = $null
+                return $next
+            }
+            $next.Data.FileCache[$cacheKey]       = @($Action.FileEntries)
+            $next.Runtime.LastError               = $null
+            $next.Runtime.ActiveCommand           = $null
+            $sourceKind = if (($Action.PSObject.Properties.Match('SourceKind')).Count -gt 0) { [string]$Action.SourceKind } else { '' }
+            if ($sourceKind -eq 'Opened') {
+                # Signal enrichment follow-up (M2.1)
+                $next.Data.FileCacheStatus[$cacheKey] = 'BaseReady'
+                $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'LoadFilesEnrichment'; CacheKey = $cacheKey } -Generation $next.Data.FilesGeneration
+            } else {
+                # Submitted source: no enrichment, mark ready immediately
+                $next.Data.FileCacheStatus[$cacheKey] = 'Ready'
+            }
+            return Update-BrowserDerivedState -State $next
+        }
+        'FilesEnrichmentDone' {
+            # M4.7: drop stale completions
+            $cacheKey   = [string]$Action.CacheKey
+            $generation = [int]$Action.Generation
+            if ($generation -lt $next.Data.FilesGeneration) {
+                $next.Runtime.ActiveCommand = $null
+                return $next
+            }
+            $next.Data.FileCache[$cacheKey]       = @($Action.FileEntries)
+            $next.Data.FileCacheStatus[$cacheKey] = 'Ready'
+            $next.Runtime.LastError               = $null
+            $next.Runtime.ActiveCommand           = $null
+            return Update-BrowserDerivedState -State $next
+        }
+        'DescribeLoaded' {
+            $change = [string]$Action.Change
+            $next.Data.DescribeCache[$change] = $Action.Describe
+            $next.Runtime.ActiveCommand       = $null
             return $next
         }
         'ShowCommandModal' {

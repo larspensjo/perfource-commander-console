@@ -619,6 +619,20 @@ Describe 'Frame helpers' {
                 $allText | Should -Match 'Change 99 has shelved files'
                 $allText | Should -Not -Match 'STDERR:'  # raw prefix must be stripped
             }
+
+            It 'shows elapsed seconds in Running row when StartedAt is provided (M4)' {
+                $state = New-RenderStateFixture
+                $state.Runtime.ModalPrompt.IsOpen         = $true
+                $state.Runtime.ModalPrompt.IsBusy         = $true
+                $state.Runtime.ModalPrompt.CurrentCommand = 'p4 changes -s pending'
+                $state.Runtime.ModalPrompt | Add-Member -NotePropertyName CurrentTimeoutMs -NotePropertyValue 0 -Force
+                $startedAt = (Get-Date).AddSeconds(-7)
+                $frame     = Build-FrameFromState -State $state
+                $overlaid  = Apply-ModalOverlay -Frame $frame -ModalPrompt $state.Runtime.ModalPrompt -StartedAt $startedAt
+                $allText   = ($overlaid.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+                $allText   | Should -Match 'p4 changes -s pending'
+                $allText   | Should -Match '\(\d+s\)'
+            }
         }
     }
 }

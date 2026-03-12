@@ -47,6 +47,347 @@ function Set-BrowserCheckCancelCallback {
     $script:CheckCancelCallback = $Callback
 }
 
+# ── Async executor (M4.2) ─────────────────────────────────────────────────────
+# Job registry: RequestId (string) → job handle (ThreadJob or pre-computed result for tests)
+$script:AsyncJobRegistry  = @{}
+# Module root for background worker imports
+$script:AsyncModuleRoot   = $PSScriptRoot
+
+# Production executor: runs work in an isolated Start-ThreadJob runspace.
+# Tests override this via Set-BrowserAsyncExecutor with a synchronous executor.
+$script:AsyncExecutor = [pscustomobject]@{
+    Execute = {
+        param([pscustomobject]$Envelope, [scriptblock]$Worker)
+        $job = Start-ThreadJob -ScriptBlock $Worker -ArgumentList $Envelope, $script:AsyncModuleRoot
+        $script:AsyncJobRegistry[[string]$Envelope.RequestId] = $job
+    }
+    Poll = {
+        param([string]$RequestId)
+        $job = $script:AsyncJobRegistry[$RequestId]
+        if ($null -eq $job)                                          { return $null }
+        if ($job -isnot [System.Management.Automation.Job])         { return $null }
+        if ($job.State -notin @('Completed', 'Failed', 'Stopped'))  { return $null }
+        $result = $job | Receive-Job -Wait -ErrorAction SilentlyContinue
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        [void]$script:AsyncJobRegistry.Remove($RequestId)
+        return $result
+    }
+    Cancel = {
+        param([string]$RequestId)
+        $job = $script:AsyncJobRegistry[$RequestId]
+        if ($null -ne $job -and $job -is [System.Management.Automation.Job]) {
+            try { Stop-Job  -Job $job }         catch {}
+            try { Remove-Job -Job $job -Force } catch {}
+        }
+        [void]$script:AsyncJobRegistry.Remove($RequestId)
+    }
+}
+
+function Set-BrowserAsyncExecutor {
+    <#
+    .SYNOPSIS
+        Replaces the async executor with a test double (M4.2 DI seam).
+    .DESCRIPTION
+        The production executor uses Start-ThreadJob.  Tests inject a synchronous
+        executor that runs work inline so that mocked p4 functions are visible and
+        completions are available immediately on the first Poll call.
+    #>
+    param([Parameter(Mandatory = $true)]$Executor)
+    $script:AsyncExecutor = $Executor
+}
+
+# ── Async worker scripts (M4.2) ───────────────────────────────────────────────
+# Each worker accepts ($Envelope, $ModuleRoot).
+# In production: $ModuleRoot is $PSScriptRoot; modules are imported in the isolated runspace.
+# In tests: the synchronous test executor passes $null for $ModuleRoot; modules already loaded.
+$script:AsyncWorkers = @{
+
+    'ReloadPending' = {
+        param([pscustomobject]$Envelope, [string]$ModuleRoot)
+        if (![string]::IsNullOrEmpty($ModuleRoot)) {
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+        }
+        $observed = [System.Collections.Generic.List[pscustomobject]]::new()
+        Register-P4Observer {
+            param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs)
+            $observed.Add([pscustomobject]@{ CommandLine=$CommandLine;ExitCode=$ExitCode;Succeeded=($ExitCode -eq 0)
+                ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
+        }
+        try {
+            $fresh = Get-P4ChangelistEntries -Max ([int]$Envelope.Max)
+            return [pscustomobject]@{ Type='PendingChangesLoaded'; RequestId=$Envelope.RequestId
+                Generation=$Envelope.Generation; AllChanges=@($fresh)
+                ObservedCommands=@($observed); Success=$true }
+        } catch {
+            return [pscustomobject]@{ Type='AsyncCommandFailed'; RequestId=$Envelope.RequestId
+                Generation=$Envelope.Generation; ErrorText=$_.Exception.Message
+                ObservedCommands=@($observed); Success=$false }
+        } finally { Unregister-P4Observer }
+    }
+
+    'ReloadSubmitted' = {
+        param([pscustomobject]$Envelope, [string]$ModuleRoot)
+        if (![string]::IsNullOrEmpty($ModuleRoot)) {
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+        }
+        $observed = [System.Collections.Generic.List[pscustomobject]]::new()
+        Register-P4Observer {
+            param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs)
+            $observed.Add([pscustomobject]@{ CommandLine=$CommandLine;ExitCode=$ExitCode;Succeeded=($ExitCode -eq 0)
+                ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
+        }
+        try {
+            $client = [string]$Envelope.Client
+            $fresh  = if ([string]::IsNullOrWhiteSpace($client)) {
+                Get-P4SubmittedChangelistEntries -Max 50
+            } else {
+                Get-P4SubmittedChangelistEntries -Max 50 -Client $client
+            }
+            $oldestId = if ($fresh.Count -gt 0) {
+                [int]($fresh | ForEach-Object { [int]$_.Id } | Sort-Object | Select-Object -First 1)
+            } else { $null }
+            return [pscustomobject]@{ Type='SubmittedChangesLoaded'; RequestId=$Envelope.RequestId
+                Generation=$Envelope.Generation; Entries=@($fresh); AppendMode=$false
+                HasMore=($fresh.Count -ge 50); OldestId=$oldestId
+                ObservedCommands=@($observed); Success=$true }
+        } catch {
+            return [pscustomobject]@{ Type='AsyncCommandFailed'; RequestId=$Envelope.RequestId
+                Generation=$Envelope.Generation; ErrorText=$_.Exception.Message
+                ObservedCommands=@($observed); Success=$false }
+        } finally { Unregister-P4Observer }
+    }
+
+    'LoadMore' = {
+        param([pscustomobject]$Envelope, [string]$ModuleRoot)
+        if (![string]::IsNullOrEmpty($ModuleRoot)) {
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+        }
+        $observed = [System.Collections.Generic.List[pscustomobject]]::new()
+        Register-P4Observer {
+            param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs)
+            $observed.Add([pscustomobject]@{ CommandLine=$CommandLine;ExitCode=$ExitCode;Succeeded=($ExitCode -eq 0)
+                ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
+        }
+        try {
+            $client       = [string]$Envelope.Client
+            $beforeChange = $Envelope.BeforeChange
+            $pageSize     = 50
+            $newEntries   = if ($null -ne $beforeChange) {
+                if ([string]::IsNullOrWhiteSpace($client)) {
+                    @(Get-P4SubmittedChangelistEntries -Max $pageSize -BeforeChange $beforeChange)
+                } else {
+                    @(Get-P4SubmittedChangelistEntries -Max $pageSize -BeforeChange $beforeChange -Client $client)
+                }
+            } else {
+                if ([string]::IsNullOrWhiteSpace($client)) {
+                    @(Get-P4SubmittedChangelistEntries -Max $pageSize)
+                } else {
+                    @(Get-P4SubmittedChangelistEntries -Max $pageSize -Client $client)
+                }
+            }
+            $oldestId = if ($newEntries.Count -gt 0) {
+                [int]($newEntries | ForEach-Object { [int]$_.Id } | Sort-Object | Select-Object -First 1)
+            } else { $null }
+            return [pscustomobject]@{ Type='SubmittedChangesLoaded'; RequestId=$Envelope.RequestId
+                Generation=$Envelope.Generation; Entries=@($newEntries); AppendMode=$true
+                HasMore=($newEntries.Count -ge $pageSize); OldestId=$oldestId
+                ObservedCommands=@($observed); Success=$true }
+        } catch {
+            return [pscustomobject]@{ Type='AsyncCommandFailed'; RequestId=$Envelope.RequestId
+                Generation=$Envelope.Generation; ErrorText=$_.Exception.Message
+                ObservedCommands=@($observed); Success=$false }
+        } finally { Unregister-P4Observer }
+    }
+
+    'LoadFiles' = {
+        param([pscustomobject]$Envelope, [string]$ModuleRoot)
+        if (![string]::IsNullOrEmpty($ModuleRoot)) {
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+        }
+        $observed  = [System.Collections.Generic.List[pscustomobject]]::new()
+        Register-P4Observer {
+            param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs)
+            $observed.Add([pscustomobject]@{ CommandLine=$CommandLine;ExitCode=$ExitCode;Succeeded=($ExitCode -eq 0)
+                ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
+        }
+        $change     = [string]$Envelope.Change
+        $sourceKind = [string]$Envelope.SourceKind
+        $cacheKey   = [string]$Envelope.CacheKey
+        try {
+            if ($sourceKind -eq 'Opened') {
+                $files = @(Get-P4OpenedFiles -Change $change)
+                return [pscustomobject]@{ Type='FilesBaseLoaded'; RequestId=$Envelope.RequestId
+                    Generation=$Envelope.Generation; CacheKey=$cacheKey; SourceKind='Opened'
+                    FileEntries=@($files); ObservedCommands=@($observed); Success=$true }
+            } else {
+                # Submitted: fetch describe, convert to file entries
+                $describe = Get-P4Describe -Change $change
+                $files = @($describe.Files) | ForEach-Object {
+                    New-P4FileEntry -DepotPath ([string]$_.DepotPath) `
+                                    -Action ([string]$_.Action) `
+                                    -FileType ([string]$_.Type) `
+                                    -Change $change `
+                                    -SourceKind 'Submitted'
+                }
+                return [pscustomobject]@{ Type='FilesBaseLoaded'; RequestId=$Envelope.RequestId
+                    Generation=$Envelope.Generation; CacheKey=$cacheKey; SourceKind='Submitted'
+                    FileEntries=@($files); ObservedCommands=@($observed); Success=$true }
+            }
+        } catch {
+            return [pscustomobject]@{ Type='AsyncCommandFailed'; RequestId=$Envelope.RequestId
+                Generation=$Envelope.Generation; ErrorText=$_.Exception.Message
+                ObservedCommands=@($observed); Success=$false }
+        } finally { Unregister-P4Observer }
+    }
+
+    'LoadFilesEnrichment' = {
+        param([pscustomobject]$Envelope, [string]$ModuleRoot)
+        if (![string]::IsNullOrEmpty($ModuleRoot)) {
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+        }
+        $observed = [System.Collections.Generic.List[pscustomobject]]::new()
+        Register-P4Observer {
+            param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs)
+            $observed.Add([pscustomobject]@{ CommandLine=$CommandLine;ExitCode=$ExitCode;Succeeded=($ExitCode -eq 0)
+                ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
+        }
+        $cacheKey = [string]$Envelope.CacheKey
+        $baseFiles = @($Envelope.BaseFiles)
+        try {
+            $modifiedPaths  = Get-P4ModifiedDepotPaths -FileEntries $baseFiles
+            $enrichedFiles  = Set-P4FileEntriesContentModifiedState -FileEntries $baseFiles -ModifiedDepotPaths $modifiedPaths
+            return [pscustomobject]@{ Type='FilesEnrichmentDone'; RequestId=$Envelope.RequestId
+                Generation=$Envelope.Generation; CacheKey=$cacheKey
+                FileEntries=@($enrichedFiles); ObservedCommands=@($observed); Success=$true }
+        } catch {
+            return [pscustomobject]@{ Type='AsyncCommandFailed'; RequestId=$Envelope.RequestId
+                Generation=$Envelope.Generation; ErrorText=$_.Exception.Message
+                ObservedCommands=@($observed); Success=$false }
+        } finally { Unregister-P4Observer }
+    }
+
+    'FetchDescribe' = {
+        param([pscustomobject]$Envelope, [string]$ModuleRoot)
+        if (![string]::IsNullOrEmpty($ModuleRoot)) {
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+        }
+        $observed = [System.Collections.Generic.List[pscustomobject]]::new()
+        Register-P4Observer {
+            param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs)
+            $observed.Add([pscustomobject]@{ CommandLine=$CommandLine;ExitCode=$ExitCode;Succeeded=($ExitCode -eq 0)
+                ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
+        }
+        $changeId = [string]$Envelope.ChangeId
+        try {
+            $describe = Get-P4Describe -Change $changeId
+            return [pscustomobject]@{ Type='DescribeLoaded'; RequestId=$Envelope.RequestId
+                Generation=$Envelope.Generation; Change=$changeId; Describe=$describe
+                ObservedCommands=@($observed); Success=$true }
+        } catch {
+            return [pscustomobject]@{ Type='AsyncCommandFailed'; RequestId=$Envelope.RequestId
+                Generation=$Envelope.Generation; ErrorText=$_.Exception.Message
+                ObservedCommands=@($observed); Success=$false }
+        } finally { Unregister-P4Observer }
+    }
+}
+
+# Derives a user-visible command-line label for the modal from an async request envelope.
+function Get-AsyncDisplayCommandLine {
+    param([Parameter(Mandatory)][pscustomobject]$Envelope)
+    switch ($Envelope.Kind) {
+        'ReloadPending'       { return "p4 changes -s pending -m $([int]$Envelope.Max)" }
+        'ReloadSubmitted'     {
+            $spec = if ([string]::IsNullOrWhiteSpace([string]$Envelope.Client)) { '//...' } else { "//$($Envelope.Client)/..." }
+            return "p4 changes -s submitted -m 50 $spec"
+        }
+        'LoadMore'            {
+            $spec = if ([string]::IsNullOrWhiteSpace([string]$Envelope.Client)) { '//...' } else { "//$($Envelope.Client)/..." }
+            return "p4 changes -s submitted -m 50 $spec"
+        }
+        'LoadFiles'           {
+            if ([string]$Envelope.SourceKind -eq 'Opened') {
+                return Format-P4CommandLine -P4Args @('fstat','-Ro','-e',[string]$Envelope.Change,'-T','change,depotFile,action,type,unresolved','//...')
+            } else {
+                return Format-P4CommandLine -P4Args @('describe','-s',[string]$Envelope.Change)
+            }
+        }
+        'LoadFilesEnrichment' { return Format-P4CommandLine -P4Args @('diff','-sa') }
+        'FetchDescribe'       { return Format-P4CommandLine -P4Args @('describe','-s',[string]$Envelope.ChangeId) }
+        default               { return $Envelope.Kind }
+    }
+}
+
+# Starts an async background worker for a read-only PendingRequest kind (M4.2).
+# Cancels any same-scope in-flight request before starting the new one (M4.8).
+# Dispatches AsyncCommandStarted to update ModalPrompt + ActiveCommand, returns updated state.
+function Invoke-BrowserStartAsyncRequest {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]$Request
+    )
+
+    # Build enriched envelope: carry any state-derived fields the worker needs
+    $extras = @{}
+    switch ($Request.Kind) {
+        'ReloadPending'       { $extras['Max'] = $State.Runtime.ConfiguredMax }
+        'ReloadSubmitted'     { $extras['Client'] = [string]$State.Data.CurrentClient; $extras['Max'] = 50 }
+        'LoadMore'            { $extras['Client'] = [string]$State.Data.CurrentClient
+                                $extras['BeforeChange'] = $State.Data.SubmittedOldestId }
+        'LoadFiles'           {
+            $extras['Change']     = [string]$State.Data.FilesSourceChange
+            $extras['SourceKind'] = [string]$State.Data.FilesSourceKind
+            $extras['CacheKey']   = [string]$Request.CacheKey
+        }
+        'LoadFilesEnrichment' {
+            $cacheKey = [string]$Request.CacheKey
+            $extras['CacheKey']  = $cacheKey
+            # Pass base files so the enrichment worker has them without shared-state access
+            $extras['BaseFiles'] = if ($State.Data.FileCache.ContainsKey($cacheKey)) { @($State.Data.FileCache[$cacheKey]) } else { @() }
+        }
+        'FetchDescribe'       { $extras['ChangeId'] = [string]$Request.ChangeId }
+    }
+    $envProps = @{}
+    foreach ($p in $Request.PSObject.Properties) { $envProps[$p.Name] = $p.Value }
+    foreach ($k in $extras.Keys) { $envProps[$k] = $extras[$k] }
+    $envelope = [pscustomobject]$envProps
+
+    # M4.8: cancel any in-flight request (same or different scope — single lane)
+    if ($null -ne $State.Runtime.ActiveCommand) {
+        & $script:AsyncExecutor.Cancel ([string]$State.Runtime.ActiveCommand.RequestId)
+    }
+
+    # Start the worker
+    $worker = $script:AsyncWorkers[$Request.Kind]
+    & $script:AsyncExecutor.Execute $envelope $worker
+
+    $displayCmd = Get-AsyncDisplayCommandLine -Envelope $envelope
+
+    return Invoke-BrowserReducer -State $State -Action ([pscustomobject]@{
+        Type        = 'AsyncCommandStarted'
+        RequestId   = [string]$envelope.RequestId
+        Kind        = [string]$envelope.Kind
+        Scope       = [string]$envelope.Scope
+        Generation  = [int]$envelope.Generation
+        CommandLine = $displayCmd
+        StartedAt   = (Get-Date)
+    })
+}
+
+# Polls the executor for the active async command's completion.
+# Returns the typed completion payload if done, $null if still running.
+function Invoke-BrowserCompletionDrain {
+    param([Parameter(Mandatory = $true)]$State)
+    $activeCmd = $State.Runtime.ActiveCommand
+    if ($null -eq $activeCmd) { return $null }
+    return & $script:AsyncExecutor.Poll ([string]$activeCmd.RequestId)
+}
+
 function Register-WorkflowKind {
     <#
     .SYNOPSIS
@@ -737,22 +1078,26 @@ function Start-P4Browser {
         }
 
         while ($state.Runtime.IsRunning) {
-            # Deferred quit: after blocking workflow/command, honour a queued quit request (M3.1)
-            if ([bool]$state.Runtime.QuitRequested) {
+            # Deferred quit: after blocking workflow/command, honour a queued quit request (M3.1).
+            # Only dispatch Quit when not busy; if still busy let the tick loop drain the completion first.
+            if ([bool]$state.Runtime.QuitRequested -and -not [bool]$state.Runtime.ModalPrompt.IsBusy) {
                 $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Quit' })
                 continue
             }
 
             Render-BrowserState -State $state
 
-            # Poll for a keypress while also detecting console resize.
-            # [Console]::ReadKey blocks indefinitely, so we use KeyAvailable +
-            # a short sleep to stay responsive to window-resize events.
-            $keyInfo = $null
-            while ($null -eq $keyInfo) {
+            # Tick loop: wait for a keypress OR async completion, checking resize each 50 ms (M4.3).
+            $keyInfo    = $null
+            $completion = $null
+            while ($null -eq $keyInfo -and $null -eq $completion) {
                 if (Test-BrowserConsoleKeyAvailable) {
                     $keyInfo = Read-BrowserConsoleKey
                 } else {
+                    # Drain async completion before sleeping (M4.3)
+                    $completion = Invoke-BrowserCompletionDrain -State $state
+                    if ($null -ne $completion) { break }
+                    # Check for console resize
                     $currentSize   = Get-BrowserConsoleSize
                     $currentWidth  = [int]$currentSize.Width
                     $currentHeight = [int]$currentSize.Height
@@ -768,7 +1113,8 @@ function Start-P4Browser {
                 }
             }
 
-            $action  = ConvertFrom-KeyInfoToAction -KeyInfo $keyInfo -State $state
+            # ── Key action path ───────────────────────────────────────────────────────
+            $action = if ($null -ne $keyInfo) { ConvertFrom-KeyInfoToAction -KeyInfo $keyInfo -State $state } else { $null }
             if ($null -ne $action) {
                 $state = Invoke-BrowserReducer -State $state -Action $action
 
@@ -779,62 +1125,14 @@ function Start-P4Browser {
 
                     switch ($req.Kind) {
                         'ReloadPending' {
-                            $state = Invoke-BrowserPendingChangesReload -State $state
+                            # M4: run asynchronously so the UI stays responsive
+                            $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
                         }
                         'ReloadSubmitted' {
-                            $reloadSubmittedSpec = if ([string]::IsNullOrWhiteSpace([string]$state.Data.CurrentClient)) { '//...' } else { "//$($state.Data.CurrentClient)/..." }
-                            $reloadSubmittedCmdLine = Format-P4CommandLine -P4Args @('changes', '-s', 'submitted', '-m', '50', $reloadSubmittedSpec)
-                            $state = Invoke-BrowserSideEffect -State $state -CommandLine $reloadSubmittedCmdLine -WorkItem {
-                                param($s)
-                                $fresh = if ([string]::IsNullOrWhiteSpace([string]$s.Data.CurrentClient)) {
-                                    Get-P4SubmittedChangelistEntries -Max 50
-                                } else {
-                                    Get-P4SubmittedChangelistEntries -Max 50 -Client $s.Data.CurrentClient
-                                }
-                                $s.Data.SubmittedChanges  = @($fresh)
-                                $s.Data.SubmittedHasMore  = ($fresh.Count -ge 50)
-                                $s.Data.SubmittedOldestId = if ($fresh.Count -gt 0) { [int]($fresh | ForEach-Object { [int]$_.Id } | Sort-Object | Select-Object -First 1) } else { $null }
-                                $s.Runtime.LastError      = $null
-                                $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{
-                                    Type         = 'ReconcileMarks'
-                                    AllChangeIds = @($fresh | ForEach-Object { [string]$_.Id })
-                                })
-                                return Update-BrowserDerivedState -State $s
-                            }
+                            $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
                         }
                         'LoadMore' {
-                            $beforeChange = $state.Data.SubmittedOldestId
-                            $loadMoreSpec = if ([string]::IsNullOrWhiteSpace([string]$state.Data.CurrentClient)) { '//...' } else { "//$($state.Data.CurrentClient)/..." }
-                            $loadMoreCmdLine = if ($null -ne $beforeChange) {
-                                Format-P4CommandLine -P4Args @('changes', '-s', 'submitted', '-m', '50', "$loadMoreSpec@<$beforeChange")
-                            } else {
-                                Format-P4CommandLine -P4Args @('changes', '-s', 'submitted', '-m', '50', $loadMoreSpec)
-                            }
-                            $state = Invoke-BrowserSideEffect -State $state -CommandLine $loadMoreCmdLine -WorkItem {
-                                param($s)
-                                $pageSize = 50
-                                $bc       = $s.Data.SubmittedOldestId
-                                $newEntries = if ($null -ne $bc) {
-                                    if ([string]::IsNullOrWhiteSpace([string]$s.Data.CurrentClient)) {
-                                        @(Get-P4SubmittedChangelistEntries -Max $pageSize -BeforeChange $bc)
-                                    } else {
-                                        @(Get-P4SubmittedChangelistEntries -Max $pageSize -BeforeChange $bc -Client $s.Data.CurrentClient)
-                                    }
-                                } else {
-                                    if ([string]::IsNullOrWhiteSpace([string]$s.Data.CurrentClient)) {
-                                        @(Get-P4SubmittedChangelistEntries -Max $pageSize)
-                                    } else {
-                                        @(Get-P4SubmittedChangelistEntries -Max $pageSize -Client $s.Data.CurrentClient)
-                                    }
-                                }
-                                $s.Data.SubmittedChanges = @($s.Data.SubmittedChanges) + @($newEntries)
-                                if ($newEntries.Count -gt 0) {
-                                    $s.Data.SubmittedOldestId = [int]($newEntries | ForEach-Object { [int]$_.Id } | Sort-Object | Select-Object -First 1)
-                                }
-                                $s.Data.SubmittedHasMore = ($newEntries.Count -ge $pageSize)
-                                $s.Runtime.LastError     = $null
-                                return Update-BrowserDerivedState -State $s
-                            }
+                            $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
                         }
                         'LoadFiles' {
                             $change     = [string]$state.Data.FilesSourceChange
@@ -842,33 +1140,29 @@ function Start-P4Browser {
                             $cacheKey   = "${change}:${sourceKind}"
 
                             if ($state.Data.FileCache.ContainsKey($cacheKey)) {
-                                # Cache hit — recompute derived state (cursor/scroll already reset by reducer)
+                                # Cache hit — recompute derived state; start async enrichment if base is ready
                                 $state = Update-BrowserDerivedState -State $state
-                                # If base data exists but enrichment hasn't run yet, trigger it now (M2.4).
                                 $cacheStatus = if ($state.Data.FileCacheStatus.ContainsKey($cacheKey)) { [string]$state.Data.FileCacheStatus[$cacheKey] } else { 'NotLoaded' }
                                 if ($cacheStatus -eq 'BaseReady') {
-                                    $state = Invoke-BrowserFilesEnrichment -State $state -CacheKey $cacheKey
+                                    $enrichReq = New-PendingRequest @{ Kind = 'LoadFilesEnrichment'; CacheKey = $cacheKey } -Generation $state.Data.FilesGeneration
+                                    $state = Invoke-BrowserStartAsyncRequest -State $state -Request $enrichReq
                                 }
                             } else {
-                                $state = Invoke-BrowserFilesLoad -State $state -Change $change -SourceKind $sourceKind -CacheKey $cacheKey
+                                $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
                             }
-                            # After I/O: if user navigated away, silently stay on current screen
                         }
                         'LoadFilesEnrichment' {
-                            # Run content-diff enrichment (diff -sa) after base fstat load (M2.1).
+                            # Idempotence: skip if already loading or done (M2.4)
                             $cacheKey = [string]$req.CacheKey
-                            $state = Invoke-BrowserFilesEnrichment -State $state -CacheKey $cacheKey
+                            $currentStatus = if ($state.Data.FileCacheStatus.ContainsKey($cacheKey)) { [string]$state.Data.FileCacheStatus[$cacheKey] } else { 'NotLoaded' }
+                            if ($currentStatus -notin @('LoadingEnrichment', 'Ready')) {
+                                $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                            }
                         }
                         'FetchDescribe' {
                             $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
                             if ($null -ne $change -and -not $state.Data.DescribeCache.ContainsKey($change)) {
-                                $describeCmdLine = Format-P4CommandLine -P4Args @('describe', '-s', "$change")
-                                $state = Invoke-BrowserSideEffect -State $state -CommandLine $describeCmdLine -WorkItem {
-                                    param($s)
-                                    $s.Data.DescribeCache[$change] = Get-P4Describe -Change $change
-                                    $s.Runtime.LastError = $null
-                                    return $s
-                                }
+                                $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
                             }
                         }
                         'DeleteChange' {
@@ -918,7 +1212,70 @@ function Start-P4Browser {
                         }
                     }
                 }
+
+                # After dispatching an async request, immediately drain if the result
+                # is already available.  This is a no-op in production (ThreadJob is
+                # still running), but essential for the synchronous test executor
+                # where workers complete inline before Poll is called.
+                if ($null -eq $completion) {
+                    $completion = Invoke-BrowserCompletionDrain -State $state
+                }
             }
+
+            # ── Async completion path (M4.3) ──────────────────────────────────────────
+            # Arrived during idle tick — process outside the key-action path for clarity.
+            if ($null -ne $completion) {
+                # Step 1: CommandFinish — clears modal IsBusy and adds history entry.
+                # Capture ActiveCommand BEFORE the typed action handler clears it.
+                $activeCmd = $state.Runtime.ActiveCommand
+                if ($null -ne $activeCmd) {
+                    $endedAt      = Get-Date
+                    $isSuccess    = [bool]$completion.Success
+                    $errText      = if (($completion.PSObject.Properties.Match('ErrorText')).Count -gt 0) { [string]$completion.ErrorText } else { '' }
+                    $durMs        = [int](($endedAt - [datetime]$activeCmd.StartedAt).TotalMilliseconds)
+                    $durClass     = Get-DurationClass -DurationMs $durMs
+                    $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                        Type          = 'CommandFinish'
+                        CommandLine   = [string]$activeCmd.CommandLine
+                        StartedAt     = [datetime]$activeCmd.StartedAt
+                        EndedAt       = $endedAt
+                        ExitCode      = if ($isSuccess) { 0 } else { 1 }
+                        Succeeded     = $isSuccess
+                        ErrorText     = $errText
+                        DurationClass = $durClass
+                        Outcome       = if ($isSuccess) { 'Completed' } else { 'Failed' }
+                    })
+                }
+                # Step 2: Typed data action — updates AllChanges / FileCache / DescribeCache etc.
+                $state = Invoke-BrowserReducer -State $state -Action $completion
+                # Step 3: LogCommandExecution for each p4 command observed in the worker
+                $observedCmds = if (($completion.PSObject.Properties.Match('ObservedCommands')).Count -gt 0) { @($completion.ObservedCommands) } else { @() }
+                foreach ($obs in $observedCmds) {
+                    $oDurClass = Get-DurationClass -DurationMs ([int]$obs.DurationMs)
+                    $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                        Type           = 'LogCommandExecution'
+                        CommandLine    = [string]$obs.CommandLine
+                        FormattedLines = @($obs.FormattedLines)
+                        OutputCount    = [int]$obs.OutputCount
+                        SummaryLine    = [string]$obs.SummaryLine
+                        ExitCode       = [int]$obs.ExitCode
+                        ErrorText      = [string]$obs.ErrorText
+                        Succeeded      = [bool]$obs.Succeeded
+                        StartedAt      = [datetime]$obs.StartedAt
+                        EndedAt        = [datetime]$obs.EndedAt
+                        DurationMs     = [int]$obs.DurationMs
+                        DurationClass  = $oDurClass
+                        Outcome        = if ([bool]$obs.Succeeded) { 'Completed' } else { 'Failed' }
+                    })
+                }
+                # Step 4: Follow-up PendingRequest (e.g. LoadFilesEnrichment after FilesBaseLoaded)
+                if ($null -ne $state.Runtime.PendingRequest) {
+                    $followUp = $state.Runtime.PendingRequest
+                    $state.Runtime.PendingRequest = $null
+                    $state = Invoke-BrowserStartAsyncRequest -State $state -Request $followUp
+                }
+            }
+
         }
     }
     finally {
@@ -926,4 +1283,4 @@ function Start-P4Browser {
     }
 }
 
-Export-ModuleMember -Function Start-P4Browser, Register-WorkflowKind, Set-BrowserCheckCancelCallback
+Export-ModuleMember -Function Start-P4Browser, Register-WorkflowKind, Set-BrowserCheckCancelCallback, Set-BrowserAsyncExecutor

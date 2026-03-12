@@ -2025,3 +2025,182 @@ Describe 'Phase 6 — LastWorkflowResult and ReconcileMarks' {
         (Test-IsBrowserGlobalAction -ActionType 'ReconcileMarks') | Should -BeTrue
     }
 }
+
+Describe 'Browser reducer — M4 async actions' {
+    BeforeEach {
+        $changes = @(
+            [pscustomobject]@{ Id = '101'; Title = 'One'; HasShelvedFiles = $false; HasOpenedFiles = $true; Captured = [datetime]'2026-02-10' }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+    }
+
+    It 'AsyncCommandStarted sets ActiveCommand and IsBusy' {
+        $started = [datetime]'2026-01-01 10:00:00'
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type        = 'AsyncCommandStarted'
+            RequestId   = 'req-1'
+            Kind        = 'ReloadPending'
+            Scope       = 'Global'
+            Generation  = 0
+            CommandLine = 'p4 changes -s pending'
+            StartedAt   = $started
+        })
+        $next.Runtime.ActiveCommand.RequestId   | Should -Be 'req-1'
+        $next.Runtime.ActiveCommand.Kind        | Should -Be 'ReloadPending'
+        $next.Runtime.ActiveCommand.StartedAt   | Should -Be $started
+        $next.Runtime.ModalPrompt.IsBusy        | Should -BeTrue
+    }
+
+    It 'CommandFinish clears ActiveCommand' {
+        $state.Runtime.ActiveCommand = [pscustomobject]@{ RequestId = 'req-1'; Kind = 'ReloadPending' }
+        $state.Runtime.ModalPrompt.IsBusy = $true
+        $started = (Get-Date).AddSeconds(-1)
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type        = 'CommandFinish'
+            CommandLine = 'p4 changes -s pending'
+            ExitCode    = 0
+            Succeeded   = $true
+            DurationMs  = 120
+            ErrorText   = ''
+            StartedAt   = $started
+            EndedAt     = $started.AddMilliseconds(120)
+        })
+        $next.Runtime.ActiveCommand | Should -BeNullOrEmpty
+    }
+
+    It 'PendingChangesLoaded updates AllChanges and clears ActiveCommand' {
+        $state.Runtime.ActiveCommand = [pscustomobject]@{ RequestId = 'req-1'; Kind = 'ReloadPending' }
+        $generation = $state.Data.PendingGeneration
+        $newChanges = @(
+            [pscustomobject]@{ Id = '201'; Title = 'New'; HasShelvedFiles = $false; HasOpenedFiles = $false; Captured = [datetime]'2026-03-01' }
+        )
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type       = 'PendingChangesLoaded'
+            AllChanges = $newChanges
+            Generation = $generation
+        })
+        $next.Data.AllChanges.Count   | Should -Be 1
+        $next.Data.AllChanges[0].Id   | Should -Be '201'
+        $next.Runtime.ActiveCommand   | Should -BeNullOrEmpty
+    }
+
+    It 'PendingChangesLoaded with stale generation drops update but clears ActiveCommand' {
+        $state.Runtime.ActiveCommand = [pscustomobject]@{ RequestId = 'req-1'; Kind = 'ReloadPending' }
+        $newChanges = @(
+            [pscustomobject]@{ Id = '999'; Title = 'Stale'; HasShelvedFiles = $false; HasOpenedFiles = $false; Captured = [datetime]'2026-03-01' }
+        )
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type       = 'PendingChangesLoaded'
+            AllChanges = $newChanges
+            Generation = -1   # stale
+        })
+        # AllChanges unchanged — original change still there
+        $next.Data.AllChanges.Count | Should -Be 1
+        $next.Data.AllChanges[0].Id | Should -Be '101'
+        # ActiveCommand cleared even on stale drop
+        $next.Runtime.ActiveCommand | Should -BeNullOrEmpty
+    }
+
+    It 'SubmittedChangesLoaded (replace) updates SubmittedChanges' {
+        $gen = $state.Data.SubmittedGeneration
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type       = 'SubmittedChangesLoaded'
+            Entries    = @(
+                [pscustomobject]@{ Id = '501'; Title = 'Sub'; Kind = 'Submitted'; User = 'alice'
+                    Captured = [datetime]'2026-03-01'; HasOpenedFiles = $false; HasShelvedFiles = $false }
+            )
+            Generation = $gen
+            AppendMode = $false
+            OldestId   = '501'
+            HasMore    = $false
+        })
+        $next.Data.SubmittedChanges.Count | Should -Be 1
+        $next.Data.SubmittedChanges[0].Id | Should -Be '501'
+    }
+
+    It 'SubmittedChangesLoaded (append) appends to SubmittedChanges' {
+        $gen = $state.Data.SubmittedGeneration
+        $state.Data.SubmittedChanges = @(
+            [pscustomobject]@{ Id = '501'; Title = 'Original'; Kind = 'Submitted'; User = 'alice'
+                Captured = [datetime]'2026-03-01'; HasOpenedFiles = $false; HasShelvedFiles = $false }
+        )
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type       = 'SubmittedChangesLoaded'
+            Entries    = @(
+                [pscustomobject]@{ Id = '502'; Title = 'More'; Kind = 'Submitted'; User = 'alice'
+                    Captured = [datetime]'2026-03-01'; HasOpenedFiles = $false; HasShelvedFiles = $false }
+            )
+            Generation = $gen
+            AppendMode = $true
+            OldestId   = '502'
+            HasMore    = $false
+        })
+        $next.Data.SubmittedChanges.Count | Should -Be 2
+    }
+
+    It 'FilesBaseLoaded (Submitted) sets FileCacheStatus to Ready' {
+        $gen      = $state.Data.FilesGeneration
+        $cacheKey = '101:Submitted'
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type       = 'FilesBaseLoaded'
+            CacheKey   = $cacheKey
+            SourceKind = 'Submitted'
+            FileEntries = @()
+            Generation = $gen
+        })
+        $next.Data.FileCacheStatus[$cacheKey] | Should -Be 'Ready'
+    }
+
+    It 'FilesBaseLoaded (Opened) sets FileCacheStatus to BaseReady and signals LoadFilesEnrichment' {
+        $gen      = $state.Data.FilesGeneration
+        $cacheKey = '101:Opened'
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type        = 'FilesBaseLoaded'
+            CacheKey    = $cacheKey
+            SourceKind  = 'Opened'
+            FileEntries = @()
+            Generation  = $gen
+        })
+        $next.Data.FileCacheStatus[$cacheKey] | Should -Be 'BaseReady'
+        $next.Runtime.PendingRequest.Kind     | Should -Be 'LoadFilesEnrichment'
+        $next.Runtime.PendingRequest.CacheKey | Should -Be $cacheKey
+    }
+
+    It 'FilesEnrichmentDone updates FileCache and sets status to Ready' {
+        $gen      = $state.Data.FilesGeneration
+        $cacheKey = '101:Opened'
+        $state.Data.FileCacheStatus = @{ $cacheKey = 'BaseReady' }
+        $enrichedFiles = @(
+            [pscustomobject]@{ DepotPath = '//depot/foo.txt'; Action = 'edit'; ClientPath = 'C:\foo.txt' }
+        )
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type        = 'FilesEnrichmentDone'
+            CacheKey    = $cacheKey
+            FileEntries = $enrichedFiles
+            Generation  = $gen
+        })
+        $next.Data.FileCacheStatus[$cacheKey] | Should -Be 'Ready'
+        $next.Data.FileCache[$cacheKey].Count | Should -Be 1
+        $next.Runtime.ActiveCommand           | Should -BeNullOrEmpty
+    }
+
+    It 'DescribeLoaded updates DescribeCache' {
+        $describe = [pscustomobject]@{ Description = 'A great change'; Files = @() }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type     = 'DescribeLoaded'
+            Change   = '101'
+            Describe = $describe
+        })
+        $null -ne $next.Data.DescribeCache['101']        | Should -BeTrue
+        $next.Data.DescribeCache['101'].Description      | Should -Be 'A great change'
+    }
+
+    It 'M4 async action types are all registered as global actions' {
+        (Test-IsBrowserGlobalAction -ActionType 'AsyncCommandStarted')    | Should -BeTrue
+        (Test-IsBrowserGlobalAction -ActionType 'PendingChangesLoaded')   | Should -BeTrue
+        (Test-IsBrowserGlobalAction -ActionType 'SubmittedChangesLoaded') | Should -BeTrue
+        (Test-IsBrowserGlobalAction -ActionType 'FilesBaseLoaded')        | Should -BeTrue
+        (Test-IsBrowserGlobalAction -ActionType 'FilesEnrichmentDone')    | Should -BeTrue
+        (Test-IsBrowserGlobalAction -ActionType 'DescribeLoaded')         | Should -BeTrue
+    }
+}

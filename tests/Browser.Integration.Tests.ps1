@@ -13,6 +13,31 @@ Describe 'Start-P4Browser integration' {
         # top-level Render instance; PerfourceCommanderConsole uses its own nested instance.
         InModuleScope PerfourceCommanderConsole { Disable-RenderFlush }
 
+        # M4: inject synchronous test executor so async workers run inline and complete
+        # immediately without ThreadJob / runspace overhead.
+        InModuleScope PerfourceCommanderConsole {
+            Set-BrowserAsyncExecutor -Executor ([pscustomobject]@{
+                Execute = {
+                    param([pscustomobject]$Envelope, [scriptblock]$Worker)
+                    $result = & $Worker $Envelope ''   # ModuleRoot='' → skip module imports
+                    $script:AsyncJobRegistry[[string]$Envelope.RequestId] = $result
+                }
+                Poll = {
+                    param([string]$RequestId)
+                    if ($script:AsyncJobRegistry.ContainsKey($RequestId)) {
+                        $r = $script:AsyncJobRegistry[$RequestId]
+                        [void]$script:AsyncJobRegistry.Remove($RequestId)
+                        return $r
+                    }
+                    return $null
+                }
+                Cancel = {
+                    param([string]$RequestId)
+                    [void]$script:AsyncJobRegistry.Remove($RequestId)
+                }
+            })
+        }
+
         Mock Get-BrowserConsoleSize -ModuleName PerfourceCommanderConsole {
             [pscustomobject]@{ Width = 140; Height = 36 }
         }

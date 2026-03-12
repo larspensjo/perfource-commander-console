@@ -483,10 +483,11 @@ function Invoke-BrowserFilesLoad {
             return Invoke-BrowserSideEffect -State $State -CommandLine $loadFilesCmdLine -WorkItem {
                 param($s)
                 $files = @(Get-P4OpenedFiles -Change $Change)
-                $modifiedPaths = Get-P4ModifiedDepotPaths -FileEntries $files
-                $files = Set-P4FileEntriesContentModifiedState -FileEntries $files -ModifiedDepotPaths $modifiedPaths
-                $s.Data.FileCache[$CacheKey] = $files
+                $s.Data.FileCache[$CacheKey]       = $files
+                $s.Data.FileCacheStatus[$CacheKey] = 'BaseReady'
                 $s.Runtime.LastError = $null
+                # Signal enrichment as a follow-up (diff -sa) — M2.1
+                $s.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'LoadFilesEnrichment'; CacheKey = $CacheKey } -Generation $s.Data.FilesGeneration
                 return Update-BrowserDerivedState -State $s
             }
         }
@@ -511,6 +512,58 @@ function Invoke-BrowserFilesLoad {
         default {
             throw "Unsupported FilesSourceKind '$SourceKind'."
         }
+    }
+}
+
+function Invoke-BrowserFilesEnrichment {
+    <#
+    .SYNOPSIS
+        Runs content-diff enrichment (p4 diff -sa) on a base-loaded file cache entry.
+    .DESCRIPTION
+        Called after Invoke-BrowserFilesLoad has stored base fstat data with
+        FileCacheStatus = 'BaseReady'. Fetches modified depot paths and merges
+        IsContentModified into each FileEntry. Sets FileCacheStatus to 'Ready'
+        on success or 'EnrichmentFailed' on error.  Idempotent: a no-op when
+        status is already 'LoadingEnrichment' or 'Ready' (M2.4).
+    #>
+    [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'CacheKey',
+        Justification = 'CacheKey is captured by the WorkItem scriptblock closure below.')]
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][string]$CacheKey
+    )
+
+    # Idempotence check (M2.4): skip if already enriching or done.
+    $currentStatus = if ($State.Data.FileCacheStatus.ContainsKey($CacheKey)) {
+        [string]$State.Data.FileCacheStatus[$CacheKey]
+    } else {
+        'NotLoaded'
+    }
+    if ($currentStatus -in @('LoadingEnrichment', 'Ready')) {
+        return $State
+    }
+
+    # If the base data has not been loaded there is nothing to enrich.
+    if (-not $State.Data.FileCache.ContainsKey($CacheKey)) {
+        return $State
+    }
+
+    $enrichCmdLine = Format-P4CommandLine -P4Args @('diff', '-sa')
+    return Invoke-BrowserSideEffect -State $State -CommandLine $enrichCmdLine -WorkItem {
+        param($s)
+        [object[]]$existingFiles = @($s.Data.FileCache[$CacheKey])
+        $s.Data.FileCacheStatus[$CacheKey] = 'LoadingEnrichment'
+        try {
+            $modifiedPaths = Get-P4ModifiedDepotPaths -FileEntries $existingFiles
+            $enrichedFiles = Set-P4FileEntriesContentModifiedState -FileEntries $existingFiles -ModifiedDepotPaths $modifiedPaths
+            $s.Data.FileCache[$CacheKey]       = $enrichedFiles
+            $s.Data.FileCacheStatus[$CacheKey] = 'Ready'
+        }
+        catch {
+            $s.Data.FileCacheStatus[$CacheKey] = 'EnrichmentFailed'
+            $s.Runtime.LastError = [string]$_.Exception.Message
+        }
+        return Update-BrowserDerivedState -State $s
     }
 }
 
@@ -722,10 +775,20 @@ function Start-P4Browser {
                             if ($state.Data.FileCache.ContainsKey($cacheKey)) {
                                 # Cache hit — recompute derived state (cursor/scroll already reset by reducer)
                                 $state = Update-BrowserDerivedState -State $state
+                                # If base data exists but enrichment hasn't run yet, trigger it now (M2.4).
+                                $cacheStatus = if ($state.Data.FileCacheStatus.ContainsKey($cacheKey)) { [string]$state.Data.FileCacheStatus[$cacheKey] } else { 'NotLoaded' }
+                                if ($cacheStatus -eq 'BaseReady') {
+                                    $state = Invoke-BrowserFilesEnrichment -State $state -CacheKey $cacheKey
+                                }
                             } else {
                                 $state = Invoke-BrowserFilesLoad -State $state -Change $change -SourceKind $sourceKind -CacheKey $cacheKey
                             }
                             # After I/O: if user navigated away, silently stay on current screen
+                        }
+                        'LoadFilesEnrichment' {
+                            # Run content-diff enrichment (diff -sa) after base fstat load (M2.1).
+                            $cacheKey = [string]$req.CacheKey
+                            $state = Invoke-BrowserFilesEnrichment -State $state -CacheKey $cacheKey
                         }
                         'FetchDescribe' {
                             $change = ConvertTo-P4ChangelistId -Value $req.ChangeId

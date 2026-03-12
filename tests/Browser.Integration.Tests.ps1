@@ -192,7 +192,7 @@ Describe 'Browser file loading helpers' {
         }
     }
 
-    It 'stores opened files with content-modified enrichment in FileCache' {
+    It 'base load stores opened files without content-modified enrichment (M2.1)' {
         InModuleScope PerfourceCommanderConsole {
             Mock Render-BrowserState { }
             Mock Get-P4OpenedFiles {
@@ -201,6 +201,34 @@ Describe 'Browser file loading helpers' {
                     (New-P4FileEntry -DepotPath '//depot/b.cpp' -Action 'edit' -FileType 'text' -Change 101 -SourceKind 'Opened')
                 )
             }
+            # Get-P4ModifiedDepotPaths must NOT be called during base load
+            Mock Get-P4ModifiedDepotPaths { throw 'enrichment should not run in base load' }
+
+            $state = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
+            $next  = Invoke-BrowserFilesLoad -State $state -Change 101 -SourceKind 'Opened' -CacheKey '101:Opened'
+
+            $cached = @($next.Data.FileCache['101:Opened'])
+            $cached.Count | Should -Be 2
+            $cached[0].IsUnresolved | Should -BeTrue
+            # IsContentModified not enriched yet — should be absent or false
+            $cmProp = $cached[1].PSObject.Properties['IsContentModified']
+            if ($null -ne $cmProp) { [bool]$cmProp.Value | Should -BeFalse }
+
+            # FileCacheStatus should be BaseReady
+            $next.Data.FileCacheStatus['101:Opened'] | Should -Be 'BaseReady'
+
+            # PendingRequest should signal LoadFilesEnrichment
+            $next.Runtime.PendingRequest.Kind | Should -Be 'LoadFilesEnrichment'
+            $next.Runtime.PendingRequest.CacheKey | Should -Be '101:Opened'
+
+            Assert-MockCalled Get-P4OpenedFiles -Times 1 -Exactly
+            Assert-MockCalled Get-P4ModifiedDepotPaths -Times 0 -Exactly
+        }
+    }
+
+    It 'enrichment sets IsContentModified and FileCacheStatus Ready (M2.1)' {
+        InModuleScope PerfourceCommanderConsole {
+            Mock Render-BrowserState { }
             Mock Get-P4ModifiedDepotPaths {
                 $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
                 [void]$set.Add('//depot/b.cpp')
@@ -208,21 +236,50 @@ Describe 'Browser file loading helpers' {
             }
 
             $state = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
-            $next = Invoke-BrowserFilesLoad -State $state -Change 101 -SourceKind 'Opened' -CacheKey '101:Opened'
+            $state.Data.FileCache['101:Opened'] = @(
+                (New-P4FileEntry -DepotPath '//depot/a.cpp' -Action 'edit' -FileType 'text' -Change 101 -SourceKind 'Opened'),
+                (New-P4FileEntry -DepotPath '//depot/b.cpp' -Action 'edit' -FileType 'text' -Change 101 -SourceKind 'Opened')
+            )
+            $state.Data.FileCacheStatus['101:Opened'] = 'BaseReady'
+
+            $next = Invoke-BrowserFilesEnrichment -State $state -CacheKey '101:Opened'
 
             $cached = @($next.Data.FileCache['101:Opened'])
-            $cached.Count | Should -Be 2
-            $cached[0].IsUnresolved | Should -BeTrue
             $cached[0].IsContentModified | Should -BeFalse
-            $cached[1].IsUnresolved | Should -BeFalse
             $cached[1].IsContentModified | Should -BeTrue
+            $next.Data.FileCacheStatus['101:Opened'] | Should -Be 'Ready'
+        }
+    }
 
-            Assert-MockCalled Get-P4OpenedFiles -Times 1 -Exactly -ParameterFilter {
-                $Change -eq 101
-            }
-            Assert-MockCalled Get-P4ModifiedDepotPaths -Times 1 -Exactly -ParameterFilter {
-                @($FileEntries).Count -eq 2
-            }
+    It 'enrichment sets FileCacheStatus EnrichmentFailed when diff throws (M2.1)' {
+        InModuleScope PerfourceCommanderConsole {
+            Mock Render-BrowserState { }
+            Mock Get-P4ModifiedDepotPaths { throw 'p4 diff failed' }
+
+            $state = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
+            $state.Data.FileCache['101:Opened'] = @(
+                (New-P4FileEntry -DepotPath '//depot/a.cpp' -Action 'edit' -FileType 'text' -Change 101 -SourceKind 'Opened')
+            )
+            $state.Data.FileCacheStatus['101:Opened'] = 'BaseReady'
+
+            $next = Invoke-BrowserFilesEnrichment -State $state -CacheKey '101:Opened'
+
+            $next.Data.FileCacheStatus['101:Opened'] | Should -Be 'EnrichmentFailed'
+        }
+    }
+
+    It 'enrichment is a no-op when FileCacheStatus is already Ready (M2.4)' {
+        InModuleScope PerfourceCommanderConsole {
+            Mock Get-P4ModifiedDepotPaths { throw 'should not be called' }
+
+            $state = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
+            $state.Data.FileCache['101:Opened'] = @(
+                (New-P4FileEntry -DepotPath '//depot/a.cpp' -Action 'edit' -FileType 'text' -Change 101 -SourceKind 'Opened')
+            )
+            $state.Data.FileCacheStatus['101:Opened'] = 'Ready'
+
+            { Invoke-BrowserFilesEnrichment -State $state -CacheKey '101:Opened' } | Should -Not -Throw
+            Assert-MockCalled Get-P4ModifiedDepotPaths -Times 0 -Exactly
         }
     }
 
@@ -230,22 +287,16 @@ Describe 'Browser file loading helpers' {
         InModuleScope PerfourceCommanderConsole {
             Mock Render-BrowserState { }
             Mock Get-P4OpenedFiles { return @() }
-            Mock Get-P4ModifiedDepotPaths {
-                $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-                return $set
-            }
 
             $state = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
             $next = Invoke-BrowserFilesLoad -State $state -Change 202 -SourceKind 'Opened' -CacheKey '202:Opened'
 
             $next.Data.FileCache.ContainsKey('202:Opened') | Should -BeTrue
             @($next.Data.FileCache['202:Opened']).Count | Should -Be 0
+            $next.Data.FileCacheStatus['202:Opened'] | Should -Be 'BaseReady'
 
             Assert-MockCalled Get-P4OpenedFiles -Times 1 -Exactly -ParameterFilter {
                 $Change -eq 202
-            }
-            Assert-MockCalled Get-P4ModifiedDepotPaths -Times 1 -Exactly -ParameterFilter {
-                @($FileEntries).Count -eq 0
             }
         }
     }

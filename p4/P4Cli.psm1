@@ -38,6 +38,10 @@ $script:P4TimeoutByCategory = @{
     Mutating  = 30000
 }
 
+# Maximum total time (ms) spent on per-CL unresolved enrichment inside Get-P4UnresolvedFileCounts.
+# When exceeded, remaining changelists are skipped and their unresolved count defaults to 0.
+$script:EnrichmentBudgetMs = 5000
+
 function ConvertTo-P4ChangelistId {
     [CmdletBinding()]
     param(
@@ -1021,11 +1025,17 @@ function Get-P4UnresolvedFileCounts {
         pending changelist loading is never blocked by unresolved enrichment errors.
     .PARAMETER ChangeNumbers
         Optional pending changelist numbers to query individually with '-e <change>'.
+    .PARAMETER BudgetMs
+        Maximum total milliseconds to spend on per-CL queries (M2.5 enrichment budget).
+        Pass -1 (default) to use $script:EnrichmentBudgetMs. Pass [int]::MaxValue to disable.
     #>
     [CmdletBinding()]
     param(
-        [AllowEmptyCollection()][string[]]$ChangeNumbers = @()
+        [AllowEmptyCollection()][string[]]$ChangeNumbers = @(),
+        [int]$BudgetMs = -1
     )
+
+    $effectiveBudgetMs = if ($BudgetMs -ge 0) { $BudgetMs } else { $script:EnrichmentBudgetMs }
 
     $changesToQuery = [System.Collections.Generic.List[string]]::new()
     $seenChanges = New-P4ChangeIdSet
@@ -1039,8 +1049,15 @@ function Get-P4UnresolvedFileCounts {
 
     if ($changesToQuery.Count -gt 0) {
         $result = New-P4ChangeCountDictionary
+        $budgetStart = [datetime]::UtcNow
 
         foreach ($change in $changesToQuery) {
+            # Respect enrichment time budget (M2.5): skip remaining CLs if budget exceeded.
+            $elapsedMs = ([datetime]::UtcNow - $budgetStart).TotalMilliseconds
+            if ($elapsedMs -gt $effectiveBudgetMs) {
+                break
+            }
+
             try {
                 $lines = Invoke-P4 -P4Args (New-P4FstatUnresolvedArgs -Fields $script:P4FstatUnresolvedCountFields -Change $change)
             }

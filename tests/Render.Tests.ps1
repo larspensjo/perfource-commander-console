@@ -1160,6 +1160,89 @@ Describe 'Files screen rendering' {
         $allText | Should -Match 'Source: Submitted'
     }
 
+    It 'inspector shows Content: \u2026 (pending) when enrichment is in progress (M2.3)' {
+        $state = New-FilesRenderState -Width 120 -Height 20
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '100:Opened' = @(
+                [pscustomobject]@{ FileName = 'Pending.cs'; DepotPath = '//depot/Pending.cs'; Action = 'edit'; FileType = 'text'; Change = 100; SourceKind = 'Opened'; IsUnresolved = $false }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FileCacheStatus -NotePropertyValue @{ '100:Opened' = 'BaseReady' }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 100
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Match 'Content: \u2026'
+        # Should NOT say 'Content: clean' when enrichment is pending
+        $allText | Should -Not -Match 'Content: clean'
+    }
+
+    It 'file list row shows \u2026 glyph when enrichment is pending and file is not content-modified or unresolved (M2.3)' {
+        $state = New-FilesRenderState -Width 120 -Height 20
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '100:Opened' = @(
+                [pscustomobject]@{ FileName = 'Pending.cs'; DepotPath = '//depot/Pending.cs'; Action = 'edit'; FileType = 'text'; Change = 100; SourceKind = 'Opened'; IsUnresolved = $false }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FileCacheStatus -NotePropertyValue @{ '100:Opened' = 'BaseReady' }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 100
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $listRows = $frame.Rows | Select-Object -First 10
+        $listText = ($listRows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $listText | Should -Match '\u2026'
+    }
+
+    It 'status bar shows Content: loading\u2026 when FileCacheStatus is BaseReady (M2.3)' {
+        $state = New-FilesRenderState -Width 120 -Height 20
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '100:Opened' = @(
+                [pscustomobject]@{ FileName = 'F.cs'; DepotPath = '//depot/F.cs'; Action = 'edit'; FileType = 'text'; Change = 100; SourceKind = 'Opened' }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FileCacheStatus -NotePropertyValue @{ '100:Opened' = 'BaseReady' }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 100
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Match 'Content: loading'
+    }
+
+    It 'inspector shows Content: clean (not \u2026) when FileCacheStatus is Ready' {
+        $state = New-FilesRenderState -Width 120 -Height 20
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '100:Opened' = @(
+                [pscustomobject]@{ FileName = 'Done.cs'; DepotPath = '//depot/Done.cs'; Action = 'edit'; FileType = 'text'; Change = 100; SourceKind = 'Opened'; IsUnresolved = $false }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FileCacheStatus -NotePropertyValue @{ '100:Opened' = 'Ready' }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 100
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Match 'Content: clean'
+    }
+
     It 'inspector shows Resolve: clean for a clean file' {
         $state = New-FilesRenderState -Width 120 -Height 20
         $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{

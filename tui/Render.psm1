@@ -12,6 +12,7 @@ $UNRESOLVED_GLYPH      = $_theme.Glyphs.Unresolved  # ⚠
 $OPENED_GLYPH          = $_theme.Glyphs.Opened      # 📁
 $SHELVED_GLYPH         = $_theme.Glyphs.Shelved     # 📦
 $MODIFIED_GLYPH        = $_theme.Glyphs.Modified    # ≠
+$PENDING_GLYPH         = [char]0x2026               # … (horizontal ellipsis — enrichment pending)
 $UNRESOLVED_BADGE_WIDTH = 2  # one glyph slot + one trailing space
 
 # Set to $true via Enable-FrameIntegrityTest to activate the runtime border checker.
@@ -1427,8 +1428,12 @@ function Build-FilesStatusBarRow {
     $filePos      = if ($fileCount -gt 0) { $State.Cursor.FileIndex + 1 } else { 0 }
     $filterText   = Get-PropertyValueOrDefault -Object $State.Query -Name 'FileFilterText' -Default ''
     $filterHint   = if (-not [string]::IsNullOrWhiteSpace($filterText)) { "  Filter: $filterText" } else { '' }
+    $cacheKey     = "${sourceChange}:${sourceKind}"
+    $fileCacheStatus      = Get-PropertyValueOrDefault -Object $State.Data -Name 'FileCacheStatus' -Default $null
+    $cacheStatus          = if ($null -ne $fileCacheStatus -and $fileCacheStatus.ContainsKey($cacheKey)) { [string]$fileCacheStatus[$cacheKey] } else { 'NotLoaded' }
+    $enrichmentHint       = if ($cacheStatus -in @('BaseReady', 'LoadingEnrichment')) { '  Content: loading…' } else { '' }
 
-    $statusText  = "[Files] CL $sourceChange ($sourceKind)  $filePos/$fileCount$filterHint | [/] Filter  [Esc/←] Back  [Tab] Pane  [F1] Help  [F5] Reload  [Q] Quit"
+    $statusText  = "[Files] CL $sourceChange ($sourceKind)  $filePos/$fileCount${filterHint}${enrichmentHint} | [/] Filter  [Esc/←] Back  [Tab] Pane  [F1] Help  [F5] Reload  [Q] Quit"
     $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
 
     $seg  = @{ Text = $statusText; Color = 'DarkGray'; BackgroundColor = '' }
@@ -1468,10 +1473,13 @@ function Build-FilesScreenFrame {
     $sourceKind    = Get-PropertyValueOrDefault -Object $State.Data  -Name 'FilesSourceKind'   -Default ''
     $filterText    = Get-PropertyValueOrDefault -Object $State.Query -Name 'FileFilterText'    -Default ''
     $fileCount     = if (($State.Derived.PSObject.Properties.Match('VisibleFileIndices')).Count -gt 0) { $State.Derived.VisibleFileIndices.Count } else { 0 }
-    $isLoading     = ($State.Runtime.PSObject.Properties['PendingRequest']?.Value?.Kind -eq 'LoadFiles')
+    $isLoading     = ($State.Runtime.PSObject.Properties['PendingRequest']?.Value?.Kind -in @('LoadFiles', 'LoadFilesEnrichment'))
     $cacheKey      = "${sourceChange}:${sourceKind}"
     $fileCache     = Get-PropertyValueOrDefault -Object $State.Data -Name 'FileCache' -Default $null
     [object[]]$allFiles = if ($null -ne $fileCache -and $fileCache.ContainsKey($cacheKey)) { @($fileCache[$cacheKey]) } else { @() }
+    $fileCacheStatus    = Get-PropertyValueOrDefault -Object $State.Data -Name 'FileCacheStatus' -Default $null
+    $cacheStatus        = if ($null -ne $fileCacheStatus -and $fileCacheStatus.ContainsKey($cacheKey)) { [string]$fileCacheStatus[$cacheKey] } else { 'NotLoaded' }
+    $isEnrichmentPending = $cacheStatus -in @('BaseReady', 'LoadingEnrichment')
 
     $selectedFile = $null
     if ($fileCount -gt 0 -and $State.Cursor.FileIndex -ge 0 -and $State.Cursor.FileIndex -lt $fileCount) {
@@ -1548,6 +1556,8 @@ function Build-FilesScreenFrame {
                             $UNRESOLVED_GLYPH + ' '
                         } elseif ($isContentModified) {
                             $MODIFIED_GLYPH + ' '
+                        } elseif ($isEnrichmentPending) {
+                            $PENDING_GLYPH + ' '
                         } else {
                             '  '
                         }
@@ -1555,6 +1565,8 @@ function Build-FilesScreenFrame {
                             'Yellow'
                         } elseif ($isContentModified) {
                             'Cyan'
+                        } elseif ($isEnrichmentPending) {
+                            'DarkGray'
                         } else {
                             'DarkGray'
                         }
@@ -1606,8 +1618,8 @@ function Build-FilesScreenFrame {
                     $selectedContentModified = [bool](Get-PropertyValueOrDefault -Object $selectedFile -Name 'IsContentModified' -Default $false)
                     $resolveLabel      = if ($selectedUnresolvd) { 'unresolved' } else { 'clean' }
                     $resolveColor      = if ($selectedUnresolvd) { 'Yellow' } else { 'DarkGray' }
-                    $contentLabel      = if ($selectedContentModified) { 'modified' } else { 'clean' }
-                    $contentColor      = if ($selectedContentModified) { 'Cyan' } else { 'DarkGray' }
+                    $contentLabel      = if ($selectedContentModified) { 'modified' } elseif ($isEnrichmentPending) { [char]0x2026 } else { 'clean' }
+                    $contentColor      = if ($selectedContentModified) { 'Cyan' } elseif ($isEnrichmentPending) { 'DarkGray' } else { 'DarkGray' }
                     $inspectorLines = @(
                         @(@{ Text = "File: $selectedFileName"; Color = 'White'       }),
                         @(@{ Text = "Action: $selectedAction"; Color = 'DarkYellow' }),

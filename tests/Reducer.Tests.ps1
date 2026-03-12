@@ -766,6 +766,32 @@ Describe 'Files screen reducer — Step 1' {
         $next.Ui.ViewMode | Should -Be 'CommandLog'
         $next.Ui.ScreenStack | Should -Be @('Changelists')
     }
+
+    It 'Copy-BrowserState preserves FileCacheStatus as shared reference (M0.4)' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.PendingRequest = $null
+        $state.Data.FileCacheStatus['101:Opened'] = 'BaseReady'
+        $copy = Copy-BrowserState -State $state
+        $copy.Data.FileCacheStatus.ContainsKey('101:Opened') | Should -BeTrue
+        $copy.Data.FileCacheStatus['101:Opened'] | Should -Be 'BaseReady'
+        # Shared reference: mutation visible in both
+        $state.Data.FileCacheStatus['202:Submitted'] = 'Ready'
+        $copy.Data.FileCacheStatus.ContainsKey('202:Submitted') | Should -BeTrue
+    }
+
+    It 'Reload on Files screen evicts FileCache AND FileCacheStatus (M2.2)' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $cacheKey = "$($state.Data.FilesSourceChange):$($state.Data.FilesSourceKind)"
+        $state.Data.FileCache[$cacheKey]       = @([pscustomobject]@{ DepotPath = '//depot/f.txt' })
+        $state.Data.FileCacheStatus[$cacheKey] = 'Ready'
+        $state.Runtime.PendingRequest = $null
+
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'Reload' })
+
+        $next.Data.FileCache.ContainsKey($cacheKey)       | Should -BeFalse
+        $next.Data.FileCacheStatus.ContainsKey($cacheKey) | Should -BeFalse
+        $next.Runtime.PendingRequest.Kind                 | Should -Be 'LoadFiles'
+    }
 }
 
 # ─── CommandLog feature tests ─────────────────────────────────────────────────

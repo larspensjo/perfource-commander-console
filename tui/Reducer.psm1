@@ -1961,6 +1961,11 @@ function Invoke-FilesReducer {
             if ($null -ne $fileCache -and $fileCache.ContainsKey($cacheKey)) {
                 $fileCache.Remove($cacheKey) | Out-Null
             }
+            # Also clear the enrichment-status so the reload starts fresh (M2.2).
+            $fileCacheStatus = $next.Data.PSObject.Properties['FileCacheStatus']?.Value
+            if ($null -ne $fileCacheStatus -and $fileCacheStatus.ContainsKey($cacheKey)) {
+                $fileCacheStatus.Remove($cacheKey) | Out-Null
+            }
             $reloadCacheKey = "$($next.Data.FilesSourceChange)`:$($next.Data.FilesSourceKind)"
             $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'LoadFiles'; CacheKey = $reloadCacheKey } -Generation $next.Data.FilesGeneration
             return Update-BrowserDerivedState -State $next

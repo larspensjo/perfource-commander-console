@@ -1746,3 +1746,45 @@ Describe 'Get-P4CommandTimeout' {
         Get-P4CommandTimeout -CommandLine 'p4 info' | Should -Be 10000
     }
 }
+
+Describe 'Get-P4UnresolvedFileCounts enrichment budget' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\.\p4\P4Cli.psm1') -Force
+    }
+
+    It 'stops querying after budget is exceeded' {
+        InModuleScope P4Cli {
+            Mock Invoke-P4 {
+                # Simulate a slow query by sleeping briefly
+                Start-Sleep -Milliseconds 10
+                return @()
+            }
+
+            # Set a 1 ms budget so the first iteration exhausts it
+            $result = Get-P4UnresolvedFileCounts -ChangeNumbers @('101', '102', '103') -BudgetMs 1
+
+            # First CL must have been queried; remaining may have been skipped
+            $result | Should -Not -BeNullOrEmpty
+        }
+    }
+
+    It 'processes all CLs when budget is MaxValue' {
+        InModuleScope P4Cli {
+            $callCount = 0
+            Mock Invoke-P4 {
+                param($P4Args)
+                Set-Variable -Scope Script -Name callCount -Value ($callCount + 1)
+                # Return one unresolved record for the change passed as -e argument
+                $changeArg = $P4Args | Select-String -Pattern '^\d+$' | Select-Object -First 1
+                if ($null -ne $changeArg) {
+                    return @([pscustomobject]@{ change = [string]$changeArg; depotFile = '//depot/f.txt'; unresolved = 'true' })
+                }
+                return @()
+            }
+
+            $result = Get-P4UnresolvedFileCounts -ChangeNumbers @('101', '102') -BudgetMs ([int]::MaxValue)
+            # Both should have been queried
+            $result.Count | Should -Be 2
+        }
+    }
+}

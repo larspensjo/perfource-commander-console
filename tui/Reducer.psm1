@@ -35,6 +35,7 @@ $script:PendingRequestScopeByKind = @{
     'DeleteShelvedFiles'  = 'Mutation'
     'ShelveFiles'         = 'Mutation'
     'MoveFiles'           = 'Mutation'
+    'SubmitChange'        = 'Mutation'
     'ExecuteWorkflow'     = 'Workflow'
 }
 
@@ -120,6 +121,13 @@ $script:MenuDefinitions = @{
             Accelerator = 'S'
             IsSeparator = $false
             IsEnabled   = { param($s) Test-CanShelveSelectedChanges -State $s }
+        },
+        [pscustomobject]@{
+            Id          = 'SubmitChange'
+            Label       = 'Submit changelist'
+            Accelerator = 'T'
+            IsSeparator = $false
+            IsEnabled   = { param($s) Test-CanSubmitSelectedChange -State $s }
         },
         [pscustomobject]@{ Id = '__FileSep1__'; Label = ''; Accelerator = ''; IsSeparator = $true;  IsEnabled = { $true } },
         [pscustomobject]@{
@@ -401,6 +409,35 @@ function Test-CanShelveSelectedChanges {
     param($State)
 
     return @(Get-ShelveActionableChanges -State $State).Count -gt 0
+}
+
+function Get-SubmitActionableChangeId {
+    param($State)
+
+    $viewMode = if ($State.Ui.PSObject.Properties['ViewMode']) { [string]$State.Ui.ViewMode } else { 'Pending' }
+    if ($viewMode -ne 'Pending') { return $null }
+
+    $visibleIdsProp = $State.Derived.PSObject.Properties['VisibleChangeIds']
+    if ($null -eq $visibleIdsProp -or $null -eq $visibleIdsProp.Value) { return $null }
+
+    [object[]]$visibleIds = @($visibleIdsProp.Value)
+    if ($visibleIds.Count -eq 0) { return $null }
+
+    $focusedIndex = [Math]::Max(0, [Math]::Min([int]$State.Cursor.ChangeIndex, $visibleIds.Count - 1))
+    $focusedId = [string]$visibleIds[$focusedIndex]
+
+    [object[]]$activeChanges = @($State.Data.AllChanges)
+    $focusedChange = $activeChanges | Where-Object { [string]$_.Id -eq $focusedId } | Select-Object -First 1
+    if ($null -eq $focusedChange) { return $null }
+    if (-not (Test-ChangeHasOpenedFiles -Change $focusedChange)) { return $null }
+
+    return $focusedId
+}
+
+function Test-CanSubmitSelectedChange {
+    param($State)
+
+    return $null -ne (Get-SubmitActionableChangeId -State $State)
 }
 
 # ── Changelist viewport geometry helpers ──────────────────────────────────────
@@ -1425,6 +1462,7 @@ function Invoke-ChangelistReducer {
                 'ToggleHideFilters' { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleHideUnavailableFilters' }) }
                 'ExpandCollapse'    { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleChangelistView' }) }
                 'Help'              { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleHelpOverlay' }) }
+                'SubmitChange'      { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'SubmitChange' }) }
                 'MoveMarkedFiles'   {
                     [string[]]$changeIds   = @($next.Query.MarkedChangeIds | ForEach-Object { [string]$_ } | Sort-Object)
                     [object[]]$visibleIds  = @($next.Derived.VisibleChangeIds)
@@ -1785,6 +1823,22 @@ function Invoke-ChangelistReducer {
             $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'FetchDescribe'; ChangeId = $changeId }
             $next.Runtime.DetailChangeId = $changeId  # persists for rendering
             return Update-BrowserDerivedState -State $next
+        }
+        'SubmitChange' {
+            $changeId = Get-SubmitActionableChangeId -State $next
+            if ($null -eq $changeId) { return $next }
+            $payload = [pscustomobject]@{
+                Title            = "Submit changelist ${changeId}?"
+                SummaryLines     = @("Changelist: $changeId")
+                ConsequenceLines = @('All opened files in this changelist will be committed to the depot')
+                ConfirmLabel     = 'Y / Enter = confirm'
+                CancelLabel      = 'N / Esc = cancel'
+                OnAccept         = [pscustomobject]@{
+                    Kind     = 'SubmitChange'
+                    ChangeId = $changeId
+                }
+            }
+            return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenConfirmDialog'; Payload = $payload })
         }
         'DeleteChange' {
             $currentViewMode = if (($next.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$next.Ui.ViewMode } else { 'Pending' }

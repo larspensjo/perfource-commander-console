@@ -553,6 +553,37 @@ $script:AsyncWorkers = @{
         } finally { Unregister-P4Observer }
     }
 
+    'SubmitChange' = {
+        param([pscustomobject]$Envelope, [string]$ModuleRoot)
+        if (![string]::IsNullOrEmpty($ModuleRoot)) {
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+        }
+        $observed = [System.Collections.Generic.List[pscustomobject]]::new()
+        $processObserver = {
+            param($EventType,$ProcessId,$ExitCode)
+            if (-not [string]::IsNullOrWhiteSpace([string]$Envelope.ProcessEventFile)) {
+                $payload = [pscustomobject]@{ EventType=$EventType; RequestId=[string]$Envelope.RequestId; ProcessId=$ProcessId; ExitCode=$ExitCode }
+                Add-Content -LiteralPath ([string]$Envelope.ProcessEventFile) -Value ($payload | ConvertTo-Json -Compress)
+            }
+        }
+        Register-P4Observer {
+            param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs)
+            $null = $RawLines
+            $observed.Add([pscustomobject]@{ CommandLine=$CommandLine;ExitCode=$ExitCode;Succeeded=($ExitCode -eq 0)
+                ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
+        }
+        try {
+            Invoke-P4Submit -Change ([string]$Envelope.ChangeId) -ProcessObserver $processObserver
+            return [pscustomobject]@{ Type='MutationCompleted'; RequestId=$Envelope.RequestId; Generation=$Envelope.Generation
+                MutationKind='SubmitChange'; ChangeId=[string]$Envelope.ChangeId; ObservedCommands=@($observed); Success=$true; Outcome='Completed' }
+        } catch {
+            $outcome = if (Test-IsP4TimeoutError -Message $_.Exception.Message) { 'TimedOut' } else { 'Failed' }
+            return [pscustomobject]@{ Type='AsyncCommandFailed'; RequestId=$Envelope.RequestId; Generation=$Envelope.Generation
+                MutationKind='SubmitChange'; ChangeId=[string]$Envelope.ChangeId; ErrorText=$_.Exception.Message; ObservedCommands=@($observed); Success=$false; Outcome=$outcome }
+        } finally { Unregister-P4Observer }
+    }
+
     'MoveFiles' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
@@ -610,6 +641,7 @@ function Get-AsyncDisplayCommandLine {
         'DeleteChange'        { return Format-P4CommandLine -P4Args @('change','-d',[string]$Envelope.ChangeId) }
         'DeleteShelvedFiles'  { return Format-P4CommandLine -P4Args @('shelve','-d','-c',[string]$Envelope.ChangeId) }
         'ShelveFiles'         { return Format-P4CommandLine -P4Args @('shelve','-f','-c',[string]$Envelope.ChangeId) }
+        'SubmitChange'        { return Format-P4CommandLine -P4Args @('submit','-c',[string]$Envelope.ChangeId) }
         'MoveFiles'           { return Format-P4CommandLine -P4Args @('reopen','-c',[string]$Envelope.TargetChangeId,'//...') }
         default               { return $Envelope.Kind }
     }
@@ -646,6 +678,7 @@ function Invoke-BrowserStartAsyncRequest {
         'DeleteChange'        { $extras['ChangeId'] = [string]$Request.ChangeId }
         'DeleteShelvedFiles'  { $extras['ChangeId'] = [string]$Request.ChangeId }
         'ShelveFiles'         { $extras['ChangeId'] = [string]$Request.ChangeId }
+        'SubmitChange'        { $extras['ChangeId'] = [string]$Request.ChangeId }
         'MoveFiles'           { $extras['ChangeId'] = [string]$Request.ChangeId; $extras['TargetChangeId'] = [string]$Request.TargetChangeId }
     }
     $envProps = @{}
@@ -1600,6 +1633,12 @@ function Start-P4Browser {
                             }
                         }
                         'DeleteShelvedFiles' {
+                            $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
+                            if ($null -ne $change) {
+                                $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                            }
+                        }
+                        'SubmitChange' {
                             $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
                             if ($null -ne $change) {
                                 $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req

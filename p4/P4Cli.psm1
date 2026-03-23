@@ -307,7 +307,7 @@ function Get-P4CommandCategory {
     if ($null -eq $P4Args -or $P4Args.Count -eq 0) { return 'Metadata' }
     $subcommand = [string]$P4Args[0]
     if ($subcommand -in @('fstat', 'opened', 'filelog', 'diff')) { return 'FileQuery' }
-    if ($subcommand -in @('change', 'reopen', 'shelve', 'unshelve', 'resolve')) { return 'Mutating' }
+    if ($subcommand -in @('change', 'reopen', 'shelve', 'unshelve', 'resolve', 'submit')) { return 'Mutating' }
     if ($subcommand -eq 'describe') { return 'Describe' }
     return 'Metadata'
 }
@@ -1357,6 +1357,25 @@ function Invoke-P4ShelveFiles {
     Invoke-P4 -P4Args @('shelve', '-f', '-c', "$Change") -ProcessObserver $ProcessObserver | Out-Null
 }
 
+function Invoke-P4Submit {
+    <#
+    .SYNOPSIS
+        Submits a pending changelist.
+    .DESCRIPTION
+        Runs 'p4 submit -c <change>' to submit the specified pending changelist
+        to the depot.  All opened files in the changelist are committed.
+    .PARAMETER Change
+        The pending changelist number to submit.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Change,
+        [scriptblock]$ProcessObserver = $null
+    )
+
+    Invoke-P4 -P4Args @('submit', '-c', "$Change") -ProcessObserver $ProcessObserver | Out-Null
+}
+
 function Remove-P4ShelvedFiles {
     <#
     .SYNOPSIS
@@ -1497,4 +1516,4 @@ function Invoke-P4ReopenFiles {
     return @{ MovedCount = $depotPaths.Count; Files = $depotPaths }
 }
 
-Export-ModuleMember -Function ConvertTo-P4ChangelistId, Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Get-P4CommandCategory, Get-DurationClass, Get-P4CommandTimeout, Stop-P4ProcessTree, Test-IsP4TimeoutError, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Get-P4ModifiedDepotPaths, Set-P4FileEntriesUnresolvedState, Set-P4FileEntriesContentModifiedState, Remove-P4Changelist, Invoke-P4ShelveFiles, Remove-P4ShelvedFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles
+Export-ModuleMember -Function ConvertTo-P4ChangelistId, Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Get-P4CommandCategory, Get-DurationClass, Get-P4CommandTimeout, Stop-P4ProcessTree, Test-IsP4TimeoutError, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Get-P4ModifiedDepotPaths, Set-P4FileEntriesUnresolvedState, Set-P4FileEntriesContentModifiedState, Remove-P4Changelist, Invoke-P4Submit, Invoke-P4ShelveFiles, Remove-P4ShelvedFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles

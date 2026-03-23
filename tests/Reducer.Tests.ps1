@@ -1599,10 +1599,10 @@ Describe 'Phase 5 — DeleteChange, DeleteShelvedFiles and MoveMarkedFiles menu 
 
     # ── File menu now includes delete-shelved support ─────────────────────────
 
-    It 'File menu has 8 navigable items including DeleteShelvedFiles' {
+    It 'File menu has 9 navigable items including DeleteShelvedFiles and SubmitChange' {
         $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
         $navCount = Get-MenuNavigableCount -ComputedItems $items
-        $navCount | Should -Be 8
+        $navCount | Should -Be 9
     }
 
     # ── DeleteChange ─────────────────────────────────────────────────────────
@@ -1902,6 +1902,69 @@ Describe 'Phase 5 — DeleteChange, DeleteShelvedFiles and MoveMarkedFiles menu 
         $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuAccelerator'; Key = 'S' })
         $next.Ui.OverlayMode                          | Should -Be 'Confirm'
         $next.Ui.OverlayPayload.OnAccept.WorkflowKind | Should -Be 'ShelveFiles'
+    }
+
+    # ── SubmitChange ──────────────────────────────────────────────────────────
+
+    It 'SubmitChange menu item is enabled when the focused changelist has opened files' {
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $scItem = $items | Where-Object { [string]$_.Id -eq 'SubmitChange' } | Select-Object -First 1
+        [bool]$scItem.IsEnabled | Should -BeTrue
+    }
+
+    It 'SubmitChange menu item is disabled when the focused changelist has no opened files' {
+        # Focus on CL 103 which has no opened files
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $scItem = $items | Where-Object { [string]$_.Id -eq 'SubmitChange' } | Select-Object -First 1
+        [bool]$scItem.IsEnabled | Should -BeFalse
+    }
+
+    It 'SubmitChange menu item is disabled in Submitted view' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchView'; View = 'Submitted' })
+        $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
+        $scItem = $items | Where-Object { [string]$_.Id -eq 'SubmitChange' } | Select-Object -First 1
+        [bool]$scItem.IsEnabled | Should -BeFalse
+    }
+
+    It 'SubmitChange action opens confirm dialog targeting the focused CL' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SubmitChange' })
+        $next.Ui.OverlayMode                    | Should -Be 'Confirm'
+        $next.Ui.OverlayPayload.OnAccept.Kind   | Should -Be 'SubmitChange'
+        $next.Ui.OverlayPayload.OnAccept.ChangeId | Should -Be '101'
+    }
+
+    It 'SubmitChange action is no-op when focused CL has no opened files' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SubmitChange' })
+        $next.Ui.OverlayMode | Should -Be 'None'
+    }
+
+    It 'SubmitChange action is no-op on empty list' {
+        $emptyState = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
+        $next = Invoke-BrowserReducer -State $emptyState -Action ([pscustomobject]@{ Type = 'SubmitChange' })
+        $next.Ui.OverlayMode | Should -Be 'None'
+    }
+
+    It 'SubmitChange confirm dialog accepted sets PendingRequest with kind SubmitChange' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SubmitChange' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'AcceptDialog' })
+        $next.Runtime.PendingRequest.Kind     | Should -Be 'SubmitChange'
+        $next.Runtime.PendingRequest.ChangeId | Should -Be '101'
+    }
+
+    It 'SubmitChange accelerator T opens the confirm dialog' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuAccelerator'; Key = 'T' })
+        $next.Ui.OverlayMode                    | Should -Be 'Confirm'
+        $next.Ui.OverlayPayload.OnAccept.Kind   | Should -Be 'SubmitChange'
     }
 }
 

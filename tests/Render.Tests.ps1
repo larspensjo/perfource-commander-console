@@ -551,6 +551,25 @@ Describe 'Frame helpers' {
                 $allText | Should -Match 'p4 changes -s pending'
             }
 
+            It 'animates the busy spinner based on elapsed seconds' {
+                $state = New-RenderStateFixture
+                $state.Runtime.ModalPrompt.IsOpen         = $true
+                $state.Runtime.ModalPrompt.IsBusy         = $true
+                $state.Runtime.ModalPrompt.CurrentCommand = 'p4 changes -s pending'
+                $state.Runtime.ModalPrompt | Add-Member -NotePropertyName CurrentTimeoutMs -NotePropertyValue 0 -Force
+                $startedAt = [datetime]'2026-01-01 10:00:00'
+                $frame     = Build-FrameFromState -State $state
+
+                $firstOverlay = Apply-ModalOverlay -Frame $frame -ModalPrompt $state.Runtime.ModalPrompt -StartedAt $startedAt -CurrentTime $startedAt
+                $nextOverlay  = Apply-ModalOverlay -Frame $frame -ModalPrompt $state.Runtime.ModalPrompt -StartedAt $startedAt -CurrentTime $startedAt.AddSeconds(1)
+
+                $firstText = ($firstOverlay.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+                $nextText  = ($nextOverlay.Rows  | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+
+                $firstText | Should -Match '◐ Running:'
+                $nextText  | Should -Match '◓ Running:'
+            }
+
             It 'renders history rows newest-first and includes duration' {
                 $state  = New-RenderStateFixture
                 $start1 = [datetime]'2026-01-01 10:00:00'

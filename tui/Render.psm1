@@ -90,6 +90,24 @@ function Get-PropertyValueOrDefault {
     return $value
 }
 
+function Get-BusyIndicatorGlyph {
+    param(
+        [datetime]$StartedAt = [datetime]::MinValue,
+        [datetime]$CurrentTime = [datetime]::MinValue
+    )
+
+    $frames = @([char]0x25D0, [char]0x25D3, [char]0x25D1, [char]0x25D2)
+
+    if ($StartedAt -eq [datetime]::MinValue) {
+        return $frames[0]
+    }
+
+    $now = if ($CurrentTime -ne [datetime]::MinValue) { $CurrentTime } else { Get-Date }
+    $elapsedSeconds = [Math]::Max(0, [int](($now - $StartedAt).TotalSeconds))
+
+    return $frames[$elapsedSeconds % $frames.Count]
+}
+
 function Test-IsSegmentLike {
     param([AllowNull()]$Value)
 
@@ -1143,7 +1161,8 @@ function Build-CommandModalRows {
         [object]$ActiveWorkflow    = $null,
         [bool]$CancelRequested     = $false,   # M3.4
         [bool]$QuitRequested       = $false,   # M3.4
-        [datetime]$StartedAt       = [datetime]::MinValue   # M4: elapsed time
+        [datetime]$StartedAt       = [datetime]::MinValue,  # M4: elapsed time
+        [datetime]$CurrentTime     = [datetime]::MinValue
     )
 
     $borderColor    = 'DarkCyan'
@@ -1151,6 +1170,8 @@ function Build-CommandModalRows {
     $currentCommand = [string](Get-PropertyValueOrDefault -Object $CommandModal -Name 'CurrentCommand'    -Default '')
     $history        = @(Get-PropertyValueOrDefault        -Object $CommandModal -Name 'History'           -Default @())
     $timeoutMs      = [int](Get-PropertyValueOrDefault    -Object $CommandModal -Name 'CurrentTimeoutMs'  -Default 0)
+    $indicatorGlyph = Get-BusyIndicatorGlyph -StartedAt $StartedAt -CurrentTime $CurrentTime
+    $now            = if ($CurrentTime -ne [datetime]::MinValue) { $CurrentTime } else { Get-Date }
 
     # Box height: top + inner content rows + bottom border; minimum 4
     $boxHeight = [Math]::Max(4, [Math]::Min($MaxRows, 12))
@@ -1165,8 +1186,8 @@ function Build-CommandModalRows {
             $total = [int]$ActiveWorkflow.TotalCount
             $stepDisplay = if ($total -gt 0) { "(step $($done + 1)/$total)" } else { '' }
             $contentRows.Add(@(
-                @{ Text = [char]0x23F3 + ' Working… '; Color = 'Yellow' },
-                @{ Text = $stepDisplay;                      Color = 'DarkGray' }
+                @{ Text = $indicatorGlyph + ' Working… '; Color = 'Yellow' },
+                @{ Text = $stepDisplay;                   Color = 'DarkGray' }
             ))
         }
         # Cancel / quit banner row (M3.4)
@@ -1177,11 +1198,11 @@ function Build-CommandModalRows {
         }
         # Currently running command row
         if ($contentRows.Count -lt ($innerRows - 1)) {
-            $elapsedSec   = if ($StartedAt -ne [datetime]::MinValue) { [int]((Get-Date) - $StartedAt).TotalSeconds } else { 0 }
+            $elapsedSec   = if ($StartedAt -ne [datetime]::MinValue) { [int](($now - $StartedAt).TotalSeconds) } else { 0 }
             $elapsedLabel = if ($elapsedSec -gt 0) { "  ($($elapsedSec)s)" } else { '' }
             $contentRows.Add(@(
-                @{ Text = [char]0x23F3 + ' Running: '; Color = 'DarkGray' },
-                @{ Text = $currentCommand;               Color = 'Yellow' },
+                @{ Text = $indicatorGlyph + ' Running: '; Color = 'DarkGray' },
+                @{ Text = $currentCommand;                Color = 'Yellow' },
                 @{ Text = $elapsedLabel;                  Color = 'DarkGray' }
             ))
         }
@@ -1638,7 +1659,8 @@ function Apply-ModalOverlay {
         [object]$ActiveWorkflow  = $null,
         [bool]$CancelRequested   = $false,   # M3.4
         [bool]$QuitRequested     = $false,   # M3.4
-        [datetime]$StartedAt     = [datetime]::MinValue   # M4: elapsed time
+        [datetime]$StartedAt     = [datetime]::MinValue,  # M4: elapsed time
+        [datetime]$CurrentTime   = [datetime]::MinValue
     )
 
     $width      = $Frame.Width
@@ -1648,7 +1670,7 @@ function Apply-ModalOverlay {
     $rightPad   = $width - $leftPad - $modalWidth
 
     $maxRows   = [Math]::Max(4, [Math]::Min([int][Math]::Floor($height / 3), 12))
-    $modalRows = Build-CommandModalRows -CommandModal $ModalPrompt -Width $modalWidth -MaxRows $maxRows -ActiveWorkflow $ActiveWorkflow -CancelRequested $CancelRequested -QuitRequested $QuitRequested -StartedAt $StartedAt
+    $modalRows = Build-CommandModalRows -CommandModal $ModalPrompt -Width $modalWidth -MaxRows $maxRows -ActiveWorkflow $ActiveWorkflow -CancelRequested $CancelRequested -QuitRequested $QuitRequested -StartedAt $StartedAt -CurrentTime $CurrentTime
 
     # Anchor above the status bar (last row)
     $modalStart = $height - 1 - $modalRows.Count

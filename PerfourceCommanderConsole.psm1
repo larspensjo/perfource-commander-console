@@ -1621,6 +1621,8 @@ function Start-P4Browser {
         Enable-FrameIntegrityTest
     }
 
+    Reset-RenderState
+
     $consoleSize = Get-BrowserConsoleSize
     $width  = [int]$consoleSize.Width
     $height = [int]$consoleSize.Height
@@ -1973,6 +1975,7 @@ function Start-P4Browser {
     }
     finally {
         Set-RenderProfiler $null
+        Reset-RenderState
         Restore-BrowserConsole -ConsoleState $consoleState
     }
 }

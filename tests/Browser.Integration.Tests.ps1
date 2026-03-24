@@ -208,6 +208,42 @@ Describe 'Start-P4Browser integration' {
             $Change -eq 2001
         }
     }
+
+    It 'resets stale render diff state before a new browser session starts' {
+        InModuleScope Render {
+            $script:PreviousFrame = [pscustomobject]@{
+                Width = 140
+                Height = 36
+                Rows = @([pscustomobject]@{ Y = 0; Signature = 'stale-row'; Segments = @() })
+            }
+        }
+
+        $script:KeyQueue = [System.Collections.Generic.Queue[System.ConsoleKeyInfo]]::new()
+        $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new('q', [System.ConsoleKey]::Q, $false, $false, $false))
+
+        Mock Test-BrowserConsoleKeyAvailable -ModuleName PerfourceCommanderConsole {
+            return $script:KeyQueue.Count -gt 0
+        }
+
+        Mock Read-BrowserConsoleKey -ModuleName PerfourceCommanderConsole {
+            if ($script:KeyQueue.Count -le 0) {
+                throw 'Test key queue unexpectedly empty.'
+            }
+            return $script:KeyQueue.Dequeue()
+        }
+
+        Mock Reset-RenderState -ModuleName PerfourceCommanderConsole {
+            InModuleScope Render {
+                $script:PreviousFrame = $null
+            }
+        }
+
+        {
+            Start-P4Browser -IntegrityTest -MaxChanges 3
+        } | Should -Not -Throw
+
+        Assert-MockCalled Reset-RenderState -ModuleName PerfourceCommanderConsole -Times 2 -Exactly
+    }
 }
 
 Describe 'Browser file loading helpers' {
@@ -612,6 +648,8 @@ Describe 'Async cancellation races (M5.5)' {
             Set-BrowserAsyncExecutor -Executor ([pscustomobject]@{
                 Execute = {
                     param([pscustomobject]$Envelope, [scriptblock]$Worker)
+                    $null = $Envelope
+                    $null = $Worker
                     throw 'Execute should not be called in this test.'
                 }
                 Poll = {

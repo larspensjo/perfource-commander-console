@@ -585,6 +585,11 @@ function Get-ScrollThumb {
 
 $script:PreviousFrame = $null
 
+function Reset-RenderState {
+    $script:PreviousFrame = $null
+    $script:FilterPaneRowsCache = $null
+}
+
 function Get-ChangeById {
     param(
         [AllowNull()][object[]]$Changes,
@@ -2766,4 +2771,4 @@ function Render-BrowserState {
     }
 }
 
-Export-ModuleMember -Function Render-BrowserState, Flush-FrameDiff, Disable-RenderFlush, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Build-ConfirmDialogRows, Apply-ConfirmDialogOverlay, Build-MenuOverlayRows, Apply-MenuOverlay, Get-ActiveChangesList, Build-FilesScreenFrame, Build-FilesStatusBarRow, Build-CommandLogFrame, Build-CommandOutputFrame, Test-FrameIntegrity, Enable-FrameIntegrityTest, Set-RenderProfiler
+Export-ModuleMember -Function Render-BrowserState, Flush-FrameDiff, Disable-RenderFlush, Reset-RenderState, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Build-ConfirmDialogRows, Apply-ConfirmDialogOverlay, Build-MenuOverlayRows, Apply-MenuOverlay, Get-ActiveChangesList, Build-FilesScreenFrame, Build-FilesStatusBarRow, Build-CommandLogFrame, Build-CommandOutputFrame, Test-FrameIntegrity, Enable-FrameIntegrityTest, Set-RenderProfiler

@@ -241,6 +241,20 @@ Describe 'Frame helpers' {
 
 
         Context 'Merge-AdjacentSegments' {
+            It 'reset clears cached frame and filter pane rows' {
+                $script:PreviousFrame = [pscustomobject]@{
+                    Width = 80
+                    Height = 20
+                    Rows = @([pscustomobject]@{ Y = 0; Signature = 'row-0'; Segments = @() })
+                }
+                $script:FilterPaneRowsCache = @{ Key = 'cached'; Rows = @('row') }
+
+                Reset-RenderState
+
+                $script:PreviousFrame | Should -BeNullOrEmpty
+                $script:FilterPaneRowsCache | Should -BeNullOrEmpty
+            }
+
             It 'merges neighbors with matching foreground and background' {
                 $segments = @(
                     @{ Text = 'A'; Color = 'Gray'; BackgroundColor = '' },

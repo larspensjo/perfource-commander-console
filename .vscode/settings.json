@@ -8,6 +8,16 @@
   "window.title": "${folderName} — ${activeEditorShort} — ${rootPath}",
   "files.trimTrailingWhitespace": true,
   "files.insertFinalNewline": true,
+  "terminal.integrated.profiles.windows": {
+    "PowerShell 7": {
+      "path": "C:\\Program Files\\PowerShell\\7\\pwsh.exe"
+    }
+  },
+  "terminal.integrated.defaultProfile.windows": "PowerShell 7",
+  "powershell.powerShellAdditionalExePaths": {
+    "PowerShell 7": "C:\\Program Files\\PowerShell\\7\\pwsh.exe"
+  },
+  "powershell.powerShellDefaultVersion": "PowerShell 7",
   "chat.tools.terminal.autoApprove": {
     "Test-Path": true,
     "Test-ModuleManifest": true,
@@ -17,49 +27,8 @@
       "approve": true,
       "matchCommandLine": true
     },
-    "/^# Re-save Render\\.psm1 with UTF-8 BOM so unicode renders correctly\n\\$path = 'C:\\\\Users\\\\lpensjo\\\\src\\\\perfource-commander-console\\\\tui\\\\Render\\.psm1'\n\\$content = \\[System\\.IO\\.File\\]::ReadAllText\\(\\$path, \\[System\\.Text\\.Encoding\\]::UTF8\\)\n\\$utf8Bom = New-Object System\\.Text\\.UTF8Encoding\\(\\$true\\)\n\\[System\\.IO\\.File\\]::WriteAllText\\(\\$path, \\$content, \\$utf8Bom\\)\n\\$bytes = \\[System\\.IO\\.File\\]::ReadAllBytes\\(\\$path\\)\n\"BOM bytes: \\$\\(\\$bytes\\[0\\]\\) \\$\\(\\$bytes\\[1\\]\\) \\$\\(\\$bytes\\[2\\]\\)\"\n$/": {
-      "approve": true,
-      "matchCommandLine": true
-    },
     "Remove-Module": true,
     "Import-Module": true,
-    "Get-Command": true,
-    "/^pwsh -NoProfile -Command \"Import-Module Pester -Force; Invoke-Pester -Path tests\\\\\"$/": {
-      "approve": true,
-      "matchCommandLine": true
-    },
-    "/^pwsh -NoProfile -Command \"Import-Module Pester -Force; Invoke-Pester -Path tests\\\\\" 2>&1$/": {
-      "approve": true,
-      "matchCommandLine": true
-    },
-    "/^& pwsh -NoProfile -Command \\{ Import-Module Pester -Force; Invoke-Pester -Path 'C:\\\\Users\\\\lpensjo\\\\src\\\\perfource-commander-console\\\\tests\\\\' \\} 2>&1$/": {
-      "approve": true,
-      "matchCommandLine": true
-    },
-    "&": true,
-    "/^pwsh -NoProfile -Command \"Import-Module Pester -Force; Invoke-Pester -Path 'c:\\\\Users\\\\lpensjo\\\\src\\\\perfource-commander-console\\\\tests\\\\' -Output Detailed\" 2>&1 \\| Select-Object -Last 80$/": {
-      "approve": true,
-      "matchCommandLine": true
-    },
-    "/^pwsh -NoProfile -Command \"Invoke-Pester -Path tests/ -Output Detailed\" 2>&1 \\| Select-Object -Last 30$/": {
-      "approve": true,
-      "matchCommandLine": true
-    },
-    "/^pwsh -NoProfile -Command \"Invoke-Pester -Path tests/ -Output Detailed\" 2>&1 \\| Select-Object -Last 40$/": {
-      "approve": true,
-      "matchCommandLine": true
-    },
-    "/^pwsh -NoProfile -Command \"Invoke-Pester -Path tests/ -Output Normal\" 2>&1 \\| Select-Object -Last 10$/": {
-      "approve": true,
-      "matchCommandLine": true
-    },
-    "/^pwsh -NoProfile -Command \"Invoke-Pester -Path tests -Output Minimal 2>&1\"$/": {
-      "approve": true,
-      "matchCommandLine": true
-    },
-    "/^pwsh -NoProfile -File \"\\$env:USERPROFILE\\\\src\\\\perfource-commander-console\\\\\\.vscode\\\\Invoke-Linter\\.ps1\" 2>&1$/": {
-      "approve": true,
-      "matchCommandLine": true
-    }
+    "Get-Command": true
   }
 }

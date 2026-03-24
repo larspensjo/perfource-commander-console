@@ -460,6 +460,13 @@ Describe 'Frame helpers' {
                 @($frame.Rows | ForEach-Object { $_.Y }) | Should -Be @(0..($state.Ui.Layout.Height - 1))
             }
 
+            It 'handles null pending changelists without throwing' {
+                $state = New-RenderStateFixture -VisibleChangeIds @()
+                $state.Data.AllChanges = $null
+
+                { Build-FrameFromState -State $state } | Should -Not -Throw
+            }
+
             It 'uses width for content rows and width-minus-one for status row' {
                 $state = New-RenderStateFixture
                 $frame = Build-FrameFromState -State $state

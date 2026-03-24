@@ -21,6 +21,50 @@ $script:IntegrityTestEnabled = $false
 # Set to $true via Disable-RenderFlush (test seam) to suppress all [Console]::Write calls.
 $script:SuppressFlush = $false
 
+# Optional callback installed by the root module to record render sub-stage timings.
+$script:RenderProfiler = $null
+
+# Cache stable filter-pane rows across renders. Cursor movement in the changelist
+# pane does not affect this content, so rebuilding it every frame is wasted work.
+$script:FilterPaneRowsCache = $null
+
+function Set-RenderProfiler {
+    param([AllowNull()][scriptblock]$Profiler = $null)
+    $script:RenderProfiler = $Profiler
+}
+
+function Invoke-RenderProfileEvent {
+    param(
+        [Parameter(Mandatory = $true)][string]$Stage,
+        [Parameter(Mandatory = $true)][int]$DurationMs,
+        [Parameter(Mandatory = $false)][hashtable]$Fields = @{}
+    )
+
+    if ($null -eq $script:RenderProfiler) { return }
+    & $script:RenderProfiler $Stage $DurationMs $Fields
+}
+
+function Get-RenderProfileFields {
+    param([Parameter(Mandatory = $true)]$State)
+
+    $screenStackProp = $State.Ui.PSObject.Properties['ScreenStack']
+    $activeScreen    = if ($null -ne $screenStackProp -and $screenStackProp.Value.Count -gt 0) { $screenStackProp.Value[-1] } else { 'Changelists' }
+    $viewMode = Get-PropertyValueOrDefault -Object $State.Ui -Name 'ViewMode' -Default 'Pending'
+
+    return @{
+        Screen     = [string]$activeScreen
+        ViewMode   = [string]$viewMode
+        ActivePane = [string](Get-PropertyValueOrDefault -Object $State.Ui -Name 'ActivePane' -Default '')
+    }
+}
+
+function Get-ReferenceIdentity {
+    param([AllowNull()]$Object)
+
+    if ($null -eq $Object) { return 0 }
+    return [System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($Object)
+}
+
 function Get-PropertyValueOrDefault {
     param(
         [AllowNull()]$Object,
@@ -299,6 +343,75 @@ function Resize-SegmentRow {
     return $result.ToArray()
 }
 
+function Get-SegmentRowWidth {
+    param([AllowNull()]$Segments)
+
+    $width = 0
+    foreach ($segment in @($Segments)) {
+        if ($null -eq $segment) { continue }
+        if (-not (Test-IsSegmentLike -Value $segment)) {
+            return -1
+        }
+
+        $width += ([string](Get-PropertyValueOrDefault -Object $segment -Name 'Text' -Default '')).Length
+    }
+
+    return $width
+}
+
+function New-FrameRowFromFlatSegments {
+    param(
+        [Parameter(Mandatory = $true)][int]$Y,
+        [AllowNull()]$LeftSegments,
+        [AllowNull()]$RightSegments,
+        [AllowEmptyString()][string]$RightBackgroundColor = ''
+    )
+
+    $combined = [System.Collections.Generic.List[object]]::new()
+    $signatureBuilder = [System.Text.StringBuilder]::new()
+
+    $appendSegment = {
+        param($Segment, [AllowEmptyString()][string]$BackgroundOverride = '')
+
+        if ($null -eq $Segment) { return }
+
+        $text = [string](Get-PropertyValueOrDefault -Object $Segment -Name 'Text' -Default '')
+        $color = [string](Get-PropertyValueOrDefault -Object $Segment -Name 'Color' -Default 'Gray')
+        $background = if ([string]::IsNullOrEmpty($BackgroundOverride)) {
+            [string](Get-PropertyValueOrDefault -Object $Segment -Name 'BackgroundColor' -Default '')
+        } else {
+            $BackgroundOverride
+        }
+
+        $segmentValue = @{ Text = $text; Color = $color; BackgroundColor = $background }
+        $combined.Add($segmentValue)
+        if ($signatureBuilder.Length -gt 0) {
+            [void]$signatureBuilder.Append(';')
+        }
+        [void]$signatureBuilder.Append($color)
+        [void]$signatureBuilder.Append('|')
+        [void]$signatureBuilder.Append($background)
+        [void]$signatureBuilder.Append('|')
+        [void]$signatureBuilder.Append($text)
+    }
+
+    foreach ($segment in @($LeftSegments)) {
+        & $appendSegment $segment
+    }
+
+    & $appendSegment @{ Text = ' '; Color = 'DarkGray'; BackgroundColor = '' }
+
+    foreach ($segment in @($RightSegments)) {
+        & $appendSegment $segment $RightBackgroundColor
+    }
+
+    return [pscustomobject]@{
+        Y = $Y
+        Segments = $combined.ToArray()
+        Signature = $signatureBuilder.ToString()
+    }
+}
+
 function Compose-FrameRow {
     param(
         [Parameter(Mandatory = $true)][int]$Y,
@@ -310,6 +423,13 @@ function Compose-FrameRow {
         [Parameter(Mandatory = $true)][int]$TotalWidth,
         [Parameter(Mandatory = $true)][bool]$IsLastRow
     )
+
+    $targetWidth = if ($IsLastRow) { [Math]::Max(0, $TotalWidth - 1) } else { [Math]::Max(0, $TotalWidth) }
+    $leftActualWidth = Get-SegmentRowWidth -Segments $LeftSegments
+    $rightActualWidth = Get-SegmentRowWidth -Segments $RightSegments
+    if ($leftActualWidth -ge 0 -and $rightActualWidth -ge 0 -and ($leftActualWidth + 1 + $rightActualWidth) -eq $targetWidth) {
+        return New-FrameRowFromFlatSegments -Y $Y -LeftSegments $LeftSegments -RightSegments $RightSegments -RightBackgroundColor $RightBackgroundColor
+    }
 
     $left  = @(Resize-SegmentRow -Segments $LeftSegments  -Width ([Math]::Max(0, $LeftWidth)))
     $right = @(Resize-SegmentRow -Segments $RightSegments -Width ([Math]::Max(0, $RightWidth)))
@@ -328,7 +448,6 @@ function Compose-FrameRow {
     $combined = @($left + $gap + $right)
     $combined = Merge-AdjacentSegments -Segments $combined
 
-    $targetWidth = if ($IsLastRow) { [Math]::Max(0, $TotalWidth - 1) } else { [Math]::Max(0, $TotalWidth) }
     $combined = Resize-SegmentRow -Segments $combined -Width $targetWidth
     $combined = Merge-AdjacentSegments -Segments $combined
 
@@ -342,14 +461,26 @@ function Compose-FrameRow {
 function Get-FrameRowSignature {
     param([Parameter(Mandatory = $true)]$Segments)
 
-    $parts = foreach ($segment in @($Segments)) {
+    $builder = [System.Text.StringBuilder]::new()
+    $isFirst = $true
+
+    foreach ($segment in @($Segments)) {
         $color = [string](Get-PropertyValueOrDefault -Object $segment -Name 'Color' -Default 'Gray')
         $background = [string](Get-PropertyValueOrDefault -Object $segment -Name 'BackgroundColor' -Default '')
         $text = [string](Get-PropertyValueOrDefault -Object $segment -Name 'Text' -Default '')
-        "$color|$background|$text"
+
+        if (-not $isFirst) {
+            [void]$builder.Append(';')
+        }
+        [void]$builder.Append($color)
+        [void]$builder.Append('|')
+        [void]$builder.Append($background)
+        [void]$builder.Append('|')
+        [void]$builder.Append($text)
+        $isFirst = $false
     }
 
-    return ($parts -join ';')
+    return $builder.ToString()
 }
 
 function Get-FrameDiff {
@@ -456,9 +587,13 @@ $script:PreviousFrame = $null
 
 function Get-ChangeById {
     param(
-        [Parameter(Mandatory = $true)][object[]]$Changes,
+        [AllowNull()][object[]]$Changes,
         [Parameter(Mandatory = $true)][string]$Id
     )
+
+    if ($null -eq $Changes) {
+        return $null
+    }
 
     return $Changes | Where-Object { $_.Id -eq $Id } | Select-Object -First 1
 }
@@ -472,7 +607,34 @@ function Get-ActiveChangesList {
         if ($null -eq $submitted) { return @() }
         return @($submitted)
     }
-    return @($State.Data.AllChanges)
+
+    $data = Get-PropertyValueOrDefault -Object $State -Name 'Data' -Default $null
+    $allChanges = Get-PropertyValueOrDefault -Object $data -Name 'AllChanges' -Default $null
+    if ($null -eq $allChanges) {
+        return @()
+    }
+
+    return @($allChanges)
+}
+
+function Get-ChangeLookupById {
+    param([AllowNull()][object[]]$Changes)
+
+    $lookup = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    if ($null -eq $Changes) {
+        return $lookup
+    }
+
+    foreach ($change in @($Changes)) {
+        if ($null -eq $change) { continue }
+        $changeId = [string](Get-PropertyValueOrDefault -Object $change -Name 'Id' -Default '')
+        if ([string]::IsNullOrWhiteSpace($changeId)) { continue }
+        if (-not $lookup.ContainsKey($changeId)) {
+            $lookup[$changeId] = $change
+        }
+    }
+
+    return $lookup
 }
 
 function Get-VisibleFilterByIndex {
@@ -550,6 +712,74 @@ function Get-FilterRowModel {
         Color = $FilterColor
         Marker = $FilterMarker
     }
+}
+
+function Get-FilterPaneRowsCacheKey {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]$Layout,
+        [Parameter(Mandatory = $true)][string]$BorderColor,
+        [Parameter(Mandatory = $true)][string]$TitleColor,
+        [AllowNull()]$FilterThumb
+    )
+
+    $thumbStart = if ($null -eq $FilterThumb) { -1 } else { [int]$FilterThumb.Start }
+    $thumbEnd = if ($null -eq $FilterThumb) { -1 } else { [int]$FilterThumb.End }
+    $visibleFilters = Get-PropertyValueOrDefault -Object $State.Derived -Name 'VisibleFilters' -Default $null
+
+    return @(
+        [string]$Layout.FilterPane.W,
+        [string]$Layout.FilterPane.H,
+        [string](Get-ReferenceIdentity -Object $visibleFilters),
+        [string]$State.Cursor.FilterIndex,
+        [string]$State.Cursor.FilterScrollTop,
+        [string](Get-PropertyValueOrDefault -Object $State.Ui -Name 'ActivePane' -Default ''),
+        [string]$BorderColor,
+        [string]$TitleColor,
+        [string]$thumbStart,
+        [string]$thumbEnd
+    ) -join '|'
+}
+
+function Get-FilterPaneRowSegments {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]$Layout,
+        [Parameter(Mandatory = $true)][string]$BorderColor,
+        [Parameter(Mandatory = $true)][string]$TitleColor,
+        [AllowNull()]$FilterThumb
+    )
+
+    $cacheKey = Get-FilterPaneRowsCacheKey -State $State -Layout $Layout -BorderColor $BorderColor -TitleColor $TitleColor -FilterThumb $FilterThumb
+    if ($null -ne $script:FilterPaneRowsCache -and $script:FilterPaneRowsCache.Key -eq $cacheKey) {
+        return $script:FilterPaneRowsCache.Rows
+    }
+
+    $rows = [object[]]::new($Layout.FilterPane.H)
+    for ($globalRow = 0; $globalRow -lt $Layout.FilterPane.H; $globalRow++) {
+        if ($globalRow -eq 0) {
+            $rows[$globalRow] = Build-BoxTopSegments -Title '[Filters]' -Width $Layout.FilterPane.W -BorderColor $BorderColor -TitleColor $TitleColor
+            continue
+        }
+
+        if ($globalRow -eq ($Layout.FilterPane.H - 1)) {
+            $rows[$globalRow] = Build-BoxBottomSegments -Width $Layout.FilterPane.W -BorderColor $BorderColor
+            continue
+        }
+
+        $filterInnerRow = $globalRow - 1
+        $filterIndex = $State.Cursor.FilterScrollTop + $filterInnerRow
+        $filterRow = Get-FilterRowModel -State $State -FilterIndex $filterIndex -FilterRowOffset $filterInnerRow -FilterThumb $FilterThumb
+        $filterInnerSegments = Build-FilterSegments -FilterText $filterRow.Text -FilterMarker $filterRow.Marker -FilterColor $filterRow.Color
+        $rows[$globalRow] = Build-BorderedRowSegments -InnerSegments $filterInnerSegments -Width $Layout.FilterPane.W -BorderColor $BorderColor
+    }
+
+    $script:FilterPaneRowsCache = @{
+        Key = $cacheKey
+        Rows = $rows
+    }
+
+    return $rows
 }
 
 function Build-FilterSegments {
@@ -748,7 +978,10 @@ function Build-ChangeSummarySegments {
 }
 
 function Build-DetailSegments {
-    param([Parameter(Mandatory = $true)]$State)
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [AllowNull()]$SelectedChange = $null
+    )
 
     $rows = [System.Collections.Generic.List[object]]::new()
 
@@ -767,9 +1000,8 @@ function Build-DetailSegments {
         $rows.Add(@(@{ Text = "Error: $errorDisplay"; Color = 'Red' }))
     }
 
-    # Resolve selected changelist entry from view-appropriate source
-    $selectedChange = $null
-    if ($State.Derived.VisibleChangeIds.Count -gt 0) {
+    $selectedChange = $SelectedChange
+    if ($null -eq $selectedChange -and $State.Derived.VisibleChangeIds.Count -gt 0) {
         $selectedId    = $State.Derived.VisibleChangeIds[[Math]::Min($State.Cursor.ChangeIndex, $State.Derived.VisibleChangeIds.Count - 1)]
         $activeChanges = Get-ActiveChangesList -State $State
         $selectedChange = Get-ChangeById -Changes $activeChanges -Id $selectedId
@@ -847,7 +1079,8 @@ function Build-StatusBarRow {
         $sub = Get-PropertyValueOrDefault -Object $State.Data -Name 'SubmittedChanges' -Default @()
         if ($null -eq $sub) { 0 } else { @($sub).Count }
     } else {
-        $State.Data.AllChanges.Count
+        $allChanges = Get-PropertyValueOrDefault -Object $State.Data -Name 'AllChanges' -Default @()
+        if ($null -eq $allChanges) { 0 } else { @($allChanges).Count }
     }
 
     $markedCount = 0
@@ -1998,7 +2231,7 @@ function Build-CommandLogFrame {
             }
         }
 
-        $row = Compose-FrameRow -Y $globalRow -LeftSegments $leftSegments -LeftWidth $layout.FilterPane.W -RightSegments $rightSegments -RightWidth $layout.ListPane.W -RightBackgroundColor $rightBackgroundColor -TotalWidth $layout.Width -IsLastRow $false
+        $row = New-FrameRowFromFlatSegments -Y $globalRow -LeftSegments $leftSegments -RightSegments $rightSegments -RightBackgroundColor $rightBackgroundColor
         $rows.Add($row)
     }
 
@@ -2167,6 +2400,7 @@ function Build-FrameFromState {
 
     $layout = $State.Ui.Layout
     $rows = [System.Collections.Generic.List[object]]::new($layout.Height)
+    $renderFields = Get-RenderProfileFields -State $State
 
     $filterBorderColor = Get-PaneBorderColor -PaneName 'Filters' -State $State
     $changeBorderColor = Get-PaneBorderColor -PaneName 'Changelists' -State $State
@@ -2189,28 +2423,38 @@ function Build-FrameFromState {
     $FilterThumb = Get-ScrollThumb -TotalItems $State.Derived.VisibleFilters.Count -ViewRows $filterViewRows -ScrollTop $State.Cursor.FilterScrollTop
     $changeThumb = Get-ScrollThumb -TotalItems ($State.Derived.VisibleChangeIds.Count * $rowsPerCl) -ViewRows $changeViewRows -ScrollTop ($State.Cursor.ChangeScrollTop * $rowsPerCl)
 
-    $detailSegments = Build-DetailSegments -State $State
-
     # View-mode context for list pane
+    $prepareStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $viewMode         = Get-PropertyValueOrDefault -Object $State.Ui   -Name 'ViewMode'         -Default 'Pending'
     $submittedHasMore = [bool](Get-PropertyValueOrDefault -Object $State.Data -Name 'SubmittedHasMore' -Default $false)
     $activeChanges    = Get-ActiveChangesList -State $State
+    $changeLookup     = Get-ChangeLookupById -Changes $activeChanges
+    $selectedChange   = $null
+    if ($State.Derived.VisibleChangeIds.Count -gt 0) {
+        $selectedIndex = [Math]::Min($State.Cursor.ChangeIndex, $State.Derived.VisibleChangeIds.Count - 1)
+        $selectedId = [string]$State.Derived.VisibleChangeIds[$selectedIndex]
+        if ($changeLookup.ContainsKey($selectedId)) {
+            $selectedChange = $changeLookup[$selectedId]
+        }
+    }
+    $detailSegments   = Build-DetailSegments -State $State -SelectedChange $selectedChange
     $listPaneTitle    = if ($viewMode -eq 'Submitted') { '[Submitted Changelists]' } else { '[Pending Changelists]' }
+    $prepareStopwatch.Stop()
+    Invoke-RenderProfileEvent -Stage 'Render.BuildFrame.Prepare' -DurationMs ([int]$prepareStopwatch.ElapsedMilliseconds) -Fields $renderFields
+
+    $filterPaneRows = Get-FilterPaneRowSegments -State $State -Layout $layout -BorderColor $filterBorderColor -TitleColor $filterTitleColor -FilterThumb $FilterThumb
+
+    $leftPaneMs = 0
+    $rightPaneMs = 0
+    $composeMs = 0
 
     for ($globalRow = 0; $globalRow -lt $layout.FilterPane.H; $globalRow++) {
-        $leftSegments = @()
-        if ($globalRow -eq 0) {
-            $leftSegments = Build-BoxTopSegments -Title '[Filters]' -Width $layout.FilterPane.W -BorderColor $filterBorderColor -TitleColor $filterTitleColor
-        } elseif ($globalRow -eq ($layout.FilterPane.H - 1)) {
-            $leftSegments = Build-BoxBottomSegments -Width $layout.FilterPane.W -BorderColor $filterBorderColor
-        } else {
-            $filterInnerRow = $globalRow - 1
-            $FilterIndex = $State.Cursor.FilterScrollTop + $filterInnerRow
-            $filterRow = Get-FilterRowModel -State $State -FilterIndex $FilterIndex -FilterRowOffset $filterInnerRow -FilterThumb $FilterThumb
-            $filterInnerSegments = Build-FilterSegments -FilterText $filterRow.Text -FilterMarker $filterRow.Marker -FilterColor $filterRow.Color
-            $leftSegments = Build-BorderedRowSegments -InnerSegments $filterInnerSegments -Width $layout.FilterPane.W -BorderColor $filterBorderColor
-        }
+        $leftStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $leftSegments = $filterPaneRows[$globalRow]
+        $leftStopwatch.Stop()
+        $leftPaneMs += [int]$leftStopwatch.ElapsedMilliseconds
 
+        $rightStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         $rightSegments = @()
         $rightBackgroundColor = ''
         if ($globalRow -lt $layout.ListPane.H) {
@@ -2242,7 +2486,9 @@ function Build-FrameFromState {
                 $changeRendered = $false
                 if ($changeClIdx -lt $State.Derived.VisibleChangeIds.Count) {
                     $entryId = $State.Derived.VisibleChangeIds[$changeClIdx]
-                    $cl = Get-ChangeById -Changes $activeChanges -Id $entryId
+                    if ($changeLookup.ContainsKey([string]$entryId)) {
+                        $cl = $changeLookup[[string]$entryId]
+                    }
                     if ($State.Cursor.ChangeIndex -eq $changeClIdx) {
                         $changeMarker = $CURSOR_GLYPH
                     } elseif ($null -ne $changeThumb) {
@@ -2314,12 +2560,24 @@ function Build-FrameFromState {
                 $rightSegments = Build-BorderedRowSegments -InnerSegments $detailInnerSegments -Width $layout.DetailPane.W -BorderColor $detailBorderColor
             }
         }
+        $rightStopwatch.Stop()
+        $rightPaneMs += [int]$rightStopwatch.ElapsedMilliseconds
 
-        $row = Compose-FrameRow -Y $globalRow -LeftSegments $leftSegments -LeftWidth $layout.FilterPane.W -RightSegments $rightSegments -RightWidth $layout.ListPane.W -RightBackgroundColor $rightBackgroundColor -TotalWidth $layout.Width -IsLastRow $false
+        $composeStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $row = New-FrameRowFromFlatSegments -Y $globalRow -LeftSegments $leftSegments -RightSegments $rightSegments -RightBackgroundColor $rightBackgroundColor
+        $composeStopwatch.Stop()
+        $composeMs += [int]$composeStopwatch.ElapsedMilliseconds
         $rows.Add($row)
     }
 
+    Invoke-RenderProfileEvent -Stage 'Render.BuildFrame.LeftPane' -DurationMs $leftPaneMs -Fields $renderFields
+    Invoke-RenderProfileEvent -Stage 'Render.BuildFrame.RightPane' -DurationMs $rightPaneMs -Fields $renderFields
+    Invoke-RenderProfileEvent -Stage 'Render.BuildFrame.ComposeRows' -DurationMs $composeMs -Fields $renderFields
+
+    $statusStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $rows.Add((Build-StatusBarRow -State $State -Layout $layout))
+    $statusStopwatch.Stop()
+    Invoke-RenderProfileEvent -Stage 'Render.BuildFrame.StatusBar' -DurationMs ([int]$statusStopwatch.ElapsedMilliseconds) -Fields $renderFields
 
     return [pscustomobject]@{
         Width = $layout.Width
@@ -2442,11 +2700,11 @@ function Render-BrowserState {
         return
     }
 
-    $screenStackProp = $State.Ui.PSObject.Properties['ScreenStack']
-    $activeScreen    = if ($null -ne $screenStackProp -and $screenStackProp.Value.Count -gt 0) { $screenStackProp.Value[-1] } else { 'Changelists' }
+    $renderFields = Get-RenderProfileFields -State $State
+    $activeScreen = $renderFields['Screen']
+    $viewMode = $renderFields['ViewMode']
 
-    $viewMode = Get-PropertyValueOrDefault -Object $State.Ui -Name 'ViewMode' -Default 'Pending'
-
+    $buildStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $nextFrame = if ($activeScreen -eq 'Files') {
         Build-FilesScreenFrame -State $State
     } elseif ($activeScreen -eq 'CommandOutput') {
@@ -2456,15 +2714,22 @@ function Render-BrowserState {
     } else {
         Build-FrameFromState -State $State
     }
+    $buildStopwatch.Stop()
+    Invoke-RenderProfileEvent -Stage 'Render.BuildFrame' -DurationMs ([int]$buildStopwatch.ElapsedMilliseconds) -Fields $renderFields
+
     # Check structural integrity of the base frame before overlays are applied.
     # Overlays intentionally cover pane borders, so checking after them would
     # produce false positives.
+    $integrityStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $null = Test-FrameIntegrity -Frame $nextFrame -Layout $layout
+    $integrityStopwatch.Stop()
+    Invoke-RenderProfileEvent -Stage 'Render.IntegrityCheck' -DurationMs ([int]$integrityStopwatch.ElapsedMilliseconds) -Fields $renderFields
 
     $overlayMode    = [string](Get-PropertyValueOrDefault -Object $State.Ui -Name 'OverlayMode' -Default 'None')
     $overlayPayload = Get-PropertyValueOrDefault -Object $State.Ui -Name 'OverlayPayload' -Default $null
     $commandModal   = Get-PropertyValueOrDefault -Object $State.Runtime -Name 'ModalPrompt' -Default $null
     # Apply overlays in precedence order: help (lowest) → menu → confirm → command modal (highest)
+    $overlayStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     if ($overlayMode -eq 'Help') {
         $nextFrame = Apply-HelpOverlay -Frame $nextFrame -IsOpen $true
     }
@@ -2481,12 +2746,24 @@ function Render-BrowserState {
         $startedAt = if ($null -ne $State.Runtime.ActiveCommand) { [datetime]$State.Runtime.ActiveCommand.StartedAt } else { [datetime]::MinValue }
         $nextFrame = Apply-ModalOverlay -Frame $nextFrame -ModalPrompt $commandModal -ActiveWorkflow $activeWorkflow -CancelRequested $cancelRequested -QuitRequested $quitRequested -StartedAt $startedAt
     }
+    $overlayStopwatch.Stop()
+    Invoke-RenderProfileEvent -Stage 'Render.ApplyOverlays' -DurationMs ([int]$overlayStopwatch.ElapsedMilliseconds) -Fields $renderFields
 
+    $diffStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $changedRows = Get-FrameDiff -PreviousFrame $script:PreviousFrame -NextFrame $nextFrame
+    $diffStopwatch.Stop()
+    $diffFields = @{}
+    foreach ($key in $renderFields.Keys) { $diffFields[$key] = $renderFields[$key] }
+    $diffFields['ChangedRowCount'] = @($changedRows).Count
+    Invoke-RenderProfileEvent -Stage 'Render.FrameDiff' -DurationMs ([int]$diffStopwatch.ElapsedMilliseconds) -Fields $diffFields
+
+    $flushStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $flushOk = Flush-FrameDiff -ChangedRows $changedRows -Frame $nextFrame
+    $flushStopwatch.Stop()
+    Invoke-RenderProfileEvent -Stage 'Render.FlushFrameDiff' -DurationMs ([int]$flushStopwatch.ElapsedMilliseconds) -Fields $diffFields
     if ($flushOk) {
         $script:PreviousFrame = $nextFrame
     }
 }
 
-Export-ModuleMember -Function Render-BrowserState, Flush-FrameDiff, Disable-RenderFlush, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Build-ConfirmDialogRows, Apply-ConfirmDialogOverlay, Build-MenuOverlayRows, Apply-MenuOverlay, Get-ActiveChangesList, Build-FilesScreenFrame, Build-FilesStatusBarRow, Build-CommandLogFrame, Build-CommandOutputFrame, Test-FrameIntegrity, Enable-FrameIntegrityTest
+Export-ModuleMember -Function Render-BrowserState, Flush-FrameDiff, Disable-RenderFlush, Get-ScrollThumb, Build-ChangeDetailSegments, Build-SubmittedChangeDetailSegments, Build-HelpOverlayRows, Build-ConfirmDialogRows, Apply-ConfirmDialogOverlay, Build-MenuOverlayRows, Apply-MenuOverlay, Get-ActiveChangesList, Build-FilesScreenFrame, Build-FilesStatusBarRow, Build-CommandLogFrame, Build-CommandOutputFrame, Test-FrameIntegrity, Enable-FrameIntegrityTest, Set-RenderProfiler

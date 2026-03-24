@@ -892,6 +892,110 @@ function Update-CommandLogDerivedState {
     return $State
 }
 
+function Update-BrowserCursorState {
+    param([Parameter(Mandatory = $true)]$State)
+
+    $viewMode = if (($State.Ui.PSObject.Properties.Match('ViewMode')).Count -gt 0) { [string]$State.Ui.ViewMode } else { 'Pending' }
+    if ($viewMode -eq 'CommandLog') {
+        return Update-CommandLogDerivedState -State $State
+    }
+
+    $visibleCount = if (($State.Derived.PSObject.Properties.Match('VisibleChangeIds')).Count -gt 0 -and $null -ne $State.Derived.VisibleChangeIds) {
+        $State.Derived.VisibleChangeIds.Count
+    } else { 0 }
+
+    if ($visibleCount -eq 0) {
+        $State.Cursor.ChangeIndex = 0
+        $State.Cursor.ChangeScrollTop = 0
+    } else {
+        if ($State.Cursor.ChangeIndex -ge $visibleCount) {
+            $State.Cursor.ChangeIndex = $visibleCount - 1
+        }
+        if ($State.Cursor.ChangeIndex -lt 0) {
+            $State.Cursor.ChangeIndex = 0
+        }
+        if ($State.Cursor.ChangeScrollTop -lt 0) {
+            $State.Cursor.ChangeScrollTop = 0
+        }
+
+        $changeViewport = Get-ChangeViewCapacity -State $State
+        $maxChangeScroll = [Math]::Max(0, $visibleCount - $changeViewport)
+        if ($State.Cursor.ChangeScrollTop -gt $maxChangeScroll) {
+            $State.Cursor.ChangeScrollTop = $maxChangeScroll
+        }
+        if ($State.Cursor.ChangeIndex -lt $State.Cursor.ChangeScrollTop) {
+            $State.Cursor.ChangeScrollTop = $State.Cursor.ChangeIndex
+        }
+        if ($State.Cursor.ChangeIndex -ge ($State.Cursor.ChangeScrollTop + $changeViewport)) {
+            $State.Cursor.ChangeScrollTop = [Math]::Max(0, $State.Cursor.ChangeIndex - $changeViewport + 1)
+        }
+    }
+
+    $filterViewport = 1
+    if ($State.Ui.Layout -and $State.Ui.Layout.Mode -eq 'Normal') {
+        $filterViewport = [Math]::Max(1, $State.Ui.Layout.FilterPane.H - 2)
+    }
+
+    $filterCount = if (($State.Derived.PSObject.Properties.Match('VisibleFilters')).Count -gt 0 -and $null -ne $State.Derived.VisibleFilters) {
+        $State.Derived.VisibleFilters.Count
+    } else { 0 }
+
+    if ($filterCount -eq 0) {
+        $State.Cursor.FilterIndex = 0
+        $State.Cursor.FilterScrollTop = 0
+    } else {
+        if ($State.Cursor.FilterIndex -lt 0) {
+            $State.Cursor.FilterIndex = 0
+        }
+        if ($State.Cursor.FilterIndex -ge $filterCount) {
+            $State.Cursor.FilterIndex = $filterCount - 1
+        }
+
+        $maxFilterScroll = [Math]::Max(0, $filterCount - $filterViewport)
+        if ($State.Cursor.FilterScrollTop -gt $maxFilterScroll) {
+            $State.Cursor.FilterScrollTop = $maxFilterScroll
+        }
+        if ($State.Cursor.FilterScrollTop -lt 0) {
+            $State.Cursor.FilterScrollTop = 0
+        }
+        if ($State.Cursor.FilterIndex -lt $State.Cursor.FilterScrollTop) {
+            $State.Cursor.FilterScrollTop = $State.Cursor.FilterIndex
+        }
+        if ($State.Cursor.FilterIndex -ge ($State.Cursor.FilterScrollTop + $filterViewport)) {
+            $State.Cursor.FilterScrollTop = [Math]::Max(0, $State.Cursor.FilterIndex - $filterViewport + 1)
+        }
+    }
+
+    if (($State.Cursor.PSObject.Properties.Match('FileIndex')).Count -gt 0) {
+        $fileCount = if (($State.Derived.PSObject.Properties.Match('VisibleFileIndices')).Count -gt 0 -and $null -ne $State.Derived.VisibleFileIndices) {
+            $State.Derived.VisibleFileIndices.Count
+        } else { 0 }
+
+        if ($fileCount -eq 0) {
+            $State.Cursor.FileIndex     = 0
+            $State.Cursor.FileScrollTop = 0
+        } else {
+            if ($State.Cursor.FileIndex -lt 0) { $State.Cursor.FileIndex = 0 }
+            if ($State.Cursor.FileIndex -ge $fileCount) { $State.Cursor.FileIndex = $fileCount - 1 }
+
+            $fileViewport  = if ($null -ne $State.Ui.Layout -and $State.Ui.Layout.Mode -eq 'Normal') {
+                [Math]::Max(1, $State.Ui.Layout.ListPane.H - 2)
+            } else { 1 }
+            $maxFileScroll = [Math]::Max(0, $fileCount - $fileViewport)
+            if ($State.Cursor.FileScrollTop -lt 0) { $State.Cursor.FileScrollTop = 0 }
+            if ($State.Cursor.FileScrollTop -gt $maxFileScroll) { $State.Cursor.FileScrollTop = $maxFileScroll }
+            if ($State.Cursor.FileIndex -lt $State.Cursor.FileScrollTop) {
+                $State.Cursor.FileScrollTop = $State.Cursor.FileIndex
+            }
+            if ($State.Cursor.FileIndex -ge ($State.Cursor.FileScrollTop + $fileViewport)) {
+                $State.Cursor.FileScrollTop = [Math]::Max(0, $State.Cursor.FileIndex - $fileViewport + 1)
+            }
+        }
+    }
+
+    return $State
+}
+
 function Update-BrowserDerivedState {
     param([Parameter(Mandatory = $true)]$State)
 
@@ -961,66 +1065,6 @@ function Update-BrowserDerivedState {
     }
     $State.Derived.VisibleFilters = @($VisibleFilters)
 
-    $visibleCount = $State.Derived.VisibleChangeIds.Count
-    if ($visibleCount -eq 0) {
-        $State.Cursor.ChangeIndex = 0
-        $State.Cursor.ChangeScrollTop = 0
-    } else {
-        if ($State.Cursor.ChangeIndex -ge $visibleCount) {
-            $State.Cursor.ChangeIndex = $visibleCount - 1
-        }
-        if ($State.Cursor.ChangeIndex -lt 0) {
-            $State.Cursor.ChangeIndex = 0
-        }
-        if ($State.Cursor.ChangeScrollTop -lt 0) {
-            $State.Cursor.ChangeScrollTop = 0
-        }
-
-        $changeViewport = Get-ChangeViewCapacity -State $State
-        $maxChangeScroll = [Math]::Max(0, $visibleCount - $changeViewport)
-        if ($State.Cursor.ChangeScrollTop -gt $maxChangeScroll) {
-            $State.Cursor.ChangeScrollTop = $maxChangeScroll
-        }
-        if ($State.Cursor.ChangeIndex -lt $State.Cursor.ChangeScrollTop) {
-            $State.Cursor.ChangeScrollTop = $State.Cursor.ChangeIndex
-        }
-        if ($State.Cursor.ChangeIndex -ge ($State.Cursor.ChangeScrollTop + $changeViewport)) {
-            $State.Cursor.ChangeScrollTop = [Math]::Max(0, $State.Cursor.ChangeIndex - $changeViewport + 1)
-        }
-    }
-
-    $filterViewport = 1
-    if ($State.Ui.Layout -and $State.Ui.Layout.Mode -eq 'Normal') {
-        $filterViewport = [Math]::Max(1, $State.Ui.Layout.FilterPane.H - 2)
-    }
-
-    $filterCount = $State.Derived.VisibleFilters.Count
-    if ($filterCount -eq 0) {
-        $State.Cursor.FilterIndex = 0
-        $State.Cursor.FilterScrollTop = 0
-    } else {
-        if ($State.Cursor.FilterIndex -lt 0) {
-            $State.Cursor.FilterIndex = 0
-        }
-        if ($State.Cursor.FilterIndex -ge $filterCount) {
-            $State.Cursor.FilterIndex = $filterCount - 1
-        }
-
-        $maxFilterScroll = [Math]::Max(0, $filterCount - $filterViewport)
-        if ($State.Cursor.FilterScrollTop -gt $maxFilterScroll) {
-            $State.Cursor.FilterScrollTop = $maxFilterScroll
-        }
-        if ($State.Cursor.FilterScrollTop -lt 0) {
-            $State.Cursor.FilterScrollTop = 0
-        }
-        if ($State.Cursor.FilterIndex -lt $State.Cursor.FilterScrollTop) {
-            $State.Cursor.FilterScrollTop = $State.Cursor.FilterIndex
-        }
-        if ($State.Cursor.FilterIndex -ge ($State.Cursor.FilterScrollTop + $filterViewport)) {
-            $State.Cursor.FilterScrollTop = [Math]::Max(0, $State.Cursor.FilterIndex - $filterViewport + 1)
-        }
-    }
-
     # ── Files screen derived state ────────────────────────────────────────────
     # Compute VisibleFileIndices from the cached file list.
     # Filter token application is deferred to Step 4; for now all loaded entries
@@ -1046,35 +1090,7 @@ function Update-BrowserDerivedState {
         $State.Derived.VisibleFileIndices = @()
     }
 
-    # Clamp FileIndex and FileScrollTop within the visible file list.
-    if (($State.Cursor.PSObject.Properties.Match('FileIndex')).Count -gt 0) {
-        $fileCount = if (($State.Derived.PSObject.Properties.Match('VisibleFileIndices')).Count -gt 0) {
-            $State.Derived.VisibleFileIndices.Count
-        } else { 0 }
-
-        if ($fileCount -eq 0) {
-            $State.Cursor.FileIndex     = 0
-            $State.Cursor.FileScrollTop = 0
-        } else {
-            if ($State.Cursor.FileIndex -lt 0) { $State.Cursor.FileIndex = 0 }
-            if ($State.Cursor.FileIndex -ge $fileCount) { $State.Cursor.FileIndex = $fileCount - 1 }
-
-            $fileViewport  = if ($null -ne $State.Ui.Layout -and $State.Ui.Layout.Mode -eq 'Normal') {
-                [Math]::Max(1, $State.Ui.Layout.ListPane.H - 2)
-            } else { 1 }
-            $maxFileScroll = [Math]::Max(0, $fileCount - $fileViewport)
-            if ($State.Cursor.FileScrollTop -lt 0) { $State.Cursor.FileScrollTop = 0 }
-            if ($State.Cursor.FileScrollTop -gt $maxFileScroll) { $State.Cursor.FileScrollTop = $maxFileScroll }
-            if ($State.Cursor.FileIndex -lt $State.Cursor.FileScrollTop) {
-                $State.Cursor.FileScrollTop = $State.Cursor.FileIndex
-            }
-            if ($State.Cursor.FileIndex -ge ($State.Cursor.FileScrollTop + $fileViewport)) {
-                $State.Cursor.FileScrollTop = [Math]::Max(0, $State.Cursor.FileIndex - $fileViewport + 1)
-            }
-        }
-    }
-
-    return $State
+    return Update-BrowserCursorState -State $State
 }
 
 function Get-FilterViewportSize {
@@ -1289,14 +1305,14 @@ function Invoke-ChangelistReducer {
             if ($null -ne $next.Runtime.ActiveCommand) {
                 $reqId = if (($Action.PSObject.Properties.Match('RequestId')).Count -gt 0) { [string]$Action.RequestId } else { '' }
                 if ([string]$next.Runtime.ActiveCommand.RequestId -eq $reqId) {
-                    $pid = if (($Action.PSObject.Properties.Match('ProcessId')).Count -gt 0) { [int]$Action.ProcessId } else { 0 }
+                    $processId = if (($Action.PSObject.Properties.Match('ProcessId')).Count -gt 0) { [int]$Action.ProcessId } else { 0 }
                     $existing = if (($next.Runtime.ActiveCommand.PSObject.Properties.Match('ProcessIds')).Count -gt 0) {
                         @($next.Runtime.ActiveCommand.ProcessIds) | ForEach-Object { [int]$_ }
                     } else { @() }
-                    if ($existing -notcontains $pid) {
-                        $next.Runtime.ActiveCommand.ProcessIds = @($existing + @($pid))
+                    if ($existing -notcontains $processId) {
+                        $next.Runtime.ActiveCommand.ProcessIds = @($existing + @($processId))
                     }
-                    $next.Runtime.ActiveCommand.CurrentProcessId = $pid
+                    $next.Runtime.ActiveCommand.CurrentProcessId = $processId
                 }
             }
             return $next
@@ -1305,9 +1321,9 @@ function Invoke-ChangelistReducer {
             if ($null -ne $next.Runtime.ActiveCommand) {
                 $reqId = if (($Action.PSObject.Properties.Match('RequestId')).Count -gt 0) { [string]$Action.RequestId } else { '' }
                 if ([string]$next.Runtime.ActiveCommand.RequestId -eq $reqId) {
-                    $pid = if (($Action.PSObject.Properties.Match('ProcessId')).Count -gt 0) { [int]$Action.ProcessId } else { 0 }
+                    $processId = if (($Action.PSObject.Properties.Match('ProcessId')).Count -gt 0) { [int]$Action.ProcessId } else { 0 }
                     $currentProcessIds = if (($next.Runtime.ActiveCommand.PSObject.Properties.Match('ProcessIds')).Count -gt 0) { @($next.Runtime.ActiveCommand.ProcessIds) } else { @() }
-                    $remaining = @($currentProcessIds | Where-Object { [int]$_ -ne $pid })
+                    $remaining = @($currentProcessIds | Where-Object { [int]$_ -ne $processId })
                     $next.Runtime.ActiveCommand.ProcessIds = $remaining
                     $next.Runtime.ActiveCommand.CurrentProcessId = if ($remaining.Count -gt 0) { [int]$remaining[-1] } else { $null }
                 }
@@ -1659,7 +1675,7 @@ function Invoke-ChangelistReducer {
             } else {
                 if ($next.Cursor.ChangeIndex -gt 0) { $next.Cursor.ChangeIndex-- }
             }
-            return Update-BrowserDerivedState -State $next
+            return Update-BrowserCursorState -State $next
         }
         'MoveDown' {
             if ($next.Ui.ActivePane -eq 'Filters') {
@@ -1674,7 +1690,7 @@ function Invoke-ChangelistReducer {
                 $maxChangeIndex = [Math]::Max(0, $next.Derived.VisibleChangeIds.Count - 1)
                 if ($next.Cursor.ChangeIndex -lt $maxChangeIndex) { $next.Cursor.ChangeIndex++ }
             }
-            return Update-BrowserDerivedState -State $next
+            return Update-BrowserCursorState -State $next
         }
         'PageUp' {
             if ($next.Ui.ActivePane -eq 'Filters') {
@@ -1689,7 +1705,7 @@ function Invoke-ChangelistReducer {
                 $step = Get-ChangeViewportSize -CurrentState $next
                 $next.Cursor.ChangeIndex = [Math]::Max(0, $next.Cursor.ChangeIndex - $step)
             }
-            return Update-BrowserDerivedState -State $next
+            return Update-BrowserCursorState -State $next
         }
         'PageDown' {
             if ($next.Ui.ActivePane -eq 'Filters') {
@@ -1707,7 +1723,7 @@ function Invoke-ChangelistReducer {
                 $maxChangeIndex = [Math]::Max(0, $next.Derived.VisibleChangeIds.Count - 1)
                 $next.Cursor.ChangeIndex = [Math]::Min($maxChangeIndex, $next.Cursor.ChangeIndex + $step)
             }
-            return Update-BrowserDerivedState -State $next
+            return Update-BrowserCursorState -State $next
         }
         'MoveHome' {
             if ($next.Ui.ActivePane -eq 'Filters') {
@@ -1722,7 +1738,7 @@ function Invoke-ChangelistReducer {
                 $next.Cursor.ChangeIndex = 0
                 $next.Cursor.ChangeScrollTop = 0
             }
-            return Update-BrowserDerivedState -State $next
+            return Update-BrowserCursorState -State $next
         }
         'MoveEnd' {
             if ($next.Ui.ActivePane -eq 'Filters') {
@@ -1734,7 +1750,7 @@ function Invoke-ChangelistReducer {
             } else {
                 $next.Cursor.ChangeIndex = [Math]::Max(0, $next.Derived.VisibleChangeIds.Count - 1)
             }
-            return Update-BrowserDerivedState -State $next
+            return Update-BrowserCursorState -State $next
         }
         'ToggleFilter' {
             $filter = $null
@@ -2170,19 +2186,19 @@ function Invoke-FilesReducer {
         }
         'MoveUp' {
             if ($next.Cursor.FileIndex -gt 0) { $next.Cursor.FileIndex-- }
-            return Update-BrowserDerivedState -State $next
+            return Update-BrowserCursorState -State $next
         }
         'MoveDown' {
             $maxIdx = [Math]::Max(0, $next.Derived.VisibleFileIndices.Count - 1)
             if ($next.Cursor.FileIndex -lt $maxIdx) { $next.Cursor.FileIndex++ }
-            return Update-BrowserDerivedState -State $next
+            return Update-BrowserCursorState -State $next
         }
         'PageUp' {
             $step = if ($null -ne $next.Ui.Layout -and $next.Ui.Layout.Mode -eq 'Normal') {
                 [Math]::Max(1, $next.Ui.Layout.ListPane.H - 2)
             } else { 10 }
             $next.Cursor.FileIndex = [Math]::Max(0, $next.Cursor.FileIndex - $step)
-            return Update-BrowserDerivedState -State $next
+            return Update-BrowserCursorState -State $next
         }
         'PageDown' {
             $step   = if ($null -ne $next.Ui.Layout -and $next.Ui.Layout.Mode -eq 'Normal') {
@@ -2190,16 +2206,16 @@ function Invoke-FilesReducer {
             } else { 10 }
             $maxIdx = [Math]::Max(0, $next.Derived.VisibleFileIndices.Count - 1)
             $next.Cursor.FileIndex = [Math]::Min($maxIdx, $next.Cursor.FileIndex + $step)
-            return Update-BrowserDerivedState -State $next
+            return Update-BrowserCursorState -State $next
         }
         'MoveHome' {
             $next.Cursor.FileIndex     = 0
             $next.Cursor.FileScrollTop = 0
-            return Update-BrowserDerivedState -State $next
+            return Update-BrowserCursorState -State $next
         }
         'MoveEnd' {
             $next.Cursor.FileIndex = [Math]::Max(0, $next.Derived.VisibleFileIndices.Count - 1)
-            return Update-BrowserDerivedState -State $next
+            return Update-BrowserCursorState -State $next
         }
         'SetFileFilter' {
             # Stub — full parsing and filtering implemented in Step 4.

@@ -126,6 +126,108 @@ function Set-BrowserAsyncExecutor {
     $script:AsyncExecutor = $Executor
 }
 
+function New-BrowserProfiler {
+    param(
+        [Parameter(Mandatory = $false)][bool]$Enabled = $false,
+        [Parameter(Mandatory = $false)][string]$Path = '',
+        [Parameter(Mandatory = $false)][int]$ThresholdMs = 20
+    )
+
+    if (-not $Enabled) {
+        return [pscustomobject]@{
+            Enabled     = $false
+            Path        = ''
+            ThresholdMs = [Math]::Max(0, $ThresholdMs)
+        }
+    }
+
+    $effectivePath = if ([string]::IsNullOrWhiteSpace($Path)) {
+        Join-Path ([System.IO.Path]::GetTempPath()) ("perfource-browser-profile-{0}.jsonl" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    } else {
+        $Path
+    }
+
+    $parentDir = Split-Path -Path $effectivePath -Parent
+    if (-not [string]::IsNullOrWhiteSpace($parentDir) -and -not (Test-Path -LiteralPath $parentDir)) {
+        New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
+    }
+    Set-Content -LiteralPath $effectivePath -Value $null
+
+    return [pscustomobject]@{
+        Enabled     = $true
+        Path        = $effectivePath
+        ThresholdMs = [Math]::Max(0, $ThresholdMs)
+    }
+}
+
+function Write-BrowserProfileEvent {
+    param(
+        [Parameter(Mandatory = $true)]$Profiler,
+        [Parameter(Mandatory = $true)][string]$Stage,
+        [Parameter(Mandatory = $true)][int]$DurationMs,
+        [Parameter(Mandatory = $false)][hashtable]$Fields = @{}
+    )
+
+    if ($null -eq $Profiler -or -not [bool]$Profiler.Enabled) { return }
+    if ($DurationMs -lt [int]$Profiler.ThresholdMs) { return }
+
+    $payload = [ordered]@{
+        Timestamp  = (Get-Date).ToString('o')
+        Stage      = $Stage
+        DurationMs = $DurationMs
+    }
+    foreach ($key in $Fields.Keys) {
+        $payload[$key] = $Fields[$key]
+    }
+
+    Add-Content -LiteralPath ([string]$Profiler.Path) -Value (($payload | ConvertTo-Json -Compress -Depth 6))
+}
+
+function Invoke-BrowserProfiled {
+    param(
+        [Parameter(Mandatory = $true)]$Profiler,
+        [Parameter(Mandatory = $true)][string]$Stage,
+        [Parameter(Mandatory = $false)][hashtable]$Fields = @{},
+        [Parameter(Mandatory = $true)][scriptblock]$ScriptBlock
+    )
+
+    if ($null -eq $Profiler -or -not [bool]$Profiler.Enabled) {
+        return & $ScriptBlock
+    }
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        return & $ScriptBlock
+    }
+    finally {
+        $stopwatch.Stop()
+        Write-BrowserProfileEvent -Profiler $Profiler -Stage $Stage -DurationMs ([int]$stopwatch.ElapsedMilliseconds) -Fields $Fields
+    }
+}
+
+function Get-BrowserProfileStateFields {
+    param([Parameter(Mandatory = $true)]$State)
+
+    $screenStackProp = $State.Ui.PSObject.Properties['ScreenStack']
+    [object[]]$screenStack = if ($null -ne $screenStackProp -and $null -ne $screenStackProp.Value) {
+        @($screenStackProp.Value)
+    } else {
+        @('Changelists')
+    }
+
+    $activeScreen = if ($screenStack.Count -gt 0) { [string]$screenStack[-1] } else { 'Changelists' }
+    $viewModeProp = $State.Ui.PSObject.Properties['ViewMode']
+    $activePaneProp = $State.Ui.PSObject.Properties['ActivePane']
+    $visibleChangeIdsProp = $State.Derived.PSObject.Properties['VisibleChangeIds']
+
+    return @{
+        Screen             = $activeScreen
+        ViewMode           = if ($null -ne $viewModeProp) { [string]$viewModeProp.Value } else { 'Pending' }
+        ActivePane         = if ($null -ne $activePaneProp) { [string]$activePaneProp.Value } else { '' }
+        VisibleChangeCount = if ($null -ne $visibleChangeIdsProp -and $null -ne $visibleChangeIdsProp.Value) { @($visibleChangeIdsProp.Value).Count } else { 0 }
+    }
+}
+
 function Get-BrowserAsyncRegistryEntry {
     param([Parameter(Mandatory)][string]$RequestId)
 
@@ -157,20 +259,20 @@ function Read-BrowserAsyncProcessEvents {
         try {
             $parsed = ConvertFrom-Json -InputObject $line -ErrorAction Stop
             $eventType = [string]$parsed.EventType
-            $pid = if (($parsed.PSObject.Properties.Match('ProcessId')).Count -gt 0) { [int]$parsed.ProcessId } else { 0 }
+            $processId = if (($parsed.PSObject.Properties.Match('ProcessId')).Count -gt 0) { [int]$parsed.ProcessId } else { 0 }
             if ($eventType -eq 'ProcessStarted') {
                 $existing = if (($entry.PSObject.Properties.Match('ActiveProcessIds')).Count -gt 0) { @($entry.ActiveProcessIds) } else { @() }
-                if ($existing -notcontains $pid) {
-                    $entry.ActiveProcessIds = @($existing + @($pid))
+                if ($existing -notcontains $processId) {
+                    $entry.ActiveProcessIds = @($existing + @($processId))
                 }
             } elseif ($eventType -eq 'ProcessFinished') {
                 $existing = if (($entry.PSObject.Properties.Match('ActiveProcessIds')).Count -gt 0) { @($entry.ActiveProcessIds) } else { @() }
-                $entry.ActiveProcessIds = @($existing | Where-Object { [int]$_ -ne $pid })
+                $entry.ActiveProcessIds = @($existing | Where-Object { [int]$_ -ne $processId })
             }
             $newEvents.Add([pscustomobject]@{
                 Type      = $eventType
                 RequestId = [string]$parsed.RequestId
-                ProcessId = $pid
+                ProcessId = $processId
                 ExitCode  = if (($parsed.PSObject.Properties.Match('ExitCode')).Count -gt 0 -and $null -ne $parsed.ExitCode) { [int]$parsed.ExitCode } else { $null }
             }) | Out-Null
         } catch { }
@@ -185,9 +287,9 @@ function Stop-BrowserAsyncRequest {
 
     $events = @(Read-BrowserAsyncProcessEvents -RequestId $RequestId)
     $entry  = Get-BrowserAsyncRegistryEntry -RequestId $RequestId
-    $pids   = if ($null -ne $entry -and ($entry.PSObject.Properties.Match('ActiveProcessIds')).Count -gt 0) { @($entry.ActiveProcessIds) } else { @() }
-    foreach ($pid in $pids) {
-        Stop-P4ProcessTree -ProcessId ([int]$pid)
+    $processIds = if ($null -ne $entry -and ($entry.PSObject.Properties.Match('ActiveProcessIds')).Count -gt 0) { @($entry.ActiveProcessIds) } else { @() }
+    foreach ($processId in $processIds) {
+        Stop-P4ProcessTree -ProcessId ([int]$processId)
     }
     & $script:AsyncExecutor.Cancel $RequestId
     return @($events)
@@ -1479,12 +1581,23 @@ function Start-P4Browser {
         borders sit at their expected column positions.  The first violation
         throws a terminating error immediately, halting the session so the
         offending state can be inspected.
+    .PARAMETER Profile
+        When specified, writes slow-path timing events for the UI loop to a
+        JSON Lines file.
+    .PARAMETER ProfilePath
+        Optional path for the profiling output.  When omitted, a timestamped
+        file is created in the system temp directory.
+    .PARAMETER ProfileThresholdMs
+        Only stages taking at least this many milliseconds are written to the
+        profiling log.  Defaults to 20 ms.
     .EXAMPLE
         Start-P4Browser
     .EXAMPLE
         Start-P4Browser -MaxChanges 500
     .EXAMPLE
         Start-P4Browser -IntegrityTest
+    .EXAMPLE
+        Start-P4Browser -Profile -ProfileThresholdMs 10
     #>
     [CmdletBinding()]
     param(
@@ -1492,7 +1605,16 @@ function Start-P4Browser {
         [int]$MaxChanges = 200,
 
         [Parameter(Mandatory = $false)]
-        [switch]$IntegrityTest
+        [switch]$IntegrityTest,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$Profile,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ProfilePath = '',
+
+        [Parameter(Mandatory = $false)]
+        [int]$ProfileThresholdMs = 20
     )
 
     if ($IntegrityTest) {
@@ -1503,6 +1625,12 @@ function Start-P4Browser {
     $width  = [int]$consoleSize.Width
     $height = [int]$consoleSize.Height
     $state  = New-BrowserState -Changes @() -InitialWidth $width -InitialHeight $height
+    $profiler = New-BrowserProfiler -Enabled ([bool]$Profile) -Path $ProfilePath -ThresholdMs $ProfileThresholdMs
+
+    Set-RenderProfiler {
+        param($Stage, $DurationMs, $Fields)
+        Write-BrowserProfileEvent -Profiler $profiler -Stage $Stage -DurationMs ([int]$DurationMs) -Fields $Fields
+    }
 
     # Phase 0.2: Store configured max for consistent reload behaviour
     $state.Runtime.ConfiguredMax = $MaxChanges
@@ -1512,22 +1640,30 @@ function Start-P4Browser {
     try {
         # Populate session info from p4 info so submitted queries can be scoped
         # to the current workspace mapping from the start of the session.
-        $state = Invoke-BrowserSideEffect -State $state -CommandLine 'p4 info' -WorkItem {
-            param($s)
-            $p4Info = Get-P4Info
-            $s.Data.CurrentUser   = $p4Info.User
-            $s.Data.CurrentClient = $p4Info.Client
-            return $s
+        $state = Invoke-BrowserProfiled -Profiler $profiler -Stage 'Startup.P4Info' -Fields @{ MaxChanges = $MaxChanges } -ScriptBlock {
+            Invoke-BrowserSideEffect -State $state -CommandLine 'p4 info' -WorkItem {
+                param($s)
+                $p4Info = Get-P4Info
+                $s.Data.CurrentUser   = $p4Info.User
+                $s.Data.CurrentClient = $p4Info.Client
+                return $s
+            }
         }
 
         # Initial load
         $loadCmdLine = "p4 changes -s pending -m $MaxChanges"
-        $state = Invoke-BrowserSideEffect -State $state -CommandLine $loadCmdLine -WorkItem {
-            param($s)
-            $fresh = Get-P4ChangelistEntries -Max $s.Runtime.ConfiguredMax
-            $s.Data.AllChanges = @($fresh)
-            $s.Runtime.LastError = $null
-            return Update-BrowserDerivedState -State $s
+        $state = Invoke-BrowserProfiled -Profiler $profiler -Stage 'Startup.InitialLoad' -Fields @{ MaxChanges = $MaxChanges } -ScriptBlock {
+            Invoke-BrowserSideEffect -State $state -CommandLine $loadCmdLine -WorkItem {
+                param($s)
+                $fresh = Get-P4ChangelistEntries -Max $s.Runtime.ConfiguredMax
+                $s.Data.AllChanges = @($fresh)
+                $s.Runtime.LastError = $null
+                return Update-BrowserDerivedState -State $s
+            }
+        }
+
+        if ([bool]$profiler.Enabled) {
+            Write-BrowserProfileEvent -Profiler $profiler -Stage 'Profiler.Enabled' -DurationMs 0 -Fields @{ Path = [string]$profiler.Path; ThresholdMs = [int]$profiler.ThresholdMs }
         }
 
         while ($state.Runtime.IsRunning) {
@@ -1538,7 +1674,9 @@ function Start-P4Browser {
                 continue
             }
 
-            Render-BrowserState -State $state
+            Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.Render' -Fields (Get-BrowserProfileStateFields -State $state) -ScriptBlock {
+                Render-BrowserState -State $state
+            } | Out-Null
 
             # Tick loop: wait for a keypress OR async completion, checking resize each 50 ms (M4.3).
             $keyInfo     = $null
@@ -1548,35 +1686,56 @@ function Start-P4Browser {
                     $keyInfo = Read-BrowserConsoleKey
                 } else {
                     # Drain async completion before sleeping (M4.3)
-                    $drainResult = Invoke-BrowserCompletionDrain -State $state
+                    $completionFields = Get-BrowserProfileStateFields -State $state
+                    $completionFields['HasActiveCommand'] = ($null -ne $state.Runtime.ActiveCommand)
+                    $drainResult = Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.CompletionDrain' -Fields $completionFields -ScriptBlock {
+                        Invoke-BrowserCompletionDrain -State $state
+                    }
                     if ($null -ne $drainResult) { break }
                     # Check for console resize
                     $currentSize   = Get-BrowserConsoleSize
                     $currentWidth  = [int]$currentSize.Width
                     $currentHeight = [int]$currentSize.Height
                     if ($state.Ui.Layout.Width -ne $currentWidth -or $state.Ui.Layout.Height -ne $currentHeight) {
-                        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
-                            Type   = 'Resize'
-                            Width  = $currentWidth
-                            Height = $currentHeight
-                        })
-                        Render-BrowserState -State $state
+                        $state = Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.ResizeReducer' -Fields @{ Width = $currentWidth; Height = $currentHeight } -ScriptBlock {
+                            Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                                Type   = 'Resize'
+                                Width  = $currentWidth
+                                Height = $currentHeight
+                            })
+                        }
+                        Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.ResizeRender' -Fields @{ Width = $currentWidth; Height = $currentHeight } -ScriptBlock {
+                            Render-BrowserState -State $state
+                        } | Out-Null
                     }
                     Start-Sleep -Milliseconds 50
                 }
             }
 
             # ── Key action path ───────────────────────────────────────────────────────
-            $action = if ($null -ne $keyInfo) { ConvertFrom-KeyInfoToAction -KeyInfo $keyInfo -State $state } else { $null }
+            $action = if ($null -ne $keyInfo) {
+                Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.InputMap' -Fields @{ Key = [string]$keyInfo.Key } -ScriptBlock {
+                    ConvertFrom-KeyInfoToAction -KeyInfo $keyInfo -State $state
+                }
+            } else { $null }
             if ($null -ne $action) {
-                $state = Invoke-BrowserReducer -State $state -Action $action
+                $actionFields = Get-BrowserProfileStateFields -State $state
+                $actionFields['ActionType'] = [string]$action.Type
+                $state = Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.ActionReducer' -Fields $actionFields -ScriptBlock {
+                    Invoke-BrowserReducer -State $state -Action $action
+                }
 
                 if ([bool]$state.Runtime.CancelRequested -and $null -ne $state.Runtime.ActiveCommand) {
-                    $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
-                        Type      = 'AsyncCommandCancelling'
-                        RequestId = [string]$state.Runtime.ActiveCommand.RequestId
-                    })
-                    $drainResult = Invoke-BrowserCancelActiveCommand -State $state
+                    $activeRequestId = [string]$state.Runtime.ActiveCommand.RequestId
+                    $state = Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.CancelReducer' -Fields @{ RequestId = $activeRequestId } -ScriptBlock {
+                        Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                            Type      = 'AsyncCommandCancelling'
+                            RequestId = $activeRequestId
+                        })
+                    }
+                    $drainResult = Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.CancelActiveCommand' -Fields @{ RequestId = $activeRequestId } -ScriptBlock {
+                        Invoke-BrowserCancelActiveCommand -State $state
+                    }
                 }
 
                 # Dispatch single PendingRequest (I/O side effects live outside the reducer)
@@ -1584,81 +1743,90 @@ function Start-P4Browser {
                     $req = $state.Runtime.PendingRequest
                     $state.Runtime.PendingRequest = $null   # consume before I/O so retries never re-fire
 
-                    switch ($req.Kind) {
-                        'ReloadPending' {
-                            # M4: run asynchronously so the UI stays responsive
-                            $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
-                        }
-                        'ReloadSubmitted' {
-                            $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
-                        }
-                        'LoadMore' {
-                            $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
-                        }
-                        'LoadFiles' {
-                            $change     = [string]$state.Data.FilesSourceChange
-                            $sourceKind = [string]$state.Data.FilesSourceKind
-                            $cacheKey   = "${change}:${sourceKind}"
+                    $state = Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.PendingRequestDispatch' -Fields @{
+                        Kind  = [string]$req.Kind
+                        Scope = if (($req.PSObject.Properties.Match('Scope')).Count -gt 0) { [string]$req.Scope } else { '' }
+                    } -ScriptBlock {
+                        switch ($req.Kind) {
+                            'ReloadPending' {
+                                # M4: run asynchronously so the UI stays responsive
+                                return Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                            }
+                            'ReloadSubmitted' {
+                                return Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                            }
+                            'LoadMore' {
+                                return Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                            }
+                            'LoadFiles' {
+                                $change     = [string]$state.Data.FilesSourceChange
+                                $sourceKind = [string]$state.Data.FilesSourceKind
+                                $cacheKey   = "${change}:${sourceKind}"
 
-                            if ($state.Data.FileCache.ContainsKey($cacheKey)) {
-                                # Cache hit — recompute derived state; start async enrichment if base is ready
-                                $state = Update-BrowserDerivedState -State $state
-                                $cacheStatus = if ($state.Data.FileCacheStatus.ContainsKey($cacheKey)) { [string]$state.Data.FileCacheStatus[$cacheKey] } else { 'NotLoaded' }
-                                if ($cacheStatus -eq 'BaseReady') {
-                                    $enrichReq = New-PendingRequest @{ Kind = 'LoadFilesEnrichment'; CacheKey = $cacheKey } -Generation $state.Data.FilesGeneration
-                                    $state = Invoke-BrowserStartAsyncRequest -State $state -Request $enrichReq
+                                if ($state.Data.FileCache.ContainsKey($cacheKey)) {
+                                    # Cache hit — recompute derived state; start async enrichment if base is ready
+                                    $state = Update-BrowserDerivedState -State $state
+                                    $cacheStatus = if ($state.Data.FileCacheStatus.ContainsKey($cacheKey)) { [string]$state.Data.FileCacheStatus[$cacheKey] } else { 'NotLoaded' }
+                                    if ($cacheStatus -eq 'BaseReady') {
+                                        $enrichReq = New-PendingRequest @{ Kind = 'LoadFilesEnrichment'; CacheKey = $cacheKey } -Generation $state.Data.FilesGeneration
+                                        return Invoke-BrowserStartAsyncRequest -State $state -Request $enrichReq
+                                    }
+                                    return $state
                                 }
-                            } else {
-                                $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                                return Invoke-BrowserStartAsyncRequest -State $state -Request $req
                             }
-                        }
-                        'LoadFilesEnrichment' {
-                            # Idempotence: skip if already loading or done (M2.4)
-                            $cacheKey = [string]$req.CacheKey
-                            $currentStatus = if ($state.Data.FileCacheStatus.ContainsKey($cacheKey)) { [string]$state.Data.FileCacheStatus[$cacheKey] } else { 'NotLoaded' }
-                            if ($currentStatus -notin @('LoadingEnrichment', 'Ready')) {
-                                $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                            'LoadFilesEnrichment' {
+                                # Idempotence: skip if already loading or done (M2.4)
+                                $cacheKey = [string]$req.CacheKey
+                                $currentStatus = if ($state.Data.FileCacheStatus.ContainsKey($cacheKey)) { [string]$state.Data.FileCacheStatus[$cacheKey] } else { 'NotLoaded' }
+                                if ($currentStatus -notin @('LoadingEnrichment', 'Ready')) {
+                                    return Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                                }
+                                return $state
                             }
-                        }
-                        'FetchDescribe' {
-                            $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
-                            if ($null -ne $change -and -not $state.Data.DescribeCache.ContainsKey($change)) {
-                                $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                            'FetchDescribe' {
+                                $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
+                                if ($null -ne $change -and -not $state.Data.DescribeCache.ContainsKey($change)) {
+                                    return Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                                }
+                                return $state
                             }
-                        }
-                        'DeleteChange' {
-                            $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
-                            if ($null -ne $change) {
-                                $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                            'DeleteChange' {
+                                $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
+                                if ($null -ne $change) {
+                                    return Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                                }
+                                return $state
                             }
-                        }
-                        'DeleteShelvedFiles' {
-                            $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
-                            if ($null -ne $change) {
-                                $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                            'DeleteShelvedFiles' {
+                                $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
+                                if ($null -ne $change) {
+                                    return Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                                }
+                                return $state
                             }
-                        }
-                        'SubmitChange' {
-                            $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
-                            if ($null -ne $change) {
-                                $state = Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                            'SubmitChange' {
+                                $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
+                                if ($null -ne $change) {
+                                    return Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                                }
+                                return $state
                             }
-                        }
-                        'ExecuteWorkflow' {
-                            $workflowKind = if (($req.PSObject.Properties.Match('WorkflowKind')).Count -gt 0) { [string]$req.WorkflowKind } else { '' }
-                            if ([string]::IsNullOrEmpty($workflowKind) -or -not $script:WorkflowRegistry.ContainsKey($workflowKind)) {
-                                throw "Unknown workflow kind: '$workflowKind'"
-                            }
-                            if ($workflowKind -in $script:AsyncMutationWorkflowKinds) {
-                                $state = Start-BrowserAsyncWorkflow -State $state -Request $req
-                            } else {
+                            'ExecuteWorkflow' {
+                                $workflowKind = if (($req.PSObject.Properties.Match('WorkflowKind')).Count -gt 0) { [string]$req.WorkflowKind } else { '' }
+                                if ([string]::IsNullOrEmpty($workflowKind) -or -not $script:WorkflowRegistry.ContainsKey($workflowKind)) {
+                                    throw "Unknown workflow kind: '$workflowKind'"
+                                }
+                                if ($workflowKind -in $script:AsyncMutationWorkflowKinds) {
+                                    return Start-BrowserAsyncWorkflow -State $state -Request $req
+                                }
                                 $executor = $script:WorkflowRegistry[$workflowKind]
                                 # Executor receives state + request, dispatches BeginWorkflow/ItemComplete/Failed/End, returns final state
-                                $state = & $executor -State $state -Request $req
+                                return & $executor -State $state -Request $req
                             }
-                        }
-                        default {
-                            throw "Unknown PendingRequest.Kind: '$($req.Kind)'"
+                            default {
+                                throw "Unknown PendingRequest.Kind: '$($req.Kind)'"
+                            }
                         }
                     }
                 }
@@ -1668,7 +1836,9 @@ function Start-P4Browser {
                 # still running), but essential for the synchronous test executor
                 # where workers complete inline before Poll is called.
                 if ($null -eq $drainResult) {
-                    $drainResult = Invoke-BrowserCompletionDrain -State $state
+                    $drainResult = Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.ImmediateCompletionDrain' -Fields @{ HasActiveCommand = ($null -ne $state.Runtime.ActiveCommand) } -ScriptBlock {
+                        Invoke-BrowserCompletionDrain -State $state
+                    }
                 }
             }
 
@@ -1802,6 +1972,7 @@ function Start-P4Browser {
         }
     }
     finally {
+        Set-RenderProfiler $null
         Restore-BrowserConsole -ConsoleState $consoleState
     }
 }

@@ -1812,3 +1812,61 @@ Describe 'Get-P4UnresolvedFileCounts enrichment budget' {
         }
     }
 }
+
+Describe 'Get-P4MergeTool and Set-P4MergeTool' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'Get-P4MergeTool returns IsSet=$false when p4 set returns no value' {
+        $scriptPath = Join-Path $TestDrive 'p4-set-empty.cmd'
+        Set-Content -LiteralPath $scriptPath -Value '@echo off'
+        & (Get-Module P4Cli) { param($path) $script:P4Executable = $path } $scriptPath
+        try {
+            $result = Get-P4MergeTool
+            $result.IsSet | Should -BeFalse
+            $result.Path  | Should -BeNullOrEmpty
+        } finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'p4.exe' }
+        }
+    }
+
+    It 'Get-P4MergeTool parses Path and IsSet when P4MERGE is set' {
+        $scriptPath = Join-Path $TestDrive 'p4-set-merge.cmd'
+        Set-Content -LiteralPath $scriptPath -Value '@echo P4MERGE=C:\Program Files\Perforce\p4merge.exe (set)'
+        & (Get-Module P4Cli) { param($path) $script:P4Executable = $path } $scriptPath
+        try {
+            $result = Get-P4MergeTool
+            $result.IsSet | Should -BeTrue
+            $result.Path  | Should -Be 'C:\Program Files\Perforce\p4merge.exe'
+        } finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'p4.exe' }
+        }
+    }
+
+    It 'Get-P4MergeToolPresets returns three built-in presets' {
+        $presets = @(Get-P4MergeToolPresets)
+        $presets.Count   | Should -Be 3
+        $presets[0].Name | Should -Be 'P4Merge'
+        $presets[1].Name | Should -Be 'Beyond Compare'
+        $presets[2].Name | Should -Be 'KDiff3'
+    }
+
+    It 'Get-P4MergeToolPresets each preset has non-empty Path and Name' {
+        foreach ($preset in @(Get-P4MergeToolPresets)) {
+            $preset.Name | Should -Not -BeNullOrEmpty
+            $preset.Path | Should -Not -BeNullOrEmpty
+        }
+    }
+
+    It 'Set-P4MergeTool does not throw when the executable succeeds' {
+        $scriptPath = Join-Path $TestDrive 'p4-set-noop.cmd'
+        Set-Content -LiteralPath $scriptPath -Value '@echo off'
+        & (Get-Module P4Cli) { param($path) $script:P4Executable = $path } $scriptPath
+        try {
+            { Set-P4MergeTool -ToolPath 'C:\some\tool.exe' } | Should -Not -Throw
+        } finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'p4.exe' }
+        }
+    }
+}

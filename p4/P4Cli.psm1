@@ -1516,4 +1516,66 @@ function Invoke-P4ReopenFiles {
     return @{ MovedCount = $depotPaths.Count; Files = $depotPaths }
 }
 
-Export-ModuleMember -Function ConvertTo-P4ChangelistId, Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Get-P4CommandCategory, Get-DurationClass, Get-P4CommandTimeout, Stop-P4ProcessTree, Test-IsP4TimeoutError, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Get-P4ModifiedDepotPaths, Set-P4FileEntriesUnresolvedState, Set-P4FileEntriesContentModifiedState, Remove-P4Changelist, Invoke-P4Submit, Invoke-P4ShelveFiles, Remove-P4ShelvedFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles
+# ── Merge tool configuration ──────────────────────────────────────────────────
+# Predefined presets.  These are convenience defaults; the persisted value is
+# always the P4MERGE Perforce variable written via `p4 set`.
+
+$script:MergeToolPresets = @(
+    [pscustomobject]@{
+        Name = 'P4Merge'
+        Path = 'C:\Program Files\Perforce\p4merge.exe'
+        Args = ''
+    },
+    [pscustomobject]@{
+        Name = 'Beyond Compare'
+        Path = 'C:\Program Files\Beyond Compare 5\BCompare.exe'
+        Args = '%1 %2 %b %r'
+    },
+    [pscustomobject]@{
+        Name = 'KDiff3'
+        Path = 'C:\Program Files\KDiff3\kdiff3.exe'
+        Args = '%b %1 %2 -o %r'
+    }
+)
+
+function Get-P4MergeToolPresets {
+    <#
+    .SYNOPSIS
+        Returns the built-in array of merge tool presets.
+    #>
+    $script:MergeToolPresets
+}
+
+function Get-P4MergeTool {
+    <#
+    .SYNOPSIS
+        Reads the current P4MERGE setting via `p4 set P4MERGE`.
+    .DESCRIPTION
+        Calls `p4 set` directly (not through Invoke-P4) because `p4 set` does
+        not produce -ztag -Mj JSON output.
+        Returns a PSObject with Path (string) and IsSet (bool).
+    #>
+    $output    = & $script:P4Executable 'set' 'P4MERGE' 2>&1
+    $outputStr = [string]$output
+    if ($outputStr -match 'P4MERGE=(.+?)(\s+\(set\))?\s*$') {
+        return [pscustomobject]@{ Path = $Matches[1].Trim(); IsSet = $true }
+    }
+    return [pscustomobject]@{ Path = ''; IsSet = $false }
+}
+
+function Set-P4MergeTool {
+    <#
+    .SYNOPSIS
+        Persists a merge tool path via `p4 set P4MERGE=<ToolPath>`.
+    .DESCRIPTION
+        Calls `p4 set` directly (not through Invoke-P4) because `p4 set` does
+        not produce -ztag -Mj JSON output.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ToolPath
+    )
+    & $script:P4Executable 'set' "P4MERGE=$ToolPath" 2>&1 | Out-Null
+}
+
+Export-ModuleMember -Function ConvertTo-P4ChangelistId, Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Get-P4CommandCategory, Get-DurationClass, Get-P4CommandTimeout, Stop-P4ProcessTree, Test-IsP4TimeoutError, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Get-P4ModifiedDepotPaths, Set-P4FileEntriesUnresolvedState, Set-P4FileEntriesContentModifiedState, Remove-P4Changelist, Invoke-P4Submit, Invoke-P4ShelveFiles, Remove-P4ShelvedFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles, `
+    Get-P4MergeToolPresets, Get-P4MergeTool, Set-P4MergeTool

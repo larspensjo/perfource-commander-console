@@ -1599,10 +1599,10 @@ Describe 'Phase 5 — DeleteChange, DeleteShelvedFiles and MoveMarkedFiles menu 
 
     # ── File menu now includes delete-shelved support ─────────────────────────
 
-    It 'File menu has 9 navigable items including DeleteShelvedFiles and SubmitChange' {
+    It 'File menu has 10 navigable items including DeleteShelvedFiles, SubmitChange and ResolveFile' {
         $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
         $navCount = Get-MenuNavigableCount -ComputedItems $items
-        $navCount | Should -Be 9
+        $navCount | Should -Be 10
     }
 
     # ── DeleteChange ─────────────────────────────────────────────────────────
@@ -2333,5 +2333,123 @@ Describe 'Browser reducer — M4 async actions' {
         (Test-IsBrowserGlobalAction -ActionType 'ProcessStarted')         | Should -BeTrue
         (Test-IsBrowserGlobalAction -ActionType 'ProcessFinished')        | Should -BeTrue
         (Test-IsBrowserGlobalAction -ActionType 'MutationCompleted')      | Should -BeTrue
+    }
+}
+
+Describe 'OpenResolveSettings and SelectMergeTool' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    BeforeEach {
+        $changes = @(
+            [pscustomobject]@{ Id = '101'; Title = 'One'; HasShelvedFiles = $false; HasOpenedFiles = $true; Captured = [datetime]'2026-02-10' }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+    }
+
+    It 'OpenResolveSettings opens Menu overlay with ActiveMenu = Select merge tool' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenResolveSettings' })
+        $next.Ui.OverlayMode               | Should -Be 'Menu'
+        $next.Ui.OverlayPayload.ActiveMenu | Should -Be 'Select merge tool'
+    }
+
+    It 'OpenResolveSettings menu contains one item per preset plus Enter path manually' {
+        $next     = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenResolveSettings' })
+        [object[]]$navigable = @($next.Ui.OverlayPayload.MenuItems | Where-Object { -not [bool]$_.IsSeparator })
+        $presetCount = @(Get-P4MergeToolPresets).Count
+        $navigable.Count | Should -Be ($presetCount + 1)    # presets + manual
+    }
+
+    It 'OpenResolveSettings last navigable item is MergeToolManual' {
+        $next     = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenResolveSettings' })
+        [object[]]$navigable = @($next.Ui.OverlayPayload.MenuItems | Where-Object { -not [bool]$_.IsSeparator })
+        $navigable[-1].Id | Should -Be 'MergeToolManual'
+    }
+
+    It 'OpenResolveSettings preset items have IDs SelectMergeTool_0, _1, _2' {
+        $next     = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenResolveSettings' })
+        [object[]]$presetItems = @($next.Ui.OverlayPayload.MenuItems | Where-Object { [string]$_.Id -match '^SelectMergeTool_\d+$' })
+        $presetItems.Count | Should -Be 3
+        $presetItems[0].Id | Should -Be 'SelectMergeTool_0'
+    }
+
+    It 'OpenResolveSettings is a no-op when a non-Menu overlay is already open' {
+        $state.Ui.OverlayMode    = 'Confirm'
+        $state.Ui.OverlayPayload = [pscustomobject]@{ Title = 'Test?'; SummaryLines = @() }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenResolveSettings' })
+        $next.Ui.OverlayMode | Should -Be 'Confirm'
+    }
+
+    It 'OpenResolveSettings is a global action and is forwarded on the Files screen' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.PendingRequest = $null
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenResolveSettings' })
+        $next.Ui.OverlayMode     | Should -Be 'Menu'
+        $next.Ui.ScreenStack[-1] | Should -Be 'Files'
+    }
+
+    It 'OpenResolveSettings is a global action' {
+        (Test-IsBrowserGlobalAction -ActionType 'OpenResolveSettings') | Should -BeTrue
+    }
+
+    It 'MenuSwitchLeft is a no-op when ResolveSettings overlay is open' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenResolveSettings' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSwitchLeft' })
+        $next.Ui.OverlayPayload.ActiveMenu | Should -Be 'Select merge tool'
+    }
+
+    It 'MenuSwitchRight is a no-op when ResolveSettings overlay is open' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenResolveSettings' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSwitchRight' })
+        $next.Ui.OverlayPayload.ActiveMenu | Should -Be 'Select merge tool'
+    }
+
+    It 'MenuSelect on SelectMergeTool_0 closes overlay and sets PendingRequest Kind SetMergeTool' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenResolveSettings' })
+        # FocusIndex 0 = SelectMergeTool_0 (P4Merge)
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
+        $next.Ui.OverlayMode                 | Should -Be 'None'
+        $next.Runtime.PendingRequest.Kind    | Should -Be 'SetMergeTool'
+        $next.Runtime.PendingRequest.ToolPath | Should -Not -BeNullOrEmpty
+    }
+
+    It 'MenuSelect on SelectMergeTool_0 carries P4Merge path in PendingRequest' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenResolveSettings' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
+        $expected = [string](@(Get-P4MergeToolPresets)[0].Path)
+        $next.Runtime.PendingRequest.ToolPath | Should -Be $expected
+    }
+
+    It 'MenuSelect on MergeToolManual opens a Confirm overlay' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenResolveSettings' })
+        [object[]]$items = @($state.Ui.OverlayPayload.MenuItems)
+        # Find navigable index of MergeToolManual
+        $navIdx = 0
+        $manualNavIdx = -1
+        foreach ($item in $items) {
+            if (-not [bool]$item.IsSeparator) {
+                if ([string]$item.Id -eq 'MergeToolManual') { $manualNavIdx = $navIdx; break }
+                $navIdx++
+            }
+        }
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'Select merge tool'; FocusIndex = $manualNavIdx; MenuItems = $items }
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
+        $next.Ui.OverlayMode | Should -Be 'Confirm'
+    }
+
+    It 'MenuAccelerator 1 on ResolveSettings selects P4Merge preset (accelerator R)' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenResolveSettings' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuAccelerator'; Key = '1' })
+        $next.Ui.OverlayMode                 | Should -Be 'None'
+        $next.Runtime.PendingRequest.Kind    | Should -Be 'SetMergeTool'
+    }
+
+    It 'ResolveFile menu item exists in File menu definition' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+        [object[]]$items = @($state.Ui.OverlayPayload.MenuItems)
+        $ids = @($items | Where-Object { -not [bool]$_.IsSeparator } | ForEach-Object { [string]$_.Id })
+        $ids | Should -Contain 'ResolveFile'
     }
 }

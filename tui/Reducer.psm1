@@ -15,7 +15,8 @@ $script:BrowserGlobalActionTypes = @(
     'OpenMenu', 'MenuMoveUp', 'MenuMoveDown', 'MenuSwitchLeft', 'MenuSwitchRight', 'MenuSelect', 'MenuAccelerator',
     'WorkflowBegin', 'WorkflowItemComplete', 'WorkflowItemFailed', 'WorkflowEnd',
     'ReconcileMarks', 'UnmarkChanges',
-    'LogCommandExecution'
+    'LogCommandExecution',
+    'OpenResolveSettings', 'SelectMergeTool'
 )
 
 # ── Request identity (M0.6) ───────────────────────────────────────────────────
@@ -37,6 +38,7 @@ $script:PendingRequestScopeByKind = @{
     'MoveFiles'           = 'Mutation'
     'SubmitChange'        = 'Mutation'
     'ExecuteWorkflow'     = 'Workflow'
+    'SetMergeTool'        = 'Config'
 }
 
 function New-PendingRequest {
@@ -128,6 +130,27 @@ $script:MenuDefinitions = @{
             Accelerator = 'T'
             IsSeparator = $false
             IsEnabled   = { param($s) Test-CanSubmitSelectedChange -State $s }
+        },
+        [pscustomobject]@{
+            Id          = 'ResolveFile'
+            Label       = 'Resolve…'
+            Accelerator = 'E'
+            IsSeparator = $false
+            IsEnabled   = { param($s)
+                $screenProp = $s.Ui.PSObject.Properties['ScreenStack']
+                if ($null -eq $screenProp -or $screenProp.Value.Count -eq 0) { return $false }
+                if ([string]$screenProp.Value[-1] -ne 'Files') { return $false }
+                $fileIndices = $s.Derived.VisibleFileIndices
+                $fileIdx     = if (($s.Cursor.PSObject.Properties.Match('FileIndex')).Count -gt 0) { [int]$s.Cursor.FileIndex } else { 0 }
+                if ($null -eq $fileIndices -or $fileIndices.Count -eq 0) { return $false }
+                $cacheKey = "$($s.Data.FilesSourceChange)`:$($s.Data.FilesSourceKind)"
+                $fileCache = $s.Data.PSObject.Properties['FileCache']?.Value
+                if ($null -eq $fileCache -or -not $fileCache.ContainsKey($cacheKey)) { return $false }
+                [object[]]$files = @($fileCache[$cacheKey])
+                $rawIdx = if ($fileIdx -lt $fileIndices.Count) { [int]$fileIndices[$fileIdx] } else { -1 }
+                if ($rawIdx -lt 0 -or $rawIdx -ge $files.Count) { return $false }
+                [bool]$files[$rawIdx].IsUnresolved
+            }
         },
         [pscustomobject]@{ Id = '__FileSep1__'; Label = ''; Accelerator = ''; IsSeparator = $true;  IsEnabled = { $true } },
         [pscustomobject]@{
@@ -1398,6 +1421,39 @@ function Invoke-ChangelistReducer {
             $next.Ui.OverlayPayload = $null
             return $next
         }
+        'OpenResolveSettings' {
+            # Guard: do not open over a non-menu overlay
+            $currentOverlay = if (($next.Ui.PSObject.Properties.Match('OverlayMode')).Count -gt 0) { [string]$next.Ui.OverlayMode } else { 'None' }
+            if ($currentOverlay -ne 'None' -and $currentOverlay -ne 'Menu') { return $next }
+
+            $presets   = @(Get-P4MergeToolPresets)
+            $menuItems = [System.Collections.Generic.List[object]]::new()
+            for ($i = 0; $i -lt $presets.Count; $i++) {
+                $preset = $presets[$i]
+                $menuItems.Add([pscustomobject]@{
+                    Id          = "SelectMergeTool_$i"
+                    Label       = [string]$preset.Name
+                    Accelerator = [string]($i + 1)
+                    IsSeparator = $false
+                    IsEnabled   = $true
+                })
+            }
+            $menuItems.Add([pscustomobject]@{ Id = '__ResolveSep1__'; Label = ''; Accelerator = ''; IsSeparator = $true; IsEnabled = $true })
+            $menuItems.Add([pscustomobject]@{
+                Id          = 'MergeToolManual'
+                Label       = 'Enter path manually…'
+                Accelerator = 'P'
+                IsSeparator = $false
+                IsEnabled   = $true
+            })
+            $next.Ui.OverlayMode    = 'Menu'
+            $next.Ui.OverlayPayload = [pscustomobject]@{
+                ActiveMenu = 'Select merge tool'
+                FocusIndex = 0
+                MenuItems  = $menuItems.ToArray()
+            }
+            return $next
+        }
         'OpenMenu' {
             $menuNameProp = $Action.PSObject.Properties['Menu']
             $menuName     = if ($null -ne $menuNameProp) { [string]$menuNameProp.Value } else { '' }
@@ -1442,6 +1498,8 @@ function Invoke-ChangelistReducer {
         'MenuSwitchLeft' {
             if ([string]$next.Ui.OverlayMode -ne 'Menu') { return $next }
             $current = [string]$next.Ui.OverlayPayload.ActiveMenu
+            # Only switch between the two standard menus; custom overlays are not switchable.
+            if ($current -ne 'File' -and $current -ne 'View') { return $next }
             $newMenu = if ($current -eq 'File') { 'View' } else { 'File' }
             $next.Ui.OverlayPayload = [pscustomobject]@{
                 ActiveMenu = $newMenu
@@ -1479,6 +1537,7 @@ function Invoke-ChangelistReducer {
                 'ExpandCollapse'    { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleChangelistView' }) }
                 'Help'              { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleHelpOverlay' }) }
                 'SubmitChange'      { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'SubmitChange' }) }
+                'ResolveFile'       { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ResolveFile' }) }
                 'MoveMarkedFiles'   {
                     [string[]]$changeIds   = @($next.Query.MarkedChangeIds | ForEach-Object { [string]$_ } | Sort-Object)
                     [object[]]$visibleIds  = @($next.Derived.VisibleChangeIds)
@@ -1545,7 +1604,29 @@ function Invoke-ChangelistReducer {
                     }
                     return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenConfirmDialog'; Payload = $payload })
                 }
-                default             { }
+                default             {
+                    # Handle SelectMergeTool_N items from the ResolveSettings overlay
+                    if ($itemId -match '^SelectMergeTool_(\d+)$') {
+                        $presetIndex = [int]$Matches[1]
+                        $presets = @(Get-P4MergeToolPresets)
+                        if ($presetIndex -lt $presets.Count) {
+                            $next.Runtime.PendingRequest = New-PendingRequest @{
+                                Kind     = 'SetMergeTool'
+                                ToolPath = [string]$presets[$presetIndex].Path
+                            }
+                        }
+                    } elseif ($itemId -eq 'MergeToolManual') {
+                        $manualPayload = [pscustomobject]@{
+                            Title            = 'Configure merge tool manually'
+                            SummaryLines     = @('To set a custom merge tool path, run this in a terminal:')
+                            ConsequenceLines = @('  p4 set P4MERGE=<full path to merge tool executable>')
+                            ConfirmLabel     = 'Enter = Close'
+                            CancelLabel      = 'Esc = Close'
+                            OnAccept         = $null
+                        }
+                        return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenConfirmDialog'; Payload = $manualPayload })
+                    }
+                }
             }
             return Update-BrowserDerivedState -State $next
         }

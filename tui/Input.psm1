@@ -45,6 +45,7 @@ function ConvertFrom-KeyInfoToAction {
     if ($isShift -and -not $isAlt) {
         switch ($KeyInfo.Key) {
             'M' { return [pscustomobject]@{ Type = 'MarkAllVisible' } }
+            'R' { return [pscustomobject]@{ Type = 'OpenResolveSettings' } }
         }
     }
 

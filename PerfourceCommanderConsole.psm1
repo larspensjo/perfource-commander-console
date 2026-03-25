@@ -1814,6 +1814,16 @@ function Start-P4Browser {
                                 }
                                 return $state
                             }
+                            'SetMergeTool' {
+                                # Fast local-only operation: write P4MERGE via `p4 set` directly.
+                                # No async worker or command modal needed.
+                                try {
+                                    Set-P4MergeTool -ToolPath ([string]$req.ToolPath)
+                                } catch {
+                                    $state.Runtime.LastError = "Failed to set merge tool: $($_.Exception.Message)"
+                                }
+                                return $state
+                            }
                             'ExecuteWorkflow' {
                                 $workflowKind = if (($req.PSObject.Properties.Match('WorkflowKind')).Count -gt 0) { [string]$req.WorkflowKind } else { '' }
                                 if ([string]::IsNullOrEmpty($workflowKind) -or -not $script:WorkflowRegistry.ContainsKey($workflowKind)) {

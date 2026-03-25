@@ -1516,6 +1516,88 @@ function Invoke-P4ReopenFiles {
     return @{ MovedCount = $depotPaths.Count; Files = $depotPaths }
 }
 
+# ── Resolve ───────────────────────────────────────────────────────────────────
+
+function Invoke-P4Resolve {
+    <#
+    .SYNOPSIS
+        Runs `p4 resolve <depot-path>` directly, without -ztag/-Mj flags.
+    .DESCRIPTION
+        Calls p4.exe directly (not via Invoke-P4) because:
+          1. `p4 resolve` must not receive -ztag -Mj flags.
+          2. The wait is unlimited — the user drives an external merge tool.
+        Notifies the registered P4 execution observer so command logging works.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DepotPath,
+        [scriptblock]$ProcessObserver = $null
+    )
+
+    $p4Args      = @('resolve', $DepotPath)
+    $commandLine = Format-P4CommandLine -P4Args $p4Args
+
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName               = $script:P4Executable
+    $psi.Arguments              = $commandLine.Substring(3)   # strip 'p4 '
+    $psi.WorkingDirectory       = (Get-Location).Path
+    $psi.RedirectStandardInput  = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    $psi.UseShellExecute        = $false
+    $psi.CreateNoWindow         = $true
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $psi
+
+    $startedAt = Get-Date
+    if (-not $process.Start()) { throw 'Failed to start p4.exe' }
+
+    if ($ProcessObserver) {
+        try { & $ProcessObserver -EventType 'ProcessStarted' -ProcessId $process.Id -ExitCode $null } catch { }
+    }
+
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+
+    # Unlimited wait — the user must close the external merge tool before we continue.
+    $process.WaitForExit()
+
+    $stdout   = $stdoutTask.GetAwaiter().GetResult()
+    $stderr   = $stderrTask.GetAwaiter().GetResult()
+    $exitCode = $process.ExitCode
+
+    if ($ProcessObserver) {
+        try { & $ProcessObserver -EventType 'ProcessFinished' -ProcessId $process.Id -ExitCode $exitCode } catch { }
+    }
+
+    $endedAt    = Get-Date
+    $durationMs = [int](($endedAt - $startedAt).TotalMilliseconds)
+
+    $effectiveObserver = $script:P4ExecutionObserver
+    if ($effectiveObserver) {
+        try {
+            & $effectiveObserver `
+                -CommandLine  $commandLine `
+                -RawLines     @() `
+                -ExitCode     $exitCode `
+                -ErrorOutput  $stderr `
+                -StartedAt    $startedAt `
+                -EndedAt      $endedAt `
+                -DurationMs   $durationMs
+        } catch { }
+    }
+
+    $process.Dispose()
+
+    if ($exitCode -ne 0) {
+        $msg = "p4 resolve failed (exit $exitCode)."
+        if (-not [string]::IsNullOrWhiteSpace($stderr))  { $msg += " STDERR: $stderr" }
+        elseif (-not [string]::IsNullOrWhiteSpace($stdout)) { $msg += " STDOUT: $stdout" }
+        throw $msg
+    }
+}
+
 # ── Merge tool configuration ──────────────────────────────────────────────────
 # Predefined presets.  These are convenience defaults; the persisted value is
 # always the P4MERGE Perforce variable written via `p4 set`.
@@ -1578,4 +1660,4 @@ function Set-P4MergeTool {
 }
 
 Export-ModuleMember -Function ConvertTo-P4ChangelistId, Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Get-P4CommandCategory, Get-DurationClass, Get-P4CommandTimeout, Stop-P4ProcessTree, Test-IsP4TimeoutError, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Get-P4ModifiedDepotPaths, Set-P4FileEntriesUnresolvedState, Set-P4FileEntriesContentModifiedState, Remove-P4Changelist, Invoke-P4Submit, Invoke-P4ShelveFiles, Remove-P4ShelvedFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles, `
-    Get-P4MergeToolPresets, Get-P4MergeTool, Set-P4MergeTool
+    Get-P4MergeToolPresets, Get-P4MergeTool, Set-P4MergeTool, Invoke-P4Resolve

@@ -220,4 +220,9 @@ Describe 'ConvertFrom-KeyInfoToAction' {
         $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key UpArrow)
         $action.Type | Should -Be 'MoveUp'
     }
+
+    It 'R maps to ResolveFile' {
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key R)
+        $action.Type | Should -Be 'ResolveFile'
+    }
 }

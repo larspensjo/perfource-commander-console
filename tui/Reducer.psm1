@@ -39,6 +39,7 @@ $script:PendingRequestScopeByKind = @{
     'SubmitChange'        = 'Mutation'
     'ExecuteWorkflow'     = 'Workflow'
     'SetMergeTool'        = 'Config'
+    'ResolveFile'         = 'Mutation'
 }
 
 function New-PendingRequest {
@@ -606,6 +607,10 @@ function New-BrowserState {
             FilesGeneration     = 0
             PendingGeneration   = 0
             SubmittedGeneration = 0
+            # Set to $true by MutationCompleted(MutationKind='ResolveFile') so that
+            # the first FilesEnrichmentDone (or FilesBaseLoaded for submitted) after
+            # a resolve also chains a ReloadPending to refresh the changelist summary.
+            ReloadPendingAfterEnrichment = $false
         }
         Ui = [pscustomobject]@{
             ActivePane             = 'Filters'
@@ -1286,6 +1291,11 @@ function Invoke-ChangelistReducer {
             } else {
                 # Submitted source: no enrichment, mark ready immediately
                 $next.Data.FileCacheStatus[$cacheKey] = 'Ready'
+                # Chain ReloadPending if a resolve just completed (dual-refresh)
+                if ([bool]$next.Data.ReloadPendingAfterEnrichment) {
+                    $next.Data.ReloadPendingAfterEnrichment = $false
+                    $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'ReloadPending' } -Generation $next.Data.PendingGeneration
+                }
             }
             return Update-BrowserDerivedState -State $next
         }
@@ -1301,6 +1311,11 @@ function Invoke-ChangelistReducer {
             $next.Data.FileCacheStatus[$cacheKey] = 'Ready'
             $next.Runtime.LastError               = $null
             $next.Runtime.ActiveCommand           = $null
+            # Chain ReloadPending if a resolve just completed (dual-refresh)
+            if ([bool]$next.Data.ReloadPendingAfterEnrichment) {
+                $next.Data.ReloadPendingAfterEnrichment = $false
+                $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'ReloadPending' } -Generation $next.Data.PendingGeneration
+            }
             return Update-BrowserDerivedState -State $next
         }
         'FilesEnrichmentFailed' {
@@ -1319,6 +1334,12 @@ function Invoke-ChangelistReducer {
         'MutationCompleted' {
             $next.Runtime.ActiveCommand = $null
             $next.Runtime.LastError     = $null
+            # After a resolve, flag that the next file-list enrichment (or base-load)
+            # should also chain a ReloadPending to refresh changelist unresolved counts.
+            $mutationKind = if (($Action.PSObject.Properties.Match('MutationKind')).Count -gt 0) { [string]$Action.MutationKind } else { '' }
+            if ($mutationKind -eq 'ResolveFile') {
+                $next.Data.ReloadPendingAfterEnrichment = $true
+            }
             return $next
         }
         'AsyncCommandFailed' {
@@ -2335,6 +2356,37 @@ function Invoke-FilesReducer {
             $reloadCacheKey = "$($next.Data.FilesSourceChange)`:$($next.Data.FilesSourceKind)"
             $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'LoadFiles'; CacheKey = $reloadCacheKey } -Generation $next.Data.FilesGeneration
             return Update-BrowserDerivedState -State $next
+        }
+        'ResolveFile' {
+            # Validate: file must be focused, loaded, and unresolved.
+            $cacheKey         = "$($next.Data.FilesSourceChange)`:$($next.Data.FilesSourceKind)"
+            $fileCache        = $next.Data.PSObject.Properties['FileCache']?.Value
+            $fileIndex        = if (($next.Cursor.PSObject.Properties.Match('FileIndex')).Count -gt 0) { [int]$next.Cursor.FileIndex } else { 0 }
+            [object[]]$visIdx = @($next.Derived.VisibleFileIndices)
+
+            if ($null -eq $fileCache -or -not $fileCache.ContainsKey($cacheKey) -or $visIdx.Count -eq 0) {
+                $next.Runtime.LastError = 'No files loaded.'
+                return $next
+            }
+
+            [object[]]$files = @($fileCache[$cacheKey])
+            $rawIdx  = if ($fileIndex -lt $visIdx.Count) { [int]$visIdx[$fileIndex] } else { -1 }
+            if ($rawIdx -lt 0 -or $rawIdx -ge $files.Count) {
+                $next.Runtime.LastError = 'No file selected.'
+                return $next
+            }
+            $fileEntry = $files[$rawIdx]
+
+            if (-not [bool]$fileEntry.IsUnresolved) {
+                $next.Runtime.LastError = 'File is not unresolved. Use Shift+R to configure the merge tool.'
+                return $next
+            }
+
+            $depotPath = [string]$fileEntry.DepotPath
+            $change    = [string]$next.Data.FilesSourceChange
+            $next.Runtime.LastError    = $null
+            $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'ResolveFile'; DepotPath = $depotPath; Change = $change } -Generation 0
+            return $next
         }
         'OpenFilesScreen' {
             # No-op: already on Files screen; cannot nest.

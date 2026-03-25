@@ -2453,3 +2453,91 @@ Describe 'OpenResolveSettings and SelectMergeTool' {
         $ids | Should -Contain 'ResolveFile'
     }
 }
+
+Describe 'ResolveFile action and dual-refresh chain' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    BeforeEach {
+        $changes = @(
+            [pscustomobject]@{ Id = '101'; Title = 'One'; HasShelvedFiles = $false; HasOpenedFiles = $true; Captured = [datetime]'2026-02-10' }
+        )
+        $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenFilesScreen' })
+        $state.Runtime.PendingRequest = $null
+        $cacheKey = "$($state.Data.FilesSourceChange)`:$($state.Data.FilesSourceKind)"
+        $state.Data.FileCache[$cacheKey] = @(
+            [pscustomobject]@{ DepotPath = '//depot/main/a.txt'; IsUnresolved = $true  },
+            [pscustomobject]@{ DepotPath = '//depot/main/b.txt'; IsUnresolved = $false }
+        )
+        $state = Update-BrowserDerivedState -State $state
+    }
+
+    # ── New-BrowserState state flag ───────────────────────────────────────────
+
+    It 'New-BrowserState includes ReloadPendingAfterEnrichment defaulting to $false' {
+        $fresh = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
+        $fresh.Data.ReloadPendingAfterEnrichment | Should -BeFalse
+    }
+
+    # ── ResolveFile on Files screen — file is unresolved, P4MERGE is set ──────
+
+    It 'ResolveFile sets PendingRequest Kind=ResolveFile when file is unresolved' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ResolveFile' })
+        $next.Runtime.PendingRequest.Kind      | Should -Be 'ResolveFile'
+        $next.Runtime.PendingRequest.DepotPath | Should -Be '//depot/main/a.txt'
+    }
+
+    It 'ResolveFile sets LastError and no PendingRequest when focused file is not unresolved' {
+        # Move focus to file index 1 (IsUnresolved = $false)
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ResolveFile' })
+        $next.Runtime.LastError         | Should -Not -BeNullOrEmpty
+        $next.Runtime.PendingRequest    | Should -BeNullOrEmpty
+    }
+
+    # ── MutationCompleted(ResolveFile) sets the dual-refresh flag ─────────────
+
+    It 'MutationCompleted with MutationKind=ResolveFile sets ReloadPendingAfterEnrichment' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'MutationCompleted'; MutationKind = 'ResolveFile'; RequestId = 'req-1'; Generation = 0
+        })
+        $next.Data.ReloadPendingAfterEnrichment | Should -BeTrue
+    }
+
+    It 'MutationCompleted with other MutationKind does not set ReloadPendingAfterEnrichment' {
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'MutationCompleted'; MutationKind = 'DeleteChange'; RequestId = 'req-1'; Generation = 0
+        })
+        $next.Data.ReloadPendingAfterEnrichment | Should -BeFalse
+    }
+
+    # ── FilesEnrichmentDone chains ReloadPending when flag is set ─────────────
+
+    It 'FilesEnrichmentDone chains PendingRequest=ReloadPending when ReloadPendingAfterEnrichment is true' {
+        $state.Data.ReloadPendingAfterEnrichment = $true
+        $cacheKey = "$($state.Data.FilesSourceChange)`:$($state.Data.FilesSourceKind)"
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type        = 'FilesEnrichmentDone'
+            CacheKey    = $cacheKey
+            Generation  = $state.Data.FilesGeneration
+            FileEntries = @()
+        })
+        $next.Runtime.PendingRequest.Kind            | Should -Be 'ReloadPending'
+        $next.Data.ReloadPendingAfterEnrichment       | Should -BeFalse
+    }
+
+    It 'FilesEnrichmentDone does not chain ReloadPending when ReloadPendingAfterEnrichment is false' {
+        $state.Data.ReloadPendingAfterEnrichment = $false
+        $cacheKey = "$($state.Data.FilesSourceChange)`:$($state.Data.FilesSourceKind)"
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type        = 'FilesEnrichmentDone'
+            CacheKey    = $cacheKey
+            Generation  = $state.Data.FilesGeneration
+            FileEntries = @()
+        })
+        $next.Runtime.PendingRequest | Should -BeNullOrEmpty
+    }
+}

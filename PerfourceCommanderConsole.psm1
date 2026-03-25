@@ -716,6 +716,37 @@ $script:AsyncWorkers = @{
                 MutationKind='MoveFiles'; ChangeId=[string]$Envelope.ChangeId; TargetChangeId=[string]$Envelope.TargetChangeId; ErrorText=$_.Exception.Message; ObservedCommands=@($observed); Success=$false; Outcome=$outcome }
         } finally { Unregister-P4Observer }
     }
+
+    'ResolveFile' = {
+        param([pscustomobject]$Envelope, [string]$ModuleRoot)
+        if (![string]::IsNullOrEmpty($ModuleRoot)) {
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+        }
+        $observed = [System.Collections.Generic.List[pscustomobject]]::new()
+        $processObserver = {
+            param($EventType,$ProcessId,$ExitCode)
+            if (-not [string]::IsNullOrWhiteSpace([string]$Envelope.ProcessEventFile)) {
+                $payload = [pscustomobject]@{ EventType=$EventType; RequestId=[string]$Envelope.RequestId; ProcessId=$ProcessId; ExitCode=$ExitCode }
+                Add-Content -LiteralPath ([string]$Envelope.ProcessEventFile) -Value ($payload | ConvertTo-Json -Compress)
+            }
+        }
+        Register-P4Observer {
+            param($CommandLine,$RawLines,$ExitCode,$ErrorOutput,$StartedAt,$EndedAt,$DurationMs)
+            $null = $RawLines
+            $observed.Add([pscustomobject]@{ CommandLine=$CommandLine;ExitCode=$ExitCode;Succeeded=($ExitCode -eq 0)
+                ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
+        }
+        try {
+            Invoke-P4Resolve -DepotPath ([string]$Envelope.DepotPath) -ProcessObserver $processObserver
+            return [pscustomobject]@{ Type='MutationCompleted'; RequestId=$Envelope.RequestId; Generation=$Envelope.Generation
+                MutationKind='ResolveFile'; DepotPath=[string]$Envelope.DepotPath; ObservedCommands=@($observed); Success=$true; Outcome='Completed' }
+        } catch {
+            $outcome = if (Test-IsP4TimeoutError -Message $_.Exception.Message) { 'TimedOut' } else { 'Failed' }
+            return [pscustomobject]@{ Type='AsyncCommandFailed'; RequestId=$Envelope.RequestId; Generation=$Envelope.Generation
+                MutationKind='ResolveFile'; DepotPath=[string]$Envelope.DepotPath; ErrorText=$_.Exception.Message; ObservedCommands=@($observed); Success=$false; Outcome=$outcome }
+        } finally { Unregister-P4Observer }
+    }
 }
 
 # Derives a user-visible command-line label for the modal from an async request envelope.
@@ -745,6 +776,7 @@ function Get-AsyncDisplayCommandLine {
         'ShelveFiles'         { return Format-P4CommandLine -P4Args @('shelve','-f','-c',[string]$Envelope.ChangeId) }
         'SubmitChange'        { return Format-P4CommandLine -P4Args @('submit','-c',[string]$Envelope.ChangeId) }
         'MoveFiles'           { return Format-P4CommandLine -P4Args @('reopen','-c',[string]$Envelope.TargetChangeId,'//...') }
+        'ResolveFile'         { return Format-P4CommandLine -P4Args @('resolve',[string]$Envelope.DepotPath) }
         default               { return $Envelope.Kind }
     }
 }
@@ -782,6 +814,7 @@ function Invoke-BrowserStartAsyncRequest {
         'ShelveFiles'         { $extras['ChangeId'] = [string]$Request.ChangeId }
         'SubmitChange'        { $extras['ChangeId'] = [string]$Request.ChangeId }
         'MoveFiles'           { $extras['ChangeId'] = [string]$Request.ChangeId; $extras['TargetChangeId'] = [string]$Request.TargetChangeId }
+        'ResolveFile'         { $extras['DepotPath'] = [string]$Request.DepotPath; $extras['Change'] = [string]$Request.Change }
     }
     $envProps = @{}
     foreach ($p in $Request.PSObject.Properties) { $envProps[$p.Name] = $p.Value }
@@ -1821,6 +1854,12 @@ function Start-P4Browser {
                                     Set-P4MergeTool -ToolPath ([string]$req.ToolPath)
                                 } catch {
                                     $state.Runtime.LastError = "Failed to set merge tool: $($_.Exception.Message)"
+                                }
+                                return $state
+                            }
+                            'ResolveFile' {
+                                if (-not [string]::IsNullOrEmpty([string]$req.DepotPath)) {
+                                    return Invoke-BrowserStartAsyncRequest -State $state -Request $req
                                 }
                                 return $state
                             }

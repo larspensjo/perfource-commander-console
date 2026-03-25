@@ -1870,3 +1870,46 @@ Describe 'Get-P4MergeTool and Set-P4MergeTool' {
         }
     }
 }
+
+Describe 'Invoke-P4Resolve' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'Invoke-P4Resolve does not throw when p4 exits with code 0' {
+        $scriptPath = Join-Path $TestDrive 'p4-resolve-ok.cmd'
+        Set-Content -LiteralPath $scriptPath -Value '@echo off'
+        & (Get-Module P4Cli) { param($p) $script:P4Executable = $p } $scriptPath
+        try {
+            { Invoke-P4Resolve -DepotPath '//depot/main/foo.txt' } | Should -Not -Throw
+        } finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'p4.exe' }
+        }
+    }
+
+    It 'Invoke-P4Resolve throws when p4 exits with non-zero code' {
+        $scriptPath = Join-Path $TestDrive 'p4-resolve-fail.cmd'
+        Set-Content -LiteralPath $scriptPath -Value "@exit 1"
+        & (Get-Module P4Cli) { param($p) $script:P4Executable = $p } $scriptPath
+        try {
+            { Invoke-P4Resolve -DepotPath '//depot/main/foo.txt' } | Should -Throw
+        } finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'p4.exe' }
+        }
+    }
+
+    It 'Invoke-P4Resolve calls ProcessObserver with ProcessStarted and ProcessFinished' {
+        $scriptPath = Join-Path $TestDrive 'p4-resolve-ok2.cmd'
+        Set-Content -LiteralPath $scriptPath -Value '@echo off'
+        & (Get-Module P4Cli) { param($p) $script:P4Executable = $p } $scriptPath
+        try {
+            $events = [System.Collections.Generic.List[string]]::new()
+            $observer = { param($EventType,$ProcessId,$ExitCode) $events.Add($EventType) }
+            Invoke-P4Resolve -DepotPath '//depot/main/foo.txt' -ProcessObserver $observer
+            $events | Should -Contain 'ProcessStarted'
+            $events | Should -Contain 'ProcessFinished'
+        } finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'p4.exe' }
+        }
+    }
+}

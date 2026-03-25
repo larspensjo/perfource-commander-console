@@ -152,6 +152,13 @@ $script:MenuDefinitions = @{
                 [bool]$files[$rawIdx].IsUnresolved
             }
         },
+        [pscustomobject]@{
+            Id          = 'MergeTool'
+            Label       = 'Merge tool settings…'
+            Accelerator = 'G'
+            IsSeparator = $false
+            IsEnabled   = { $true }
+        },
         [pscustomobject]@{ Id = '__FileSep1__'; Label = ''; Accelerator = ''; IsSeparator = $true;  IsEnabled = { $true } },
         [pscustomobject]@{
             Id         = 'MarkAllVisible'
@@ -1538,6 +1545,7 @@ function Invoke-ChangelistReducer {
                 'Help'              { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ToggleHelpOverlay' }) }
                 'SubmitChange'      { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'SubmitChange' }) }
                 'ResolveFile'       { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ResolveFile' }) }
+                'MergeTool'         { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenResolveSettings' }) }
                 'MoveMarkedFiles'   {
                     [string[]]$changeIds   = @($next.Query.MarkedChangeIds | ForEach-Object { [string]$_ } | Sort-Object)
                     [object[]]$visibleIds  = @($next.Derived.VisibleChangeIds)

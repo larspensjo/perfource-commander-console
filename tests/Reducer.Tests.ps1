@@ -1599,10 +1599,10 @@ Describe 'Phase 5 — DeleteChange, DeleteShelvedFiles and MoveMarkedFiles menu 
 
     # ── File menu now includes delete-shelved support ─────────────────────────
 
-    It 'File menu has 10 navigable items including DeleteShelvedFiles, SubmitChange and ResolveFile' {
+    It 'File menu has 11 navigable items including DeleteShelvedFiles, SubmitChange, ResolveFile and MergeTool' {
         $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
         $navCount = Get-MenuNavigableCount -ComputedItems $items
-        $navCount | Should -Be 10
+        $navCount | Should -Be 11
     }
 
     # ── DeleteChange ─────────────────────────────────────────────────────────

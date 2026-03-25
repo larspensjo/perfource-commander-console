@@ -1725,8 +1725,16 @@ function Build-FilesStatusBarRow {
     $fileCacheStatus      = Get-PropertyValueOrDefault -Object $State.Data -Name 'FileCacheStatus' -Default $null
     $cacheStatus          = if ($null -ne $fileCacheStatus -and $fileCacheStatus.ContainsKey($cacheKey)) { [string]$fileCacheStatus[$cacheKey] } else { 'NotLoaded' }
     $enrichmentHint       = if ($cacheStatus -in @('BaseReady', 'LoadingEnrichment')) { '  Content: loading…' } else { '' }
+    $fileCache            = Get-PropertyValueOrDefault -Object $State.Data -Name 'FileCache' -Default $null
+    $unresolvedCount      = 0
+    if ($null -ne $fileCache -and $fileCache.ContainsKey($cacheKey)) {
+        foreach ($f in @($fileCache[$cacheKey])) {
+            if ([bool](Get-PropertyValueOrDefault -Object $f -Name 'IsUnresolved' -Default $false)) { $unresolvedCount++ }
+        }
+    }
+    $unresolvedHint       = if ($unresolvedCount -gt 0) { "  $UNRESOLVED_GLYPH $unresolvedCount unresolved" } else { '' }
 
-    $statusText  = "[Files] CL $sourceChange ($sourceKind)  $filePos/$fileCount${filterHint}${enrichmentHint} | [/] Filter  [Esc/←] Back  [Tab] Pane  [F1] Help  [F5] Reload  [Q] Quit"
+    $statusText  = "[Files] CL $sourceChange ($sourceKind)  $filePos/$fileCount${filterHint}${enrichmentHint}${unresolvedHint} | [/] Filter  [Esc/←] Back  [Tab] Pane  [F1] Help  [F5] Reload  [Q] Quit"
     $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
 
     $seg  = @{ Text = $statusText; Color = 'DarkGray'; BackgroundColor = '' }
@@ -1913,6 +1921,11 @@ function Build-FilesScreenFrame {
                     $resolveColor      = if ($selectedUnresolvd) { 'Yellow' } else { 'DarkGray' }
                     $contentLabel      = if ($selectedContentModified) { 'modified' } elseif ($isEnrichmentPending) { [char]0x2026 } else { 'clean' }
                     $contentColor      = if ($selectedContentModified) { 'Cyan' } elseif ($isEnrichmentPending) { 'DarkGray' } else { 'DarkGray' }
+                    $resolveHintLine   = if ($selectedUnresolvd) {
+                        @(@{ Text = '[R] Resolve  [Shift+R] Merge tool'; Color = 'DarkCyan' })
+                    } else {
+                        @(@{ Text = '';  Color = 'Gray' })
+                    }
                     $inspectorLines = @(
                         @(@{ Text = "File: $selectedFileName"; Color = 'White'       }),
                         @(@{ Text = "Action: $selectedAction"; Color = 'DarkYellow' }),
@@ -1921,7 +1934,7 @@ function Build-FilesScreenFrame {
                         @(@{ Text = "Source: $sourceKind";     Color = 'DarkGray'   }),
                         @(@{ Text = "Resolve: $resolveLabel";  Color = $resolveColor }),
                         @(@{ Text = "Content: $contentLabel";  Color = $contentColor }),
-                        @(@{ Text = '';                        Color = 'Gray'        }),
+                        $resolveHintLine,
                         @(@{ Text = $selectedDepot;            Color = 'Gray'        })
                     )
                     if ($detailContentRow -lt $inspectorLines.Count) {

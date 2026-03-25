@@ -1461,6 +1461,89 @@ Describe 'Files screen rendering' {
         $listText | Should -Match ([string][char]0x26A0)
         $listText | Should -Not -Match '≠.*ConflictAndChanged\.cs'
     }
+
+    # ── Status bar: unresolved count ─────────────────────────────────────────
+
+    It 'status bar shows unresolved count when files are unresolved' {
+        $state = New-FilesRenderState -Width 120 -Height 20
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '500:Opened' = @(
+                [pscustomobject]@{ FileName = 'A.cs'; DepotPath = '//depot/A.cs'; Action = 'integrate'; IsUnresolved = $true  },
+                [pscustomobject]@{ FileName = 'B.cs'; DepotPath = '//depot/B.cs'; Action = 'edit';      IsUnresolved = $false },
+                [pscustomobject]@{ FileName = 'C.cs'; DepotPath = '//depot/C.cs'; Action = 'integrate'; IsUnresolved = $true  }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 500
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0, 1, 2)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $statusText = ($frame.Rows[-1].Segments | ForEach-Object { $_.Text }) -join ''
+        $statusText | Should -Match '2 unresolved'
+    }
+
+    It 'status bar does not show unresolved count when no files are unresolved' {
+        $state = New-FilesRenderState -Width 120 -Height 20
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '501:Opened' = @(
+                [pscustomobject]@{ FileName = 'A.cs'; DepotPath = '//depot/A.cs'; Action = 'edit'; IsUnresolved = $false }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 501
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $statusText = ($frame.Rows[-1].Segments | ForEach-Object { $_.Text }) -join ''
+        $statusText | Should -Not -Match 'unresolved'
+    }
+
+    # ── Inspector: resolve hint ───────────────────────────────────────────────
+
+    It 'inspector shows R / Shift+R hint when selected file is unresolved' {
+        $state = New-FilesRenderState -Width 120 -Height 22
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '600:Opened' = @(
+                [pscustomobject]@{ FileName = 'Conflict.cs'; DepotPath = '//depot/Conflict.cs'; Action = 'integrate'; FileType = 'text'; Change = 600; IsUnresolved = $true }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 600
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Match '\[R\]'
+        $allText | Should -Match 'Shift\+R'
+    }
+
+    It 'inspector does not show R hint when selected file is not unresolved' {
+        $state = New-FilesRenderState -Width 120 -Height 22
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '601:Opened' = @(
+                [pscustomobject]@{ FileName = 'Clean.cs'; DepotPath = '//depot/Clean.cs'; Action = 'edit'; FileType = 'text'; Change = 601; IsUnresolved = $false }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 601
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Not -Match '\[R\] Resolve'
+    }
 }
 # ─── Confirm dialog overlay ───────────────────────────────────────────────────
 

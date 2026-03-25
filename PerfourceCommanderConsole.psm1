@@ -738,6 +738,14 @@ $script:AsyncWorkers = @{
                 ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
         }
         try {
+            # Validate merge tool is configured and its executable exists on disk.
+            $mergeTool = Get-P4MergeTool
+            if (-not $mergeTool.IsSet) {
+                throw 'No merge tool configured. Use Shift+R to select one.'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($mergeTool.Path) -and -not (Test-Path -LiteralPath $mergeTool.Path)) {
+                throw "Merge tool not found: '$($mergeTool.Path)'. Use Shift+R to reconfigure."
+            }
             Invoke-P4Resolve -DepotPath ([string]$Envelope.DepotPath) -ProcessObserver $processObserver
             return [pscustomobject]@{ Type='MutationCompleted'; RequestId=$Envelope.RequestId; Generation=$Envelope.Generation
                 MutationKind='ResolveFile'; DepotPath=[string]$Envelope.DepotPath; ObservedCommands=@($observed); Success=$true; Outcome='Completed' }

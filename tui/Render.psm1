@@ -2,6 +2,7 @@
 
 Import-Module (Join-Path $PSScriptRoot 'Theme.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'GraphRender.psm1') -Force -Global -DisableNameChecking
 
 $_theme                = Get-BrowserUiTheme
 $SCROLLBAR_THUMB_GLYPH = [char]0x2591

@@ -203,6 +203,27 @@ $script:MenuDefinitions = @{
             IsEnabled   = { param($s) $vm = if ($s.Ui.PSObject.Properties['ViewMode']) { [string]$s.Ui.ViewMode } else { 'Pending' }; $vm -ne 'Submitted' }
         },
         [pscustomobject]@{ Id = 'ViewCommandLog'; Label = 'Command log';              Accelerator = 'L'; IsSeparator = $false; IsEnabled = { $true } },
+        [pscustomobject]@{ Id = '__ViewSep0__'; Label = ''; Accelerator = ''; IsSeparator = $true;  IsEnabled = { $true } },
+        [pscustomobject]@{
+            Id          = 'ViewRevisionGraph'
+            Label       = 'Revision graph'
+            Accelerator = 'G'
+            IsSeparator = $false
+            IsEnabled   = { param($s)
+                $screenProp = $s.Ui.PSObject.Properties['ScreenStack']
+                if ($null -eq $screenProp -or $screenProp.Value.Count -eq 0) { return $false }
+                if ([string]$screenProp.Value[-1] -ne 'Files') { return $false }
+                $fileIndices = $s.Derived.VisibleFileIndices
+                if ($null -eq $fileIndices -or $fileIndices.Count -eq 0) { return $false }
+                $fileIdx  = if (($s.Cursor.PSObject.Properties.Match('FileIndex')).Count -gt 0) { [int]$s.Cursor.FileIndex } else { 0 }
+                $cacheKey = "$($s.Data.FilesSourceChange)`:$($s.Data.FilesSourceKind)"
+                $fileCache = $s.Data.PSObject.Properties['FileCache']?.Value
+                if ($null -eq $fileCache -or -not $fileCache.ContainsKey($cacheKey)) { return $false }
+                [object[]]$files = @($fileCache[$cacheKey])
+                $rawIdx = if ($fileIdx -lt $fileIndices.Count) { [int]$fileIndices[$fileIdx] } else { -1 }
+                $rawIdx -ge 0 -and $rawIdx -lt $files.Count
+            }
+        },
         [pscustomobject]@{ Id = '__ViewSep1__'; Label = ''; Accelerator = ''; IsSeparator = $true;  IsEnabled = { $true } },
         [pscustomobject]@{ Id = 'ToggleHideFilters'; Label = 'Hide unavailable filters';  Accelerator = 'H'; IsSeparator = $false; IsEnabled = { $true } },
         [pscustomobject]@{ Id = 'ExpandCollapse';    Label = 'Expand / collapse details'; Accelerator = 'E'; IsSeparator = $false; IsEnabled = { $true } },
@@ -1574,6 +1595,7 @@ function Invoke-ChangelistReducer {
                 'SubmitChange'      { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'SubmitChange' }) }
                 'ResolveFile'       { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'ResolveFile' }) }
                 'MergeTool'         { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenResolveSettings' }) }
+                'ViewRevisionGraph' { return Invoke-FilesReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenRevisionGraph' }) }
                 'MoveMarkedFiles'   {
                     [string[]]$changeIds   = @($next.Query.MarkedChangeIds | ForEach-Object { [string]$_ } | Sort-Object)
                     [object[]]$visibleIds  = @($next.Derived.VisibleChangeIds)

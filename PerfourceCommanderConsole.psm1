@@ -3,15 +3,15 @@ Set-StrictMode -Version Latest
 # Import sub-modules; each handles its own internal dependencies via $PSScriptRoot
 Import-Module (Join-Path $PSScriptRoot 'p4\Models.psm1')    -Force
 Import-Module (Join-Path $PSScriptRoot 'p4\P4Cli.psm1')     -Force
-Import-Module (Join-Path $PSScriptRoot 'tui\Helpers.psm1')  -Force
-Import-Module (Join-Path $PSScriptRoot 'tui\Theme.psm1')    -Force
-Import-Module (Join-Path $PSScriptRoot 'tui\Filtering.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'tui\Layout.psm1')    -Force
-Import-Module (Join-Path $PSScriptRoot 'tui\Reducer.psm1')   -Force
-Import-Module (Join-Path $PSScriptRoot 'tui\GraphReducer.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'tui\Input.psm1')     -Force
+Import-Module (Join-Path $PSScriptRoot 'tui\Helpers.psm1')  -Force -Global
+Import-Module (Join-Path $PSScriptRoot 'tui\Theme.psm1')    -Force -Global
+Import-Module (Join-Path $PSScriptRoot 'tui\Filtering.psm1') -Force -Global
+Import-Module (Join-Path $PSScriptRoot 'tui\Layout.psm1')    -Force -Global
+Import-Module (Join-Path $PSScriptRoot 'tui\Reducer.psm1')   -Force -Global
+Import-Module (Join-Path $PSScriptRoot 'tui\GraphReducer.psm1') -Force -Global
+Import-Module (Join-Path $PSScriptRoot 'tui\Input.psm1')     -Force -Global
 Import-Module (Join-Path $PSScriptRoot 'tui\Render.psm1')    -Force -DisableNameChecking
-Import-Module (Join-Path $PSScriptRoot 'tui\GraphRender.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'tui\GraphRender.psm1') -Force -Global -DisableNameChecking
 
 # Workflow registry: Kind (string) → executor scriptblock.
 # Executors receive -State and -Request parameters and must return the updated state.

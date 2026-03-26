@@ -1438,8 +1438,8 @@ Describe 'Menu reducer actions' {
     It 'Get-MenuNavigableCount excludes separators' {
         $items = @(Get-ComputedMenuItems -MenuName 'View' -State $state)
         $navCount = Get-MenuNavigableCount -ComputedItems $items
-        # View menu has: ViewPending, ViewSubmitted, ViewCommandLog, sep, ToggleHideFilters, ExpandCollapse, sep, Help = 6 navigable
-        $navCount | Should -Be 6
+        # View menu has: ViewPending, ViewSubmitted, ViewCommandLog, sep, ViewRevisionGraph, sep, ToggleHideFilters, ExpandCollapse, sep, Help = 7 navigable
+        $navCount | Should -Be 7
     }
 
     It 'Get-MenuFocusedItem returns item at navigable index skipping separators' {

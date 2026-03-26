@@ -143,7 +143,7 @@ function New-RevisionNode {
         [Parameter(Mandatory)][string]$DepotFile,
         [Parameter(Mandatory)][int]$Rev,
         [Parameter(Mandatory)][int]$Change,
-        [Parameter(Mandatory)][string]$Action,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Action,
         [Parameter(Mandatory = $false)][string]$FileType    = '',
         [Parameter(Mandatory = $false)][int]$Time           = 0,
         [Parameter(Mandatory = $false)][string]$User        = '',

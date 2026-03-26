@@ -25,118 +25,82 @@ This project targets PowerShell 7.0 or newer. Use PowerShell 7 behavior as the r
 
 ### `Write-Output -NoEnumerate` — never wrap the call in `@()`
 
-Several functions in this codebase (e.g. `Merge-AdjacentSegments`, `Write-ColorSegments`) return an array **as a single value** using `Write-Output -NoEnumerate @($array)`. This is the deliberate convention for preserving array identity across the PowerShell pipeline.
-
-**Footgun:** wrapping such a call in `@()` silently re-wraps the returned array as a 1-element array:
+Some functions (e.g. `Merge-AdjacentSegments`) return an array **as a single value** via `Write-Output -NoEnumerate`. Wrapping in `@()` silently produces a 1-element nested array with no error.
 
 ```powershell
-# WRONG — produces @( @(seg1,seg2,...) ), Count=1
+# WRONG — Count=1, nested array
 $segs = @(Merge-AdjacentSegments -Segments $input)
-
-# CORRECT — produces @(seg1, seg2, ...) as intended
+# CORRECT
 $segs = Merge-AdjacentSegments -Segments $input
 ```
 
-This bug produces no error; the variable just holds a nested array instead of a flat one, causing downstream code to silently misbehave (e.g. rendering blank rows). Always assign the result directly.
-
-Any function that uses `Write-Output -NoEnumerate` should carry a `# Returns array-as-value; do NOT wrap call in @()` comment on its closing line or in its help block.
+Mark such functions with `# Returns array-as-value; do NOT wrap call in @()`.
 
 ### Normalize 0..N results at call boundaries
 
-PowerShell silently turns an empty command result into `$null` unless the caller explicitly normalizes it as an array.
-
-**Footgun:** a function that conceptually returns “zero or more items” can return `$null` at the call site, which then breaks downstream parameter binding for collection parameters.
+PowerShell turns an empty result into `$null`. Always normalize with `@(...)` when a function can return zero items.
 
 ```powershell
-# WRONG — $files becomes $null when Get-P4OpenedFiles returns no items
+# WRONG — $files is $null when no items returned
 $files = Get-P4OpenedFiles -Change $Change
-Use-Something -FileEntries $files
-
-# CORRECT — $files is always an array, including the empty case
+# CORRECT
 $files = @(Get-P4OpenedFiles -Change $Change)
-Use-Something -FileEntries $files
 ```
 
-Rules:
-
-* When consuming any function that semantically returns **0..N items**, normalize immediately with `@(...)` unless the function explicitly documents a different contract.
-* When declaring a parameter that semantically accepts an empty collection, prefer `[AllowEmptyCollection()]` and consider `[AllowNull()]` if `$null` is a meaningful or likely boundary value.
-* For cache/state writes, store normalized arrays rather than allowing `$null` and `object` shape drift.
-
-Apply this especially at I/O boundaries (`Invoke-P4`, file-cache population, parser helpers, and workflow side effects), where empty results are common and should not be treated as exceptional.
+* Use `[AllowEmptyCollection()]` (and `[AllowNull()]` where appropriate) on collection parameters.
+* Apply especially at I/O boundaries: `Invoke-P4`, file-cache writes, parser helpers.
 
 ### `Import-Module` inside a `.psm1` must use `-Global`
 
-When a `.psm1` file imports another module without `-Global`, PowerShell makes the imported module a private *nested module* of the importer. This **removes** it from the global session, making its exported functions invisible to every other caller — including test code.
+Without `-Global`, the imported module becomes a private nested module and disappears from the global session — its functions become invisible to all other callers including tests.
 
 ```powershell
-# WRONG — Models becomes P4Cli's private nested module; callers can't see New-RevisionNode
+# WRONG
 Import-Module (Join-Path $PSScriptRoot 'Models.psm1') -Force
-
-# CORRECT — Models stays in the global session, visible to all callers
+# CORRECT
 Import-Module (Join-Path $PSScriptRoot 'Models.psm1') -Force -Global
 ```
 
-Rule: every `Import-Module` statement inside a `.psm1` that imports a **shared** dependency must include `-Global`.
-
 ### `(if ...)` is invalid in argument position
 
-PowerShell treats `if` as a command name when it appears as an argument to a function call. The parser will error with *"The term 'if' is not recognized…"*.
+PowerShell parses `if` as a command name inside a call. Pre-compute to a variable.
 
 ```powershell
-# WRONG — PowerShell tries to invoke a command named 'if'
+# WRONG
 New-Thing -Action (if ($cond) { 'x' } else { 'y' })
-
-# CORRECT — pre-compute to a variable
+# CORRECT
 $action = if ($cond) { 'x' } else { 'y' }
 New-Thing -Action $action
 ```
 
 ### Empty-array pipeline collapse from `if` expressions
 
-An `if` / `else` expression that yields `@()` (empty array) returns `$null` through the PowerShell pipeline. Assigning such an expression to a variable and later calling `.Count` on it throws under `Set-StrictMode -Version Latest`.
+`if`/`else` returning `@()` collapses to `$null` in the pipeline; `.Count` then throws under `Set-StrictMode`.
 
 ```powershell
-# WRONG — $rows is $null when the condition is false; $rows.Count throws
+# WRONG — $rows may be $null
 $rows = if ($cond) { @($source) } else { @() }
-
-# CORRECT — initialize unconditionally, then conditionally populate
+# CORRECT
 $rows = @()
 if ($cond) { $rows = @($source) }
 ```
 
-This is a specific instance of the general "Normalize 0..N results" rule, but the `if`-expression form is particularly subtle because it looks like it always produces an array.
+### Pester 5 test file structure — per-`Describe` `BeforeAll`
 
-### Pester 5 test file structure — use per-`Describe` `BeforeAll`
-
-In Pester 5, a test file is executed in two phases:
-
-* **Discovery** — top-level code runs to register `Describe`/`It` blocks.
-* **Execution** — only code inside `BeforeAll`, `BeforeEach`, `AfterEach`, `AfterAll`, and `It` blocks runs.
-
-Functions defined at the top level of a test file exist only during discovery and are **not visible** inside `It` or `BeforeEach` blocks.
+Top-level code runs only during **discovery**, not execution. Functions defined at the top level are invisible inside `It`/`BeforeEach`.
 
 ```powershell
-# WRONG — New-Helper is defined at top level; invisible during test execution
-function New-Helper { ... }
-Describe 'Foo' {
-    It 'works' { New-Helper }   # CommandNotFoundException
-}
-
-# CORRECT — import inside BeforeAll with -Global so functions are visible everywhere
+# Every Describe that calls module functions needs:
 Describe 'Foo' {
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '..\MyModule.psm1') -Force -Global
+        function script:New-Helper { ... }  # helpers also go here
     }
-    It 'works' { New-Helper }   # works
+    It 'works' { New-Helper }
 }
 ```
 
-Rules:
-
-* Every `Describe` block that calls module functions must have its own `BeforeAll { Import-Module ... -Force -Global }`.
-* Helper functions needed by `BeforeEach` / `It` blocks must also be defined inside `BeforeAll` using `function script:Name { ... }`.
-* The top-level `Import-Module -Force -Global` (outside any `Describe`) is useful for IDE tooling but **cannot be relied on** for test execution.
+Top-level `Import-Module -Force -Global` is for IDE tooling only — do not rely on it for test execution.
 
 ---
 

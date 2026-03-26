@@ -2747,6 +2747,8 @@ function Render-BrowserState {
     $buildStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $nextFrame = if ($activeScreen -eq 'Files') {
         Build-FilesScreenFrame -State $State
+    } elseif ($activeScreen -eq 'RevisionGraph') {
+        Build-GraphFrame -State $State
     } elseif ($activeScreen -eq 'CommandOutput') {
         Build-CommandOutputFrame -State $State
     } elseif ($viewMode -eq 'CommandLog') {

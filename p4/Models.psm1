@@ -112,4 +112,58 @@ function New-P4FileEntry {
     }
 }
 
-Export-ModuleMember -Function *-P4Changelist, ConvertTo-ChangelistEntry, ConvertTo-SubmittedChangelistEntry, New-P4FileEntry
+function Get-IntegrationDirection {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$How)
+    if ($How -match '\bfrom\b') { return 'inbound' }
+    if ($How -match '\binto\b') { return 'outbound' }
+    return 'unknown'
+}
+
+function New-IntegrationRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$How,
+        [Parameter(Mandatory)][string]$File,
+        [Parameter(Mandatory)][int]$StartRev,
+        [Parameter(Mandatory)][int]$EndRev
+    )
+    [pscustomobject]@{
+        How       = $How
+        Direction = Get-IntegrationDirection -How $How
+        File      = $File
+        StartRev  = $StartRev
+        EndRev    = $EndRev
+    }
+}
+
+function New-RevisionNode {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DepotFile,
+        [Parameter(Mandatory)][int]$Rev,
+        [Parameter(Mandatory)][int]$Change,
+        [Parameter(Mandatory)][string]$Action,
+        [Parameter(Mandatory = $false)][string]$FileType    = '',
+        [Parameter(Mandatory = $false)][int]$Time           = 0,
+        [Parameter(Mandatory = $false)][string]$User        = '',
+        [Parameter(Mandatory = $false)][string]$Client      = '',
+        [Parameter(Mandatory = $false)][string]$Description = '',
+        [Parameter(Mandatory = $false)][AllowEmptyCollection()][object[]]$Integrations = @()
+    )
+    [pscustomobject]@{
+        DepotFile    = $DepotFile
+        Rev          = $Rev
+        Change       = $Change
+        Action       = $Action
+        FileType     = $FileType
+        Time         = $Time
+        User         = $User
+        Client       = $Client
+        Description  = $Description
+        Integrations = @($Integrations)
+    }
+}
+
+Export-ModuleMember -Function *-P4Changelist, ConvertTo-ChangelistEntry, ConvertTo-SubmittedChangelistEntry, New-P4FileEntry, `
+    Get-IntegrationDirection, New-IntegrationRecord, New-RevisionNode

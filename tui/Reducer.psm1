@@ -40,6 +40,7 @@ $script:PendingRequestScopeByKind = @{
     'ExecuteWorkflow'     = 'Workflow'
     'SetMergeTool'        = 'Config'
     'ResolveFile'         = 'Mutation'
+    'LoadFileLog'         = 'Graph'
 }
 
 function New-PendingRequest {
@@ -607,6 +608,9 @@ function New-BrowserState {
             FilesGeneration     = 0
             PendingGeneration   = 0
             SubmittedGeneration = 0
+            GraphGeneration     = 0
+            # Revision graph data; null until OpenRevisionGraph is dispatched.
+            RevisionGraph       = $null
             # Set to $true by MutationCompleted(MutationKind='ResolveFile') so that
             # the first FilesEnrichmentDone (or FilesBaseLoaded for submitted) after
             # a resolve also chains a ReloadPending to refresh the changelist summary.
@@ -640,6 +644,7 @@ function New-BrowserState {
             VisibleFileIndices    = @()  # int[] indices into FileCache entry
             VisibleCommandIds     = @()  # CommandId strings for CommandLog view
             VisibleCommandFilters = @()  # filter items for CommandLog left pane
+            GraphRows             = @()  # flat row list for RevisionGraph screen
         }
         Cursor = [pscustomobject]@{
             FilterIndex       = 0
@@ -652,6 +657,8 @@ function New-BrowserState {
             CommandScrollTop  = 0
             OutputIndex       = 0
             OutputScrollTop   = 0
+            GraphRowIndex     = 0
+            GraphScrollTop    = 0
             ViewSnapshots     = [pscustomobject]@{
                 Pending    = [pscustomobject]@{ ChangeIndex = 0; ChangeScrollTop = 0 }
                 Submitted  = [pscustomobject]@{ ChangeIndex = 0; ChangeScrollTop = 0 }
@@ -2388,6 +2395,29 @@ function Invoke-FilesReducer {
             $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'ResolveFile'; DepotPath = $depotPath; Change = $change } -Generation 0
             return $next
         }
+        'OpenRevisionGraph' {
+            # Get the focused file's depot path and delegate to the graph reducer.
+            $cacheKey = "$($next.Data.FilesSourceChange)`:$($next.Data.FilesSourceKind)"
+            $fileCache = $next.Data.PSObject.Properties['FileCache']?.Value
+            [object[]]$visIdx = @($next.Derived.VisibleFileIndices)
+            $fileIndex = if (($next.Cursor.PSObject.Properties.Match('FileIndex')).Count -gt 0) { [int]$next.Cursor.FileIndex } else { 0 }
+
+            if ($null -ne $fileCache -and $fileCache.ContainsKey($cacheKey) -and $visIdx.Count -gt 0) {
+                [object[]]$files = @($fileCache[$cacheKey])
+                $rawIdx = if ($fileIndex -lt $visIdx.Count) { [int]$visIdx[$fileIndex] } else { -1 }
+                if ($rawIdx -ge 0 -and $rawIdx -lt $files.Count) {
+                    $depotPath = [string]$files[$rawIdx].DepotPath
+                    if (-not [string]::IsNullOrWhiteSpace($depotPath)) {
+                        return Invoke-GraphReducer -State $next -Action ([pscustomobject]@{
+                            Type      = 'OpenRevisionGraph'
+                            DepotFile = $depotPath
+                        })
+                    }
+                }
+            }
+            $next.Runtime.LastError = 'No file selected for revision graph.'
+            return $next
+        }
         'OpenFilesScreen' {
             # No-op: already on Files screen; cannot nest.
             return $next
@@ -2522,8 +2552,16 @@ function Invoke-BrowserReducer {
     $screenStack  = $State.Ui.PSObject.Properties['ScreenStack']?.Value
     $activeScreen = if ($null -ne $screenStack -and $screenStack.Count -gt 0) { $screenStack[-1] } else { 'Changelists' }
 
+    # Graph completion actions always route to the graph reducer regardless of screen
+    if ($Action.Type -in @('RevisionLogLoaded', 'RevisionLogFailed')) {
+        return Invoke-GraphReducer -State $State -Action $Action
+    }
+
     if ($activeScreen -eq 'Files') {
         return Invoke-FilesReducer -State $State -Action $Action
+    }
+    if ($activeScreen -eq 'RevisionGraph') {
+        return Invoke-GraphReducer -State $State -Action $Action
     }
     if ($activeScreen -eq 'CommandOutput') {
         return Invoke-CommandOutputReducer -State $State -Action $Action
@@ -2537,7 +2575,7 @@ function ConvertTo-ChangeNumberFromId {
 }
 
 Export-ModuleMember -Function New-BrowserState, Copy-BrowserState, Copy-StateObject, `
-    Invoke-BrowserReducer, Invoke-ChangelistReducer, Invoke-FilesReducer, Invoke-CommandOutputReducer, `
+    Invoke-BrowserReducer, Invoke-ChangelistReducer, Invoke-FilesReducer, Invoke-CommandOutputReducer, Invoke-GraphReducer, `
     Update-BrowserDerivedState, Update-CommandLogDerivedState, Update-OutputDerivedState, `
     Test-IsBrowserGlobalAction, `
     New-PendingRequest, `

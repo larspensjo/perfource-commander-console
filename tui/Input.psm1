@@ -90,6 +90,8 @@ function ConvertFrom-KeyInfoToAction {
         'LeftArrow' { return [pscustomobject]@{ Type = 'CloseFilesScreen' } }
         # Resolve focused unresolved file (only meaningful on Files screen)
         'R' { return [pscustomobject]@{ Type = 'ResolveFile' } }
+        # 'G' opens the revision graph for the focused file (only meaningful on Files screen)
+        'G' { return [pscustomobject]@{ Type = 'OpenRevisionGraph' } }
         # '/' key (OemQuestion on US keyboard) — opens filter prompt on files screen
         'OemQuestion' { return [pscustomobject]@{ Type = 'OpenFilterPrompt' } }
         default { return $null }

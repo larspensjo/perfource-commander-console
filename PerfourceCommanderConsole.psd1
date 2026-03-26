@@ -33,7 +33,9 @@
         'tui\Input.psm1',
         'tui\Layout.psm1',
         'tui\Reducer.psm1',
-        'tui\Render.psm1'
+        'tui\GraphReducer.psm1',
+        'tui\Render.psm1',
+        'tui\GraphRender.psm1'
     )
 
     PrivateData = @{

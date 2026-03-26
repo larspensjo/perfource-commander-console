@@ -1,6 +1,6 @@
 Set-StrictMode -Version Latest
 
-Import-Module (Join-Path $PSScriptRoot 'Models.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Models.psm1') -Force -Global
 
 # Overridable in tests via InModuleScope P4Cli { $script:P4Executable = 'cmd.exe' }
 $script:P4Executable = 'p4.exe'
@@ -1659,5 +1659,101 @@ function Set-P4MergeTool {
     & $script:P4Executable 'set' "P4MERGE=$ToolPath" 2>&1 | Out-Null
 }
 
+function Get-P4FileLog {
+    <#
+    .SYNOPSIS
+        Returns RevisionNode objects for a depot file's revision history.
+    .DESCRIPTION
+        Invokes 'p4 filelog -l -m $Limit <depotFile>' and parses the structured
+        output into RevisionNode objects with nested IntegrationRecord arrays.
+    .PARAMETER DepotFile
+        Full depot path (e.g. //depot/main/foo.cpp).
+    .PARAMETER Limit
+        Maximum number of revisions to fetch (newest first).
+    .PARAMETER ProcessObserver
+        Optional per-invocation process lifecycle callback.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DepotFile,
+        [int]$Limit = 30,
+        [scriptblock]$ProcessObserver = $null
+    )
+
+    $records = Invoke-P4 -P4Args @('filelog', '-l', '-m', "$Limit", $DepotFile) `
+                         -ProcessObserver $ProcessObserver
+
+    $result = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($record in $records) {
+        $depotFileProp = $record.PSObject.Properties['depotFile']
+        if ($null -eq $depotFileProp) { continue }
+
+        # Collect numbered integration fields (how0/file0/srev0/erev0, how1/..., ...)
+        $integrations = [System.Collections.Generic.List[object]]::new()
+        $idx = 0
+        while ($null -ne $record.PSObject.Properties["how$idx"]) {
+            $howProp  = $record.PSObject.Properties["how$idx"]
+            $fileProp = $record.PSObject.Properties["file$idx"]
+            $srevProp = $record.PSObject.Properties["srev$idx"]
+            $erevProp = $record.PSObject.Properties["erev$idx"]
+            if ($null -ne $howProp -and $null -ne $fileProp) {
+                # srev/erev from p4 filelog -ztag may be "#N" or plain "N"
+                $srevStr = if ($null -ne $srevProp) { ([string]$srevProp.Value) -replace '^#', '' } else { '0' }
+                $erevStr = if ($null -ne $erevProp) { ([string]$erevProp.Value) -replace '^#', '' } else { '0' }
+                $srevInt = 0
+                $erevInt = 0
+                [void][int]::TryParse($srevStr, [ref]$srevInt)
+                [void][int]::TryParse($erevStr, [ref]$erevInt)
+                $integrations.Add(
+                    (New-IntegrationRecord -How ([string]$howProp.Value) -File ([string]$fileProp.Value) `
+                        -StartRev $srevInt -EndRev $erevInt)
+                ) | Out-Null
+            }
+            $idx++
+        }
+
+        $revProp    = $record.PSObject.Properties['rev']
+        $changeProp = $record.PSObject.Properties['change']
+        $actionProp = $record.PSObject.Properties['action']
+        $typeProp   = $record.PSObject.Properties['type']
+        $timeProp   = $record.PSObject.Properties['time']
+        $userProp   = $record.PSObject.Properties['user']
+        $clientProp = $record.PSObject.Properties['client']
+        $descProp   = $record.PSObject.Properties['desc']
+
+        $revInt    = 0
+        $changeInt = 0
+        $timeInt   = 0
+        $revStr    = if ($null -ne $revProp)    { [string]$revProp.Value    } else { '' }
+        $changeStr = if ($null -ne $changeProp) { [string]$changeProp.Value } else { '' }
+        $timeStr   = if ($null -ne $timeProp)   { [string]$timeProp.Value   } else { '' }
+        [void][int]::TryParse($revStr,    [ref]$revInt)
+        [void][int]::TryParse($changeStr, [ref]$changeInt)
+        [void][int]::TryParse($timeStr,   [ref]$timeInt)
+
+        $nodeAction   = if ($null -ne $actionProp) { [string]$actionProp.Value } else { '' }
+        $nodeFileType = if ($null -ne $typeProp)   { [string]$typeProp.Value   } else { '' }
+        $nodeUser     = if ($null -ne $userProp)   { [string]$userProp.Value   } else { '' }
+        $nodeClient   = if ($null -ne $clientProp) { [string]$clientProp.Value } else { '' }
+        $nodeDesc     = if ($null -ne $descProp)   { [string]$descProp.Value   } else { '' }
+        $result.Add((New-RevisionNode `
+            -DepotFile    ([string]$depotFileProp.Value) `
+            -Rev          $revInt `
+            -Change       $changeInt `
+            -Action       $nodeAction `
+            -FileType     $nodeFileType `
+            -Time         $timeInt `
+            -User         $nodeUser `
+            -Client       $nodeClient `
+            -Description  $nodeDesc `
+            -Integrations @($integrations.ToArray())
+        )) | Out-Null
+    }
+
+    return @($result.ToArray())
+}
+
 Export-ModuleMember -Function ConvertTo-P4ChangelistId, Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Get-P4CommandCategory, Get-DurationClass, Get-P4CommandTimeout, Stop-P4ProcessTree, Test-IsP4TimeoutError, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Get-P4ModifiedDepotPaths, Set-P4FileEntriesUnresolvedState, Set-P4FileEntriesContentModifiedState, Remove-P4Changelist, Invoke-P4Submit, Invoke-P4ShelveFiles, Remove-P4ShelvedFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles, `
-    Get-P4MergeToolPresets, Get-P4MergeTool, Set-P4MergeTool, Invoke-P4Resolve
+    Get-P4MergeToolPresets, Get-P4MergeTool, Set-P4MergeTool, Invoke-P4Resolve, `
+    Get-P4FileLog

@@ -65,6 +65,79 @@ Rules:
 
 Apply this especially at I/O boundaries (`Invoke-P4`, file-cache population, parser helpers, and workflow side effects), where empty results are common and should not be treated as exceptional.
 
+### `Import-Module` inside a `.psm1` must use `-Global`
+
+When a `.psm1` file imports another module without `-Global`, PowerShell makes the imported module a private *nested module* of the importer. This **removes** it from the global session, making its exported functions invisible to every other caller — including test code.
+
+```powershell
+# WRONG — Models becomes P4Cli's private nested module; callers can't see New-RevisionNode
+Import-Module (Join-Path $PSScriptRoot 'Models.psm1') -Force
+
+# CORRECT — Models stays in the global session, visible to all callers
+Import-Module (Join-Path $PSScriptRoot 'Models.psm1') -Force -Global
+```
+
+Rule: every `Import-Module` statement inside a `.psm1` that imports a **shared** dependency must include `-Global`.
+
+### `(if ...)` is invalid in argument position
+
+PowerShell treats `if` as a command name when it appears as an argument to a function call. The parser will error with *"The term 'if' is not recognized…"*.
+
+```powershell
+# WRONG — PowerShell tries to invoke a command named 'if'
+New-Thing -Action (if ($cond) { 'x' } else { 'y' })
+
+# CORRECT — pre-compute to a variable
+$action = if ($cond) { 'x' } else { 'y' }
+New-Thing -Action $action
+```
+
+### Empty-array pipeline collapse from `if` expressions
+
+An `if` / `else` expression that yields `@()` (empty array) returns `$null` through the PowerShell pipeline. Assigning such an expression to a variable and later calling `.Count` on it throws under `Set-StrictMode -Version Latest`.
+
+```powershell
+# WRONG — $rows is $null when the condition is false; $rows.Count throws
+$rows = if ($cond) { @($source) } else { @() }
+
+# CORRECT — initialize unconditionally, then conditionally populate
+$rows = @()
+if ($cond) { $rows = @($source) }
+```
+
+This is a specific instance of the general "Normalize 0..N results" rule, but the `if`-expression form is particularly subtle because it looks like it always produces an array.
+
+### Pester 5 test file structure — use per-`Describe` `BeforeAll`
+
+In Pester 5, a test file is executed in two phases:
+
+* **Discovery** — top-level code runs to register `Describe`/`It` blocks.
+* **Execution** — only code inside `BeforeAll`, `BeforeEach`, `AfterEach`, `AfterAll`, and `It` blocks runs.
+
+Functions defined at the top level of a test file exist only during discovery and are **not visible** inside `It` or `BeforeEach` blocks.
+
+```powershell
+# WRONG — New-Helper is defined at top level; invisible during test execution
+function New-Helper { ... }
+Describe 'Foo' {
+    It 'works' { New-Helper }   # CommandNotFoundException
+}
+
+# CORRECT — import inside BeforeAll with -Global so functions are visible everywhere
+Describe 'Foo' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\MyModule.psm1') -Force -Global
+    }
+    It 'works' { New-Helper }   # works
+}
+```
+
+Rules:
+
+* Every `Describe` block that calls module functions must have its own `BeforeAll { Import-Module ... -Force -Global }`.
+* Helper functions needed by `BeforeEach` / `It` blocks must also be defined inside `BeforeAll` using `function script:Name { ... }`.
+* The top-level `Import-Module -Force -Global` (outside any `Describe`) is useful for IDE tooling but **cannot be relied on** for test execution.
+
 ---
 
 ## Validating Changes

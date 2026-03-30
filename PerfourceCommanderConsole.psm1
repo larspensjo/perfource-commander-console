@@ -1720,6 +1720,15 @@ function Invoke-BrowserPendingChangesReload {
     }
 }
 
+function Test-BrowserStartupFailed {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$State
+    )
+
+    return (-not [string]::IsNullOrWhiteSpace([string]$State.Runtime.LastError))
+}
+
 function Start-P4Browser {
     <#
     .SYNOPSIS
@@ -1783,6 +1792,7 @@ function Start-P4Browser {
     $height = [int]$consoleSize.Height
     $state  = New-BrowserState -Changes @() -InitialWidth $width -InitialHeight $height
     $profiler = New-BrowserProfiler -Enabled ([bool]$Profile) -Path $ProfilePath -ThresholdMs $ProfileThresholdMs
+    $startupFailureMessage = ''
 
     Set-RenderProfiler {
         param($Stage, $DurationMs, $Fields)
@@ -1807,6 +1817,12 @@ function Start-P4Browser {
             }
         }
 
+        if (Test-BrowserStartupFailed -State $state) {
+            $startupFailureMessage = [string]$state.Runtime.LastError
+            Render-BrowserState -State $state
+            return
+        }
+
         # Initial load
         $loadCmdLine = "p4 changes -s pending -m $MaxChanges"
         $state = Invoke-BrowserProfiled -Profiler $profiler -Stage 'Startup.InitialLoad' -Fields @{ MaxChanges = $MaxChanges } -ScriptBlock {
@@ -1817,6 +1833,12 @@ function Start-P4Browser {
                 $s.Runtime.LastError = $null
                 return Update-BrowserDerivedState -State $s
             }
+        }
+
+        if (Test-BrowserStartupFailed -State $state) {
+            $startupFailureMessage = [string]$state.Runtime.LastError
+            Render-BrowserState -State $state
+            return
         }
 
         if ([bool]$profiler.Enabled) {
@@ -2154,6 +2176,9 @@ function Start-P4Browser {
         Set-RenderProfiler $null
         Reset-RenderState
         Restore-BrowserConsole -ConsoleState $consoleState
+        if (-not [string]::IsNullOrWhiteSpace($startupFailureMessage)) {
+            Write-Host $startupFailureMessage
+        }
     }
 }
 

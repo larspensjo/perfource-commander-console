@@ -211,6 +211,7 @@ Describe 'Start-P4Browser integration' {
 
     It 'surfaces startup p4 failures as a browser error instead of throwing' {
         $script:RenderedLastErrors = [System.Collections.Generic.List[string]]::new()
+        $script:PrintedStartupErrors = [System.Collections.Generic.List[string]]::new()
         $script:KeyQueue = [System.Collections.Generic.Queue[System.ConsoleKeyInfo]]::new()
         $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new('q', [System.ConsoleKey]::Q, $false, $false, $false))
         $script:StartupErrorMessage = 'Perforce connection or workspace information is unavailable. Open the browser from a configured workspace or verify your Perforce environment (P4PORT/P4CLIENT).'
@@ -239,11 +240,54 @@ Describe 'Start-P4Browser integration' {
             $script:RenderedLastErrors.Add([string]$State.Runtime.LastError) | Out-Null
         }
 
+        Mock Write-Host -ModuleName PerfourceCommanderConsole {
+            param($Object)
+            $script:PrintedStartupErrors.Add([string]$Object) | Out-Null
+        }
+
         {
             Start-P4Browser -IntegrityTest -MaxChanges 3
         } | Should -Not -Throw
 
         @($script:RenderedLastErrors) | Should -Contain $script:StartupErrorMessage
+        @($script:PrintedStartupErrors) | Should -Contain $script:StartupErrorMessage
+    }
+
+    It 'terminates immediately after startup p4 info failure' {
+        $script:RenderedLastErrors = [System.Collections.Generic.List[string]]::new()
+        $script:PrintedStartupErrors = [System.Collections.Generic.List[string]]::new()
+        $script:StartupErrorMessage = 'Perforce connection or workspace information is unavailable. Open the browser from a configured workspace or verify your Perforce environment (P4PORT/P4CLIENT).'
+
+        Mock Test-BrowserConsoleKeyAvailable -ModuleName PerfourceCommanderConsole {
+            throw 'startup failure should not enter the main input loop'
+        }
+
+        Mock Get-P4Info -ModuleName PerfourceCommanderConsole {
+            throw $script:StartupErrorMessage
+        }
+
+        Mock Get-P4ChangelistEntries -ModuleName PerfourceCommanderConsole {
+            throw 'initial load should not run after p4 info fails'
+        }
+
+        Mock Render-BrowserState -ModuleName PerfourceCommanderConsole {
+            param($State)
+            $script:RenderedLastErrors.Add([string]$State.Runtime.LastError) | Out-Null
+        }
+
+        Mock Write-Host -ModuleName PerfourceCommanderConsole {
+            param($Object)
+            $script:PrintedStartupErrors.Add([string]$Object) | Out-Null
+        }
+
+        {
+            Start-P4Browser -IntegrityTest -MaxChanges 3
+        } | Should -Not -Throw
+
+        Assert-MockCalled Get-P4Info -ModuleName PerfourceCommanderConsole -Times 1 -Exactly
+        Assert-MockCalled Get-P4ChangelistEntries -ModuleName PerfourceCommanderConsole -Times 0 -Exactly
+        @($script:RenderedLastErrors) | Should -Contain $script:StartupErrorMessage
+        @($script:PrintedStartupErrors) | Should -Contain $script:StartupErrorMessage
     }
 
     It 'resets stale render diff state before a new browser session starts' {

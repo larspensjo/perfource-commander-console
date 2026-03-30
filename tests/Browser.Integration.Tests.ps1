@@ -325,6 +325,35 @@ Describe 'Start-P4Browser integration' {
 
         Assert-MockCalled Reset-RenderState -ModuleName PerfourceCommanderConsole -Times 2 -Exactly
     }
+
+    It 'does not throw when completion drain runs before the next keypress' {
+        $script:KeyQueue = [System.Collections.Generic.Queue[System.ConsoleKeyInfo]]::new()
+        $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new('q', [System.ConsoleKey]::Q, $false, $false, $false))
+        $script:ConsoleAvailabilityChecks = 0
+
+        Mock Test-BrowserConsoleKeyAvailable -ModuleName PerfourceCommanderConsole {
+            $script:ConsoleAvailabilityChecks++
+            if ($script:ConsoleAvailabilityChecks -eq 1) {
+                return $false
+            }
+
+            return $script:KeyQueue.Count -gt 0
+        }
+
+        Mock Read-BrowserConsoleKey -ModuleName PerfourceCommanderConsole {
+            if ($script:KeyQueue.Count -le 0) {
+                throw 'Test key queue unexpectedly empty.'
+            }
+
+            return $script:KeyQueue.Dequeue()
+        }
+
+        {
+            Start-P4Browser -IntegrityTest -MaxChanges 3
+        } | Should -Not -Throw
+
+        $script:ConsoleAvailabilityChecks | Should -BeGreaterThan 1
+    }
 }
 
 Describe 'Browser file loading helpers' {

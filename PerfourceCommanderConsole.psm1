@@ -1792,6 +1792,7 @@ function Start-P4Browser {
     $height = [int]$consoleSize.Height
     $state  = New-BrowserState -Changes @() -InitialWidth $width -InitialHeight $height
     $profiler = New-BrowserProfiler -Enabled ([bool]$Profile) -Path $ProfilePath -ThresholdMs $ProfileThresholdMs
+    $getProfileStateFields = ${function:Get-BrowserProfileStateFields}
     $startupFailureMessage = ''
 
     Set-RenderProfiler {
@@ -1853,7 +1854,7 @@ function Start-P4Browser {
                 continue
             }
 
-            Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.Render' -Fields (Get-BrowserProfileStateFields -State $state) -ScriptBlock {
+            Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.Render' -Fields (& $getProfileStateFields -State $state) -ScriptBlock {
                 Render-BrowserState -State $state
             } | Out-Null
 
@@ -1865,7 +1866,7 @@ function Start-P4Browser {
                     $keyInfo = Read-BrowserConsoleKey
                 } else {
                     # Drain async completion before sleeping (M4.3)
-                    $completionFields = Get-BrowserProfileStateFields -State $state
+                    $completionFields = & $getProfileStateFields -State $state
                     $completionFields['HasActiveCommand'] = ($null -ne $state.Runtime.ActiveCommand)
                     $drainResult = Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.CompletionDrain' -Fields $completionFields -ScriptBlock {
                         Invoke-BrowserCompletionDrain -State $state
@@ -1898,7 +1899,7 @@ function Start-P4Browser {
                 }
             } else { $null }
             if ($null -ne $action) {
-                $actionFields = Get-BrowserProfileStateFields -State $state
+                $actionFields = & $getProfileStateFields -State $state
                 $actionFields['ActionType'] = [string]$action.Type
                 $state = Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.ActionReducer' -Fields $actionFields -ScriptBlock {
                     Invoke-BrowserReducer -State $state -Action $action

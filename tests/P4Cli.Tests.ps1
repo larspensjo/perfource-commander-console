@@ -170,6 +170,41 @@ Describe 'Timeout helpers' {
     }
 }
 
+Describe 'Get-P4Info' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'returns parsed workspace information when info contains the expected fields' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @([pscustomobject]@{
+                userName      = 'alice'
+                clientName    = 'workspace-main'
+                serverAddress = 'ssl:perforce:1666'
+                clientRoot    = 'C:\workspace-main'
+            })
+        }
+
+        $result = Get-P4Info
+        $result.User | Should -Be 'alice'
+        $result.Client | Should -Be 'workspace-main'
+        $result.Port | Should -Be 'ssl:perforce:1666'
+        $result.Root | Should -Be 'C:\workspace-main'
+    }
+
+    It 'throws a friendly workspace error when info omits clientRoot' {
+        Mock Invoke-P4 -ModuleName P4Cli {
+            return @([pscustomobject]@{
+                userName      = 'alice'
+                clientName    = 'workspace-main'
+                serverAddress = 'ssl:perforce:1666'
+            })
+        }
+
+        { Get-P4Info } | Should -Throw '*Perforce connection or workspace information is unavailable*'
+    }
+}
+
 Describe 'Get-P4Describe' {
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force

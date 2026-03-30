@@ -85,6 +85,21 @@ function ConvertTo-NonEmptyStringValues {
     return @($values)
 }
 
+function Get-P4RecordStringProperty {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][object]$Record,
+        [Parameter(Mandatory)][string]$PropertyName
+    )
+
+    if ($null -eq $Record) { return '' }
+
+    $property = $Record.PSObject.Properties[$PropertyName]
+    if ($null -eq $property) { return '' }
+
+    return [string]$property.Value
+}
+
 function Format-P4CommandLine {
     [CmdletBinding()]
     param(
@@ -616,11 +631,34 @@ function Get-P4Info {
 
     $record = $lines | Select-Object -First 1
 
+    $user = Get-P4RecordStringProperty -Record $record -PropertyName 'userName'
+    $client = Get-P4RecordStringProperty -Record $record -PropertyName 'clientName'
+    $port = Get-P4RecordStringProperty -Record $record -PropertyName 'serverAddress'
+    $root = Get-P4RecordStringProperty -Record $record -PropertyName 'clientRoot'
+
+    if (
+        [string]::IsNullOrWhiteSpace($user) -or
+        [string]::IsNullOrWhiteSpace($client) -or
+        [string]::IsNullOrWhiteSpace($root)
+    ) {
+        $missingFields = [System.Collections.Generic.List[string]]::new()
+        if ([string]::IsNullOrWhiteSpace($user)) { [void]$missingFields.Add('userName') }
+        if ([string]::IsNullOrWhiteSpace($client)) { [void]$missingFields.Add('clientName') }
+        if ([string]::IsNullOrWhiteSpace($root)) { [void]$missingFields.Add('clientRoot') }
+
+        $detailMessage = 'Current client is not set.'
+        if ($missingFields.Count -gt 0) {
+            $detailMessage += ' Missing info fields: ' + ($missingFields -join ', ') + '.'
+        }
+
+        throw (Get-P4ConnectionOrWorkspaceErrorMessage -Message $detailMessage)
+    }
+
     [pscustomobject]@{
-        User   = [string]$record.userName
-        Client = [string]$record.clientName
-        Port   = [string]$record.serverAddress
-        Root   = [string]$record.clientRoot
+        User   = $user
+        Client = $client
+        Port   = $port
+        Root   = $root
     }
 }
 

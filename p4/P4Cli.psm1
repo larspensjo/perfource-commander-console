@@ -71,9 +71,13 @@ function New-P4ChangeIdSet {
 function Format-P4CommandLine {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string[]]$P4Args
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyString()][string[]]$P4Args
     )
-    $quoted = $P4Args | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
+    $quoted = foreach ($arg in $P4Args) {
+        if ($null -ne $arg -and $arg -ne '') {
+            if ($arg -match '\s') { '"' + $arg + '"' } else { $arg }
+        }
+    }
     return 'p4 ' + ($quoted -join ' ')
 }
 

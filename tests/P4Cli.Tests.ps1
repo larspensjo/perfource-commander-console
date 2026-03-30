@@ -20,6 +20,13 @@ Describe 'Format-P4CommandLine' {
         $result = Format-P4CommandLine -P4Args @('info')
         $result | Should -Be 'p4 info'
     }
+
+    It 'skips null elements without crashing' {
+        # Null in a string[] can cause NullReferenceException with -match if not guarded.
+        [string[]]$testArgs = 'change', '-d', [string]$null
+        $result = Format-P4CommandLine -P4Args $testArgs
+        $result | Should -Be 'p4 change -d'
+    }
 }
 
 Describe 'Invoke-P4' {

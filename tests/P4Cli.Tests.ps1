@@ -52,6 +52,26 @@ Describe 'Invoke-P4' {
             Should -Throw '*p4 failed (exit 1)*'
     }
 
+    It 'maps connection and workspace failures to a user-facing message' {
+        $scriptPath = Join-Path $TestDrive 'p4-connect-fail.cmd'
+        Set-Content -Path $scriptPath -Value @(
+            '@echo off',
+            'echo Perforce client error: Connect to server failed; check $P4PORT. 1>&2',
+            'echo TCP connect to localhost:52975 failed. 1>&2',
+            'exit /b 1'
+        )
+
+        try {
+            & (Get-Module P4Cli) { param($path) $script:P4Executable = $path } $scriptPath
+            {
+                & (Get-Module P4Cli) { Invoke-P4 -P4Args @('info') }
+            } | Should -Throw '*Perforce connection or workspace information is unavailable*'
+        }
+        finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'cmd.exe' }
+        }
+    }
+
     It 'allows configured non-zero exit codes to return successfully' {
         $result = InModuleScope P4Cli { Invoke-P4 -P4Args @('/c', 'exit', '1') -AllowedExitCodes @(0, 1) }
         $result | Should -BeNullOrEmpty
@@ -128,7 +148,9 @@ Describe 'Invoke-P4' {
             $script:ObservedProcessEvents = [System.Collections.Generic.List[pscustomobject]]::new()
             Invoke-P4 -P4Args @('/c', 'echo', '{"v":"ok"}') -ProcessObserver {
                 param($EventType, $ProcessId, $ExitCode)
-                $script:ObservedProcessEvents.Add([pscustomobject]@{ EventType = $EventType; ProcessId = $ProcessId; ExitCode = $ExitCode }) | Out-Null
+                $eventProcessId = $ProcessId
+                $eventExitCode = $ExitCode
+                $script:ObservedProcessEvents.Add([pscustomobject]@{ EventType = $EventType; ProcessId = $eventProcessId; ExitCode = $eventExitCode }) | Out-Null
             } | Out-Null
             return @($script:ObservedProcessEvents)
         }

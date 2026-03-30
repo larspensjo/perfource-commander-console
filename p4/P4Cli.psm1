@@ -394,6 +394,53 @@ function Test-IsP4TimeoutError {
     return ([string]$Message -match '(?i)\bp4 timed out after\b')
 }
 
+function Test-IsP4ConnectionOrWorkspaceError {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$Message)
+
+    if ([string]::IsNullOrWhiteSpace($Message)) { return $false }
+
+    return (
+        $Message -match '(?i)connect to server failed;\s*check \$P4PORT' -or
+        $Message -match '(?i)\bTCP connect to .+ failed\b' -or
+        $Message -match "(?i)\bClient '[^']+' unknown\b" -or
+        $Message -match '(?i)\bCurrent client is not set\b'
+    )
+}
+
+function Get-P4ConnectionOrWorkspaceErrorMessage {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$Message)
+
+    $friendlyMessage = 'Perforce connection or workspace information is unavailable. Open the browser from a configured workspace or verify your Perforce environment (P4PORT/P4CLIENT).'
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        return $friendlyMessage
+    }
+
+    $detailLines = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in (([string]$Message) -split '\r?\n')) {
+        $trimmedLine = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmedLine)) { continue }
+
+        if (
+            $trimmedLine -match '(?i)connect to server failed;\s*check \$P4PORT' -or
+            $trimmedLine -match '(?i)\bTCP connect to .+ failed\b' -or
+            $trimmedLine -match "(?i)\bClient '[^']+' unknown\b" -or
+            $trimmedLine -match '(?i)\bCurrent client is not set\b'
+        ) {
+            if (-not $detailLines.Contains($trimmedLine)) {
+                [void]$detailLines.Add($trimmedLine)
+            }
+        }
+    }
+
+    if ($detailLines.Count -eq 0) {
+        return $friendlyMessage
+    }
+
+    return $friendlyMessage + ' Details: ' + ($detailLines -join ' ')
+}
+
 function Invoke-P4 {
     [CmdletBinding()]
     param(
@@ -548,7 +595,12 @@ function Invoke-P4 {
             $messageParts += "STDOUT: $stdout"
         }
 
-        throw ($messageParts -join "`n")
+        $rawErrorMessage = $messageParts -join "`n"
+        if (Test-IsP4ConnectionOrWorkspaceError -Message $rawErrorMessage) {
+            throw (Get-P4ConnectionOrWorkspaceErrorMessage -Message $rawErrorMessage)
+        }
+
+        throw $rawErrorMessage
     }
 
     return $records

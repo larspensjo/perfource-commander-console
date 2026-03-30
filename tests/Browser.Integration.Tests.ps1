@@ -209,6 +209,43 @@ Describe 'Start-P4Browser integration' {
         }
     }
 
+    It 'surfaces startup p4 failures as a browser error instead of throwing' {
+        $script:RenderedLastErrors = [System.Collections.Generic.List[string]]::new()
+        $script:KeyQueue = [System.Collections.Generic.Queue[System.ConsoleKeyInfo]]::new()
+        $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new('q', [System.ConsoleKey]::Q, $false, $false, $false))
+        $script:StartupErrorMessage = 'Perforce connection or workspace information is unavailable. Open the browser from a configured workspace or verify your Perforce environment (P4PORT/P4CLIENT).'
+
+        Mock Test-BrowserConsoleKeyAvailable -ModuleName PerfourceCommanderConsole {
+            return $script:KeyQueue.Count -gt 0
+        }
+
+        Mock Read-BrowserConsoleKey -ModuleName PerfourceCommanderConsole {
+            if ($script:KeyQueue.Count -le 0) {
+                throw 'Test key queue unexpectedly empty.'
+            }
+            return $script:KeyQueue.Dequeue()
+        }
+
+        Mock Get-P4Info -ModuleName PerfourceCommanderConsole {
+            throw $script:StartupErrorMessage
+        }
+
+        Mock Get-P4ChangelistEntries -ModuleName PerfourceCommanderConsole {
+            throw $script:StartupErrorMessage
+        }
+
+        Mock Render-BrowserState -ModuleName PerfourceCommanderConsole {
+            param($State)
+            $script:RenderedLastErrors.Add([string]$State.Runtime.LastError) | Out-Null
+        }
+
+        {
+            Start-P4Browser -IntegrityTest -MaxChanges 3
+        } | Should -Not -Throw
+
+        @($script:RenderedLastErrors) | Should -Contain $script:StartupErrorMessage
+    }
+
     It 'resets stale render diff state before a new browser session starts' {
         InModuleScope Render {
             $script:PreviousFrame = [pscustomobject]@{

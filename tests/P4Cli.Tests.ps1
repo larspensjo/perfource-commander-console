@@ -1139,6 +1139,26 @@ Describe 'Invoke-P4ReopenFiles' {
         # reopen should NOT be called since there are no files
         Should -Invoke Invoke-P4 -ModuleName P4Cli -ParameterFilter { $P4Args[0] -eq 'reopen' } -Times 0
     }
+
+    It 'filters null and empty depot paths before reopen' {
+        Mock Get-P4OpenedFiles -ModuleName P4Cli {
+            return @(
+                [pscustomobject]@{ DepotPath = '//depot/a.cs' },
+                [pscustomobject]@{ DepotPath = '' },
+                [pscustomobject]@{ DepotPath = $null },
+                $null
+            )
+        }
+        Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter { $P4Args[0] -eq 'reopen' } { }
+
+        $result = Invoke-P4ReopenFiles -SourceChange 101 -TargetChange 200
+
+        $result.MovedCount | Should -Be 1
+        $result.Files      | Should -Be @('//depot/a.cs')
+        Should -Invoke Invoke-P4 -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
+            (@($P4Args) -join '|') -eq 'reopen|-c|200|//depot/a.cs'
+        }
+    }
 }
 
 Describe 'Test-IsP4NoUnresolvedFilesError' {
@@ -1497,6 +1517,30 @@ Describe 'Get-P4ModifiedDepotPaths' {
         $result = Get-P4ModifiedDepotPaths -FileEntries $null
         ($result -is [System.Collections.Generic.HashSet[string]]) | Should -BeTrue
         $result.Count | Should -Be 0
+    }
+
+    It 'filters null entries and empty depot paths before diff input' {
+        $entries = @(
+            (New-P4FileEntry -DepotPath '//depot/a.cpp' -Action 'edit' -FileType 'text' -Change 10),
+            [pscustomobject]@{ DepotPath = ''; Action = 'edit' },
+            [pscustomobject]@{ DepotPath = $null; Action = 'edit' },
+            $null
+        )
+
+        Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter {
+            (@($P4Args) -join '|') -eq 'diff|-sa' -and
+            (@($InputLines) -join '|') -eq '//depot/a.cpp'
+        } {
+            return @([pscustomobject]@{ depotFile = '//depot/a.cpp' })
+        }
+
+        $result = Get-P4ModifiedDepotPaths -FileEntries $entries
+
+        $result.Contains('//depot/a.cpp') | Should -BeTrue
+        Should -Invoke Invoke-P4 -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
+            (@($P4Args) -join '|') -eq 'diff|-sa' -and
+            (@($InputLines) -join '|') -eq '//depot/a.cpp'
+        }
     }
 }
 

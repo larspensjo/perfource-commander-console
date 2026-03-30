@@ -68,6 +68,23 @@ function New-P4ChangeIdSet {
     return ,([System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase))
 }
 
+function ConvertTo-NonEmptyStringValues {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$InputValues
+    )
+
+    $values = [System.Collections.Generic.List[string]]::new()
+    foreach ($value in @($InputValues)) {
+        $text = [string]$value
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            [void]$values.Add($text)
+        }
+    }
+
+    return @($values)
+}
+
 function Format-P4CommandLine {
     [CmdletBinding()]
     param(
@@ -1228,13 +1245,16 @@ function Get-P4ModifiedDepotPaths {
         return ,$result
     }
 
-    [string[]]$depotPaths = @(
-        $FileEntries |
-            Where-Object { Test-P4FileEntrySupportsContentDiff -FileEntry $_ } |
-            ForEach-Object { [string]$_.DepotPath } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-            Sort-Object -Stable -Unique
-    )
+    [string[]]$depotPaths = foreach ($entry in @($FileEntries)) {
+        if ($null -eq $entry) { continue }
+        if (-not (Test-P4FileEntrySupportsContentDiff -FileEntry $entry)) { continue }
+
+        $depotPath = [string]$entry.DepotPath
+        if (-not [string]::IsNullOrWhiteSpace($depotPath)) {
+            $depotPath
+        }
+    }
+    $depotPaths = @($depotPaths | Sort-Object -Stable -Unique)
 
     if ($depotPaths.Count -eq 0) {
         return ,$result
@@ -1529,7 +1549,17 @@ function Invoke-P4ReopenFiles {
         return @{ MovedCount = 0; Files = @() }
     }
 
-    [string[]]$depotPaths = @($files | ForEach-Object { [string]$_.DepotPath })
+    [string[]]$depotPaths = foreach ($file in $files) {
+        if ($null -eq $file) { continue }
+        $depotPath = [string]$file.DepotPath
+        if (-not [string]::IsNullOrWhiteSpace($depotPath)) {
+            $depotPath
+        }
+    }
+    $depotPaths = @(ConvertTo-NonEmptyStringValues -InputValues $depotPaths)
+    if ($depotPaths.Count -eq 0) {
+        return @{ MovedCount = 0; Files = @() }
+    }
     Invoke-P4 -P4Args (@('reopen', '-c', "$TargetChange") + $depotPaths) -ProcessObserver $ProcessObserver | Out-Null
 
     return @{ MovedCount = $depotPaths.Count; Files = $depotPaths }

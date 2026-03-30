@@ -57,6 +57,24 @@ function ConvertTo-NonEmptyStringValues {
     return @($values)
 }
 
+function ConvertTo-IntValues {
+    param([AllowNull()]$InputValues)
+
+    $values = [System.Collections.Generic.List[int]]::new()
+    foreach ($value in @($InputValues)) {
+        if ($null -eq $value) { continue }
+        $text = [string]$value
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+
+        $number = 0
+        if ([int]::TryParse($text, [ref]$number)) {
+            [void]$values.Add($number)
+        }
+    }
+
+    return @($values)
+}
+
 function New-PendingRequest {
     <#
     .SYNOPSIS
@@ -1408,8 +1426,9 @@ function Invoke-ChangelistReducer {
                 if ([string]$next.Runtime.ActiveCommand.RequestId -eq $reqId) {
                     $processId = if (($Action.PSObject.Properties.Match('ProcessId')).Count -gt 0) { [int]$Action.ProcessId } else { 0 }
                     $existing = if (($next.Runtime.ActiveCommand.PSObject.Properties.Match('ProcessIds')).Count -gt 0) {
-                        @($next.Runtime.ActiveCommand.ProcessIds) | ForEach-Object { [int]$_ }
+                        @(ConvertTo-IntValues -InputValues $next.Runtime.ActiveCommand.ProcessIds)
                     } else { @() }
+                    $next.Runtime.ActiveCommand.ProcessIds = @($existing)
                     if ($existing -notcontains $processId) {
                         $next.Runtime.ActiveCommand.ProcessIds = @($existing + @($processId))
                     }
@@ -1423,8 +1442,13 @@ function Invoke-ChangelistReducer {
                 $reqId = if (($Action.PSObject.Properties.Match('RequestId')).Count -gt 0) { [string]$Action.RequestId } else { '' }
                 if ([string]$next.Runtime.ActiveCommand.RequestId -eq $reqId) {
                     $processId = if (($Action.PSObject.Properties.Match('ProcessId')).Count -gt 0) { [int]$Action.ProcessId } else { 0 }
-                    $currentProcessIds = if (($next.Runtime.ActiveCommand.PSObject.Properties.Match('ProcessIds')).Count -gt 0) { @($next.Runtime.ActiveCommand.ProcessIds) } else { @() }
-                    $remaining = @($currentProcessIds | Where-Object { [int]$_ -ne $processId })
+                    $currentProcessIds = if (($next.Runtime.ActiveCommand.PSObject.Properties.Match('ProcessIds')).Count -gt 0) { @(ConvertTo-IntValues -InputValues $next.Runtime.ActiveCommand.ProcessIds) } else { @() }
+                    $remaining = foreach ($currentProcessId in $currentProcessIds) {
+                        if ($currentProcessId -ne $processId) {
+                            $currentProcessId
+                        }
+                    }
+                    $remaining = @($remaining)
                     $next.Runtime.ActiveCommand.ProcessIds = $remaining
                     $next.Runtime.ActiveCommand.CurrentProcessId = if ($remaining.Count -gt 0) { [int]$remaining[-1] } else { $null }
                 }

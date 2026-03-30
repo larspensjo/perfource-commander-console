@@ -61,6 +61,51 @@ $script:AsyncMutationWorkflowKinds = @('DeleteMarked', 'DeleteShelvedFiles', 'Sh
 # Module root for background worker imports
 $script:AsyncModuleRoot   = $PSScriptRoot
 
+function ConvertTo-NonEmptyStringValues {
+    param([AllowNull()]$InputValues)
+
+    $values = [System.Collections.Generic.List[string]]::new()
+    foreach ($value in @($InputValues)) {
+        $text = [string]$value
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            [void]$values.Add($text)
+        }
+    }
+
+    return @($values)
+}
+
+function ConvertTo-NonNullItems {
+    param([AllowNull()]$InputValues)
+
+    $values = [System.Collections.Generic.List[object]]::new()
+    foreach ($value in @($InputValues)) {
+        if ($null -ne $value) {
+            [void]$values.Add($value)
+        }
+    }
+
+    return @($values)
+}
+
+function ConvertTo-IntValues {
+    param([AllowNull()]$InputValues)
+
+    $values = [System.Collections.Generic.List[int]]::new()
+    foreach ($value in @($InputValues)) {
+        if ($null -eq $value) { continue }
+        $text = [string]$value
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+
+        $number = 0
+        if ([int]::TryParse($text, [ref]$number)) {
+            [void]$values.Add($number)
+        }
+    }
+
+    return @($values)
+}
+
 # Production executor: runs work in an isolated Start-ThreadJob runspace.
 # Tests override this via Set-BrowserAsyncExecutor with a synchronous executor.
 $script:AsyncExecutor = [pscustomobject]@{
@@ -275,13 +320,17 @@ function Read-BrowserAsyncProcessEvents {
             $eventType = [string]$parsed.EventType
             $processId = if (($parsed.PSObject.Properties.Match('ProcessId')).Count -gt 0) { [int]$parsed.ProcessId } else { 0 }
             if ($eventType -eq 'ProcessStarted') {
-                $existing = if (($entry.PSObject.Properties.Match('ActiveProcessIds')).Count -gt 0) { @($entry.ActiveProcessIds) } else { @() }
+                $existing = if (($entry.PSObject.Properties.Match('ActiveProcessIds')).Count -gt 0) { @(ConvertTo-IntValues -InputValues $entry.ActiveProcessIds) } else { @() }
                 if ($existing -notcontains $processId) {
                     $entry.ActiveProcessIds = @($existing + @($processId))
                 }
             } elseif ($eventType -eq 'ProcessFinished') {
-                $existing = if (($entry.PSObject.Properties.Match('ActiveProcessIds')).Count -gt 0) { @($entry.ActiveProcessIds) } else { @() }
-                $entry.ActiveProcessIds = @($existing | Where-Object { [int]$_ -ne $processId })
+                $existing = if (($entry.PSObject.Properties.Match('ActiveProcessIds')).Count -gt 0) { @(ConvertTo-IntValues -InputValues $entry.ActiveProcessIds) } else { @() }
+                $entry.ActiveProcessIds = foreach ($existingProcessId in $existing) {
+                    if ($existingProcessId -ne $processId) {
+                        $existingProcessId
+                    }
+                }
             }
             $newEvents.Add([pscustomobject]@{
                 Type      = $eventType
@@ -301,7 +350,7 @@ function Stop-BrowserAsyncRequest {
 
     $events = @(Read-BrowserAsyncProcessEvents -RequestId $RequestId)
     $entry  = Get-BrowserAsyncRegistryEntry -RequestId $RequestId
-    $processIds = if ($null -ne $entry -and ($entry.PSObject.Properties.Match('ActiveProcessIds')).Count -gt 0) { @($entry.ActiveProcessIds) } else { @() }
+    $processIds = if ($null -ne $entry -and ($entry.PSObject.Properties.Match('ActiveProcessIds')).Count -gt 0) { @(ConvertTo-IntValues -InputValues $entry.ActiveProcessIds) } else { @() }
     foreach ($processId in $processIds) {
         Stop-P4ProcessTree -ProcessId ([int]$processId)
     }
@@ -528,7 +577,7 @@ $script:AsyncWorkers = @{
                 ErrorText=$ErrorOutput;StartedAt=$StartedAt;EndedAt=$EndedAt;DurationMs=$DurationMs;FormattedLines=@();OutputCount=0;SummaryLine='' })
         }
         $cacheKey = [string]$Envelope.CacheKey
-        $baseFiles = @($Envelope.BaseFiles)
+        $baseFiles = @(ConvertTo-NonNullItems -InputValues $Envelope.BaseFiles)
         try {
             $modifiedPaths  = Get-P4ModifiedDepotPaths -FileEntries $baseFiles -ProcessObserver $processObserver
             $enrichedFiles  = Set-P4FileEntriesContentModifiedState -FileEntries $baseFiles -ModifiedDepotPaths $modifiedPaths
@@ -868,7 +917,7 @@ function Invoke-BrowserStartAsyncRequest {
             $cacheKey = [string]$Request.CacheKey
             $extras['CacheKey']  = $cacheKey
             # Pass base files so the enrichment worker has them without shared-state access
-            $extras['BaseFiles'] = if ($State.Data.FileCache.ContainsKey($cacheKey)) { @($State.Data.FileCache[$cacheKey]) } else { @() }
+            $extras['BaseFiles'] = if ($State.Data.FileCache.ContainsKey($cacheKey)) { @(ConvertTo-NonNullItems -InputValues $State.Data.FileCache[$cacheKey]) } else { @() }
         }
         'FetchDescribe'       { $extras['ChangeId'] = [string]$Request.ChangeId }
         'DeleteChange'        { $extras['ChangeId'] = [string]$Request.ChangeId }
@@ -957,12 +1006,7 @@ function Start-BrowserAsyncWorkflow {
     )
 
     $workflowKind = [string]$Request.WorkflowKind
-    [string[]]$changeIds = foreach ($changeId in @($Request.ChangeIds)) {
-        $text = [string]$changeId
-        if (-not [string]::IsNullOrWhiteSpace($text)) {
-            $text
-        }
-    }
+    [string[]]$changeIds = @(ConvertTo-NonEmptyStringValues -InputValues $Request.ChangeIds)
     $state = Invoke-BrowserReducer -State $State -Action ([pscustomobject]@{
         Type = 'WorkflowBegin'; Kind = $workflowKind; TotalCount = $changeIds.Count
     })
@@ -1074,7 +1118,7 @@ Register-WorkflowKind -Kind 'DeleteMarked' -Execute {
         [Parameter(Mandatory = $true)][pscustomobject]$Request
     )
 
-    [string[]]$changeIds = @($Request.ChangeIds)
+    [string[]]$changeIds = @(ConvertTo-NonEmptyStringValues -InputValues $Request.ChangeIds)
     $state = Invoke-BrowserReducer -State $State -Action ([pscustomobject]@{
         Type = 'WorkflowBegin'; Kind = 'DeleteMarked'; TotalCount = $changeIds.Count
     })
@@ -1135,7 +1179,7 @@ Register-WorkflowKind -Kind 'MoveMarkedFiles' -Execute {
         [Parameter(Mandatory = $true)][pscustomobject]$Request
     )
 
-    [string[]]$changeIds  = @($Request.ChangeIds)
+    [string[]]$changeIds  = @(ConvertTo-NonEmptyStringValues -InputValues $Request.ChangeIds)
     [string]$targetId     = [string]$Request.TargetChangeId
     [string]$targetChange = $targetId
 
@@ -1207,7 +1251,7 @@ Register-WorkflowKind -Kind 'ShelveFiles' -Execute {
         [Parameter(Mandatory = $true)][pscustomobject]$Request
     )
 
-    [string[]]$changeIds = @($Request.ChangeIds)
+    [string[]]$changeIds = @(ConvertTo-NonEmptyStringValues -InputValues $Request.ChangeIds)
     $state = Invoke-BrowserReducer -State $State -Action ([pscustomobject]@{
         Type = 'WorkflowBegin'; Kind = 'ShelveFiles'; TotalCount = $changeIds.Count
     })
@@ -1261,7 +1305,7 @@ Register-WorkflowKind -Kind 'DeleteShelvedFiles' -Execute {
         [Parameter(Mandatory = $true)][pscustomobject]$Request
     )
 
-    [string[]]$changeIds = @($Request.ChangeIds)
+    [string[]]$changeIds = @(ConvertTo-NonEmptyStringValues -InputValues $Request.ChangeIds)
     $state = Invoke-BrowserReducer -State $State -Action ([pscustomobject]@{
         Type = 'WorkflowBegin'; Kind = 'DeleteShelvedFiles'; TotalCount = $changeIds.Count
     })

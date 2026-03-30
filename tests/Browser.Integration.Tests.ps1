@@ -396,6 +396,29 @@ Describe 'Workflow error handling' {
         }
     }
 
+    It 'DeleteMarked workflow filters null and empty change ids before delete commands' {
+        InModuleScope PerfourceCommanderConsole {
+            Mock Render-BrowserState { }
+            Mock Remove-P4Changelist { }
+            Mock Get-P4ChangelistEntries { @() }
+
+            $changes = @(
+                [pscustomobject]@{ Id = '101'; Title = 'One'; HasShelvedFiles = $false; HasOpenedFiles = $false; Captured = [datetime]'2026-03-01' }
+            )
+            $state = New-BrowserState -Changes $changes -InitialWidth 120 -InitialHeight 40
+            $state.Runtime.ConfiguredMax = 25
+
+            $next = & $script:WorkflowRegistry['DeleteMarked'] -State $state -Request ([pscustomobject]@{
+                ChangeIds = @($null, '', '101')
+            })
+
+            $null = $next
+            Assert-MockCalled Remove-P4Changelist -Times 1 -Exactly -ParameterFilter {
+                $Change -eq 101
+            }
+        }
+    }
+
     It 'DeleteMarked preserves delete failures after refreshing pending changelists' {
         InModuleScope PerfourceCommanderConsole {
             Mock Render-BrowserState { }

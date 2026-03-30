@@ -2308,6 +2308,24 @@ Describe 'Browser reducer — M4 async actions' {
         $finished.Runtime.ActiveCommand.CurrentProcessId    | Should -BeNullOrEmpty
     }
 
+    It 'ProcessStarted and ProcessFinished ignore malformed process-id entries' {
+        $state.Runtime.ActiveCommand = [pscustomobject]@{
+            RequestId = 'req-1'; Kind = 'DeleteChange'; Scope = 'Mutation'; Generation = 0
+            CommandLine = 'p4 change -d 101'; StartedAt = (Get-Date); Status = 'Running'
+            CurrentProcessId = $null; ProcessIds = @($null, '', '4242')
+        }
+
+        $started = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+            Type = 'ProcessStarted'; RequestId = 'req-1'; ProcessId = 4242
+        })
+        @($started.Runtime.ActiveCommand.ProcessIds) | Should -Be @(4242)
+
+        $finished = Invoke-BrowserReducer -State $started -Action ([pscustomobject]@{
+            Type = 'ProcessFinished'; RequestId = 'req-1'; ProcessId = 4242; ExitCode = 0
+        })
+        @($finished.Runtime.ActiveCommand.ProcessIds).Count | Should -Be 0
+    }
+
     It 'FilesEnrichmentFailed marks cache status and records the error' {
         $cacheKey = '101:Opened'
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{

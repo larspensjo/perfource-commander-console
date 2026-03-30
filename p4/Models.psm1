@@ -1,6 +1,6 @@
 Set-StrictMode -Version Latest
 
-function New-P4Changelist {
+function New-P4ChangelistRecord {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Change,
@@ -83,7 +83,9 @@ function New-P4FileEntry {
         [Parameter(Mandatory = $false)][string]$Change = '0',
         [Parameter(Mandatory = $false)][string]$SourceKind   = 'Opened',
         [Parameter(Mandatory = $false)][bool]$IsUnresolved   = $false,
-        [Parameter(Mandatory = $false)][bool]$IsContentModified = $false
+        [Parameter(Mandatory = $false)][bool]$IsContentModified = $false,
+        [Parameter(Mandatory = $false)][int]$HaveRev = 0,
+        [Parameter(Mandatory = $false)][int]$HeadRev = 0
     )
 
     # Derive FileName: last path segment after the final '/'
@@ -108,6 +110,8 @@ function New-P4FileEntry {
         SourceKind   = $SourceKind
         IsUnresolved = $IsUnresolved
         IsContentModified = $IsContentModified
+        HaveRev      = $HaveRev
+        HeadRev      = $HeadRev
         SearchKey    = $searchKey
     }
 }
@@ -165,5 +169,5 @@ function New-RevisionNode {
     }
 }
 
-Export-ModuleMember -Function *-P4Changelist, ConvertTo-ChangelistEntry, ConvertTo-SubmittedChangelistEntry, New-P4FileEntry, `
+Export-ModuleMember -Function New-P4ChangelistRecord, ConvertTo-ChangelistEntry, ConvertTo-SubmittedChangelistEntry, New-P4FileEntry, `
     Get-IntegrationDirection, New-IntegrationRecord, New-RevisionNode

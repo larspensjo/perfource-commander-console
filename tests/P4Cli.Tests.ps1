@@ -158,9 +158,11 @@ Describe 'Get-P4Describe' {
                 depotFile0 = '//depot/a.txt'
                 action0    = 'edit'
                 type0      = 'text'
+                rev0       = '3'
                 depotFile1 = '//depot/b.txt'
                 action1    = 'add'
                 type1      = 'binary'
+                rev1       = '1'
             })
         }
 
@@ -173,9 +175,11 @@ Describe 'Get-P4Describe' {
         $result.Files[0].DepotPath | Should -Be '//depot/a.txt'
         $result.Files[0].Action    | Should -Be 'edit'
         $result.Files[0].Type      | Should -Be 'text'
+        $result.Files[0].Rev       | Should -Be 3
         $result.Files[1].DepotPath | Should -Be '//depot/b.txt'
         $result.Files[1].Action    | Should -Be 'add'
         $result.Files[1].Type      | Should -Be 'binary'
+        $result.Files[1].Rev       | Should -Be 1
     }
 
     It 'still parses array-shaped file properties when present' {
@@ -190,6 +194,7 @@ Describe 'Get-P4Describe' {
                 depotFile = @('//depot/c.txt', '//depot/d.txt')
                 action    = @('branch', 'integrate')
                 type      = @('text+C', 'text')
+                rev       = @('5', '2')
             })
         }
 
@@ -198,9 +203,11 @@ Describe 'Get-P4Describe' {
         $result.Files[0].DepotPath | Should -Be '//depot/c.txt'
         $result.Files[0].Action    | Should -Be 'branch'
         $result.Files[0].Type      | Should -Be 'text+C'
+        $result.Files[0].Rev       | Should -Be 5
         $result.Files[1].DepotPath | Should -Be '//depot/d.txt'
         $result.Files[1].Action    | Should -Be 'integrate'
         $result.Files[1].Type      | Should -Be 'text'
+        $result.Files[1].Rev       | Should -Be 2
     }
 
     It 'parses a multi-line description' {
@@ -352,7 +359,7 @@ Describe 'Get-P4ChangelistEntries' {
         $now = Get-Date
         Mock Get-P4PendingChangelists -ModuleName P4Cli {
             return @(
-                New-P4Changelist -Change 123 -User 'u' -Client 'c' -Time $now -Status 'pending' -Description 'desc'
+                New-P4ChangelistRecord -Change 123 -User 'u' -Client 'c' -Time $now -Status 'pending' -Description 'desc'
             )
         }
         Mock Get-P4OpenedFileCounts -ModuleName P4Cli {
@@ -375,7 +382,7 @@ Describe 'Get-P4ChangelistEntries' {
         $now = Get-Date
         Mock Get-P4PendingChangelists -ModuleName P4Cli {
             return @(
-                New-P4Changelist -Change 200 -User 'u' -Client 'c' -Time $now -Status 'pending' -Description 'desc'
+                New-P4ChangelistRecord -Change 200 -User 'u' -Client 'c' -Time $now -Status 'pending' -Description 'desc'
             )
         }
         Mock Get-P4OpenedFileCounts -ModuleName P4Cli {
@@ -401,7 +408,7 @@ Describe 'Get-P4ChangelistEntries' {
         $now = Get-Date
         Mock Get-P4PendingChangelists -ModuleName P4Cli {
             return @(
-                New-P4Changelist -Change 'default' -User 'u' -Client 'c' -Time $now -Status 'pending' -Description 'default work'
+                New-P4ChangelistRecord -Change 'default' -User 'u' -Client 'c' -Time $now -Status 'pending' -Description 'default work'
             )
         }
         Mock Get-P4OpenedFileCounts -ModuleName P4Cli {
@@ -434,7 +441,7 @@ Describe 'Get-P4ChangelistEntries' {
     It 'synthesizes the default changelist when opened files exist but p4 changes omits it' {
         Mock Get-P4PendingChangelists -ModuleName P4Cli {
             return @(
-                New-P4Changelist -Change '200' -User 'u' -Client 'c' -Time ([datetime]'2026-03-10T12:00:00') -Status 'pending' -Description 'numbered work'
+                New-P4ChangelistRecord -Change '200' -User 'u' -Client 'c' -Time ([datetime]'2026-03-10T12:00:00') -Status 'pending' -Description 'numbered work'
             )
         }
         Mock Get-P4OpenedFileCounts -ModuleName P4Cli {
@@ -825,7 +832,7 @@ Describe 'Get-P4OpenedFiles' {
 
     It 'queries fstat with opened scope, change scope, unresolved field, and the all-files spec' {
         Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter {
-            (@($P4Args) -join '|') -eq 'fstat|-Ro|-e|101|-T|change,depotFile,action,type,unresolved|//...'
+            (@($P4Args) -join '|') -eq 'fstat|-Ro|-e|101|-T|change,depotFile,action,type,unresolved,haveRev,headRev|//...'
         } {
             return @(
                 [pscustomobject]@{ depotFile = '//depot/src/Foo.cs'; action = 'edit'; change = '101'; type = 'text' }
@@ -836,7 +843,7 @@ Describe 'Get-P4OpenedFiles' {
         $result.Count | Should -Be 1
 
         Should -Invoke Invoke-P4 -ModuleName P4Cli -Times 1 -Exactly -ParameterFilter {
-            (@($P4Args) -join '|') -eq 'fstat|-Ro|-e|101|-T|change,depotFile,action,type,unresolved|//...'
+            (@($P4Args) -join '|') -eq 'fstat|-Ro|-e|101|-T|change,depotFile,action,type,unresolved,haveRev,headRev|//...'
         }
     }
 
@@ -919,7 +926,7 @@ Describe 'Get-P4OpenedFiles' {
 
     It 'supports the default changelist when querying opened files' {
         Mock Invoke-P4 -ModuleName P4Cli -ParameterFilter {
-            (@($P4Args) -join '|') -eq 'fstat|-Ro|-e|default|-T|change,depotFile,action,type,unresolved|//...'
+            (@($P4Args) -join '|') -eq 'fstat|-Ro|-e|default|-T|change,depotFile,action,type,unresolved,haveRev,headRev|//...'
         } {
             return @([pscustomobject]@{
                 depotFile = '//depot/default.txt'
@@ -1607,8 +1614,8 @@ Describe 'Get-P4ChangelistEntries — unresolved enrichment' {
     It 'passes pending changelist numbers to Get-P4UnresolvedFileCounts' {
         Mock Get-P4PendingChangelists -ModuleName P4Cli {
             return @(
-                (New-P4Changelist -Change 800 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc 800'),
-                (New-P4Changelist -Change 801 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc 801')
+                (New-P4ChangelistRecord -Change 800 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc 800'),
+                (New-P4ChangelistRecord -Change 801 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc 801')
             )
         }
         Mock Get-P4OpenedFileCounts  -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase) }
@@ -1624,7 +1631,7 @@ Describe 'Get-P4ChangelistEntries — unresolved enrichment' {
 
     It 'populates UnresolvedFileCount and HasUnresolvedFiles when counts are present' {
         Mock Get-P4PendingChangelists -ModuleName P4Cli {
-            return @(New-P4Changelist -Change 500 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc')
+            return @(New-P4ChangelistRecord -Change 500 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc')
         }
         Mock Get-P4OpenedFileCounts  -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase) }
         Mock Get-P4ShelvedFileCounts -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase) }
@@ -1641,7 +1648,7 @@ Describe 'Get-P4ChangelistEntries — unresolved enrichment' {
 
     It 'keeps opened/shelved counts unchanged when unresolved enrichment is added' {
         Mock Get-P4PendingChangelists -ModuleName P4Cli {
-            return @(New-P4Changelist -Change 600 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc')
+            return @(New-P4ChangelistRecord -Change 600 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc')
         }
         Mock Get-P4OpenedFileCounts -ModuleName P4Cli {
             $d = [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -1667,7 +1674,7 @@ Describe 'Get-P4ChangelistEntries — unresolved enrichment' {
 
     It 'results in zero UnresolvedFileCount and false HasUnresolvedFiles when no unresolved counts exist' {
         Mock Get-P4PendingChangelists -ModuleName P4Cli {
-            return @(New-P4Changelist -Change 700 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc')
+            return @(New-P4ChangelistRecord -Change 700 -User 'u' -Client 'c' -Time (Get-Date) -Status 'pending' -Description 'desc')
         }
         Mock Get-P4OpenedFileCounts     -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase) }
         Mock Get-P4ShelvedFileCounts    -ModuleName P4Cli { return [System.Collections.Generic.Dictionary[string,int]]::new([System.StringComparer]::OrdinalIgnoreCase) }

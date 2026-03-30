@@ -1379,6 +1379,83 @@ Describe 'Files screen rendering' {
         $allText | Should -Match 'Content: modified'
     }
 
+    It 'inspector shows Revision: haveRev(headRev). when behind head' {
+        $state = New-FilesRenderState -Width 120 -Height 22
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '300:Opened' = @(
+                [pscustomobject]@{ FileName = 'Behind.cs'; DepotPath = '//depot/Behind.cs'; Action = 'edit'; FileType = 'text'; Change = 300; SourceKind = 'Opened'; IsUnresolved = $false; HaveRev = 49; HeadRev = 50 }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 300
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Match 'Revision: 49\(50\)\.'
+    }
+
+    It 'inspector shows Revision: headRev. when at head' {
+        $state = New-FilesRenderState -Width 120 -Height 22
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '301:Opened' = @(
+                [pscustomobject]@{ FileName = 'AtHead.cs'; DepotPath = '//depot/AtHead.cs'; Action = 'edit'; FileType = 'text'; Change = 301; SourceKind = 'Opened'; IsUnresolved = $false; HaveRev = 50; HeadRev = 50 }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 301
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Match 'Revision: 50\.'
+        $allText | Should -Not -Match 'Revision: 50\(50\)'
+    }
+
+    It 'inspector does not show Revision line when HeadRev is 0' {
+        $state = New-FilesRenderState -Width 120 -Height 22
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '302:Opened' = @(
+                [pscustomobject]@{ FileName = 'NoRev.cs'; DepotPath = '//depot/NoRev.cs'; Action = 'add'; FileType = 'text'; Change = 302; SourceKind = 'Opened'; IsUnresolved = $false }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 302
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Opened'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Not -Match 'Revision:'
+    }
+
+    It 'inspector shows Revision: N. for a submitted file with revision data' {
+        $state = New-FilesRenderState -Width 120 -Height 22
+        $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{
+            '27474050:Submitted' = @(
+                [pscustomobject]@{ FileName = 'Foo.cs'; DepotPath = '//depot/Foo.cs'; Action = 'add'; FileType = 'text'; Change = 27474050; SourceKind = 'Submitted'; HeadRev = 1 }
+            )
+        }
+        $state.Data | Add-Member -NotePropertyName FilesSourceChange -NotePropertyValue 27474050
+        $state.Data | Add-Member -NotePropertyName FilesSourceKind -NotePropertyValue 'Submitted'
+        $state.Query | Add-Member -NotePropertyName FileFilterText -NotePropertyValue ''
+        $state.Derived | Add-Member -NotePropertyName VisibleFileIndices -NotePropertyValue @(0)
+        $state.Cursor | Add-Member -NotePropertyName FileIndex -NotePropertyValue 0
+        $state.Cursor | Add-Member -NotePropertyName FileScrollTop -NotePropertyValue 0
+
+        $frame = Build-FilesScreenFrame -State $state
+        $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
+        $allText | Should -Match 'Revision: 1\.'
+    }
+
     It 'unresolved file row shows ⚠ glyph' {
         $state = New-FilesRenderState -Width 120 -Height 20
         $state.Data | Add-Member -NotePropertyName FileCache -NotePropertyValue @{

@@ -1918,10 +1918,20 @@ function Build-FilesScreenFrame {
                     $selectedChange    = [string](Get-PropertyValueOrDefault -Object $selectedFile -Name 'Change'       -Default '')
                     $selectedUnresolvd = [bool]  (Get-PropertyValueOrDefault -Object $selectedFile -Name 'IsUnresolved' -Default $false)
                     $selectedContentModified = [bool](Get-PropertyValueOrDefault -Object $selectedFile -Name 'IsContentModified' -Default $false)
+                    $selectedHaveRev   = [int]   (Get-PropertyValueOrDefault -Object $selectedFile -Name 'HaveRev' -Default 0)
+                    $selectedHeadRev   = [int]   (Get-PropertyValueOrDefault -Object $selectedFile -Name 'HeadRev' -Default 0)
                     $resolveLabel      = if ($selectedUnresolvd) { 'unresolved' } else { 'clean' }
                     $resolveColor      = if ($selectedUnresolvd) { 'Yellow' } else { 'DarkGray' }
                     $contentLabel      = if ($selectedContentModified) { 'modified' } elseif ($isEnrichmentPending) { [char]0x2026 } else { 'clean' }
                     $contentColor      = if ($selectedContentModified) { 'Cyan' } elseif ($isEnrichmentPending) { 'DarkGray' } else { 'DarkGray' }
+                    $revisionLabel     = if ($selectedHeadRev -gt 0) {
+                        if ($selectedHaveRev -gt 0 -and $selectedHaveRev -ne $selectedHeadRev) {
+                            "$selectedHaveRev($selectedHeadRev)."
+                        } else {
+                            "$selectedHeadRev."
+                        }
+                    } else { '' }
+                    $revisionColor     = if ($selectedHeadRev -gt 0 -and $selectedHaveRev -gt 0 -and $selectedHaveRev -ne $selectedHeadRev) { 'Yellow' } else { 'DarkGray' }
                     $resolveHintLine   = if ($selectedUnresolvd) {
                         @(@{ Text = '[R] Resolve  [Shift+R] Merge tool'; Color = 'DarkCyan' })
                     } else {
@@ -1935,6 +1945,7 @@ function Build-FilesScreenFrame {
                         @(@{ Text = "Source: $sourceKind";     Color = 'DarkGray'   }),
                         @(@{ Text = "Resolve: $resolveLabel";  Color = $resolveColor }),
                         @(@{ Text = "Content: $contentLabel";  Color = $contentColor }),
+                        @(if ($revisionLabel -ne '') { @{ Text = "Revision: $revisionLabel"; Color = $revisionColor } } else { @{ Text = ''; Color = 'Gray' } }),
                         $resolveHintLine,
                         @(@{ Text = $selectedDepot;            Color = 'Gray'        })
                     )

@@ -70,7 +70,19 @@ $script:AsyncExecutor = [pscustomobject]@{
         foreach ($prop in $Envelope.PSObject.Properties) { $envProps[$prop.Name] = $prop.Value }
         $eventFile = [System.IO.Path]::GetTempFileName()
         $envProps['ProcessEventFile'] = $eventFile
-        $job = Start-ThreadJob -ScriptBlock $Worker -ArgumentList ([pscustomobject]$envProps), $script:AsyncModuleRoot
+        # Capture the calling directory so the ThreadJob (which starts in an
+        # independent runspace with an unrelated $PWD) runs p4.exe from within
+        # the workspace.  Without this, 'p4 describe' and similar commands fail
+        # when the runspace's $PWD has no Perforce client mapping.
+        $capturedDir    = (Get-Location).Path
+        $capturedWorker = $Worker
+        $job = Start-ThreadJob -ScriptBlock {
+            param([pscustomobject]$Envelope, [string]$ModuleRoot)
+            if (-not [string]::IsNullOrEmpty($using:capturedDir)) {
+                try { Set-Location -LiteralPath $using:capturedDir -ErrorAction SilentlyContinue } catch {}
+            }
+            & $using:capturedWorker $Envelope $ModuleRoot
+        } -ArgumentList ([pscustomobject]$envProps), $script:AsyncModuleRoot
         $script:AsyncJobRegistry[[string]$Envelope.RequestId] = [pscustomobject]@{
             Job               = $job
             ProcessEventFile  = $eventFile
@@ -480,7 +492,8 @@ $script:AsyncWorkers = @{
                                     -Action ([string]$_.Action) `
                                     -FileType ([string]$_.Type) `
                                     -Change $change `
-                                    -SourceKind 'Submitted'
+                                    -SourceKind 'Submitted' `
+                                    -HeadRev ([int](if ($null -ne ($_.PSObject.Properties['Rev'])) { $_.Rev } else { 0 }))
                 }
                 return [pscustomobject]@{ Type='FilesBaseLoaded'; RequestId=$Envelope.RequestId
                     Generation=$Envelope.Generation; CacheKey=$cacheKey; SourceKind='Submitted'
@@ -812,7 +825,7 @@ function Get-AsyncDisplayCommandLine {
         }
         'LoadFiles'           {
             if ([string]$Envelope.SourceKind -eq 'Opened') {
-                return Format-P4CommandLine -P4Args @('fstat','-Ro','-e',[string]$Envelope.Change,'-T','change,depotFile,action,type,unresolved','//...')
+                return Format-P4CommandLine -P4Args @('fstat','-Ro','-e',[string]$Envelope.Change,'-T','change,depotFile,action,type,unresolved,haveRev,headRev','//...')
             } else {
                 return Format-P4CommandLine -P4Args @('describe','-s',[string]$Envelope.Change)
             }

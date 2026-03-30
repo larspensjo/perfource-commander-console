@@ -12,7 +12,7 @@ $script:CommandOutputMaxLines = 2000
 $script:P4FstatAllFilesSpec = '//...'
 
 # Shared field list for opened-file 'p4 fstat' queries that also expose unresolved state.
-$script:P4FstatOpenedFileFields = 'change,depotFile,action,type,unresolved'
+$script:P4FstatOpenedFileFields = 'change,depotFile,action,type,unresolved,haveRev,headRev'
 
 # Shared field lists for unresolved-file 'p4 fstat' queries.
 $script:P4FstatUnresolvedCountFields = 'change,depotFile,unresolved'
@@ -579,7 +579,7 @@ function Get-P4PendingChangelists {
         $timestamp = [double]$record.time
         $time = [datetime]::UnixEpoch.AddSeconds($timestamp).ToLocalTime()
 
-        New-P4Changelist `
+        New-P4ChangelistRecord `
             -Change $changeId `
             -User ([string]$record.user) `
             -Client ([string]$record.client) `
@@ -614,7 +614,7 @@ function Get-P4ChangelistEntries {
             $defaultClient = [string]$info.Client
         }
 
-        $defaultChangelist = New-P4Changelist `
+        $defaultChangelist = New-P4ChangelistRecord `
             -Change 'default' `
             -User $defaultUser `
             -Client $defaultClient `
@@ -666,13 +666,15 @@ function ConvertFrom-P4DescribeRecordToFiles {
 
     if ($indexedDepotProps.Count -gt 0) {
         foreach ($prop in $indexedDepotProps) {
-            $index = [int]$prop.Name.Substring('depotFile'.Length)
+            $index     = [int]$prop.Name.Substring('depotFile'.Length)
             $actionProp = $Record.PSObject.Properties["action$index"]
             $typeProp   = $Record.PSObject.Properties["type$index"]
+            $revProp    = $Record.PSObject.Properties["rev$index"]
             $files.Add([pscustomobject]@{
                 DepotPath = [string]$prop.Value
                 Action    = if ($null -ne $actionProp) { [string]$actionProp.Value } else { '' }
                 Type      = if ($null -ne $typeProp)   { [string]$typeProp.Value }   else { '' }
+                Rev       = if ($null -ne $revProp)    { [int]$revProp.Value }        else { 0  }
             }) | Out-Null
         }
 
@@ -683,12 +685,14 @@ function ConvertFrom-P4DescribeRecordToFiles {
         $depotFiles = @($Record.depotFile)
         $actions    = @(if ($null -ne ($Record.PSObject.Properties['action'])) { $Record.action })
         $types      = @(if ($null -ne ($Record.PSObject.Properties['type']))   { $Record.type   })
+        $revs       = @(if ($null -ne ($Record.PSObject.Properties['rev']))    { $Record.rev    })
 
         for ($i = 0; $i -lt $depotFiles.Count; $i++) {
             $files.Add([pscustomobject]@{
                 DepotPath = [string]$depotFiles[$i]
                 Action    = if ($i -lt $actions.Count) { [string]$actions[$i] } else { '' }
                 Type      = if ($i -lt $types.Count)   { [string]$types[$i]   } else { '' }
+                Rev       = if ($i -lt $revs.Count)    { [int]$revs[$i] }       else { 0  }
             }) | Out-Null
         }
     }
@@ -1000,8 +1004,11 @@ function Get-P4OpenedFiles {
         }
         if ([string]::IsNullOrWhiteSpace($recChange)) { $recChange = [string]$Change }
         $isUnresolved = Test-P4FstatRecordIsUnresolved -Record $record
+        $haveRev = if ($null -ne ($record.PSObject.Properties['haveRev'])) { [int]$record.haveRev } else { 0 }
+        $headRev = if ($null -ne ($record.PSObject.Properties['headRev'])) { [int]$record.headRev } else { 0 }
         New-P4FileEntry -DepotPath $depotPath -Action $action -FileType $fileType `
-                        -Change $recChange -SourceKind 'Opened' -IsUnresolved $isUnresolved
+                        -Change $recChange -SourceKind 'Opened' -IsUnresolved $isUnresolved `
+                        -HaveRev $haveRev -HeadRev $headRev
     }
 
     return @($result)
@@ -1267,15 +1274,19 @@ function Set-P4FileEntriesUnresolvedState {
     }
 
     $result = foreach ($entry in $FileEntries) {
-        $depotPath   = [string]$entry.DepotPath
+        $depotPath    = [string]$entry.DepotPath
         $isUnresolved = [bool]$UnresolvedDepotPaths.Contains($depotPath)
+        $haveRev      = if ($null -ne ($entry.PSObject.Properties['HaveRev'])) { [int]$entry.HaveRev } else { 0 }
+        $headRev      = if ($null -ne ($entry.PSObject.Properties['HeadRev'])) { [int]$entry.HeadRev } else { 0 }
         New-P4FileEntry `
-            -DepotPath   $depotPath `
-            -Action      ([string]$entry.Action) `
-            -FileType    ([string]$entry.FileType) `
-            -Change      ([string]$entry.Change) `
-            -SourceKind  ([string]$entry.SourceKind) `
-            -IsUnresolved $isUnresolved
+            -DepotPath    $depotPath `
+            -Action       ([string]$entry.Action) `
+            -FileType     ([string]$entry.FileType) `
+            -Change       ([string]$entry.Change) `
+            -SourceKind   ([string]$entry.SourceKind) `
+            -IsUnresolved $isUnresolved `
+            -HaveRev      $haveRev `
+            -HeadRev      $headRev
     }
 
     return @($result)
@@ -1305,8 +1316,10 @@ function Set-P4FileEntriesContentModifiedState {
     }
 
     $result = foreach ($entry in $FileEntries) {
-        $depotPath = [string]$entry.DepotPath
+        $depotPath         = [string]$entry.DepotPath
         $isContentModified = [bool]$ModifiedDepotPaths.Contains($depotPath)
+        $haveRev           = if ($null -ne ($entry.PSObject.Properties['HaveRev'])) { [int]$entry.HaveRev } else { 0 }
+        $headRev           = if ($null -ne ($entry.PSObject.Properties['HeadRev'])) { [int]$entry.HeadRev } else { 0 }
         New-P4FileEntry `
             -DepotPath         $depotPath `
             -Action            ([string]$entry.Action) `
@@ -1314,7 +1327,9 @@ function Set-P4FileEntriesContentModifiedState {
             -Change            ([string]$entry.Change) `
             -SourceKind        ([string]$entry.SourceKind) `
             -IsUnresolved      ([bool]$entry.IsUnresolved) `
-            -IsContentModified $isContentModified
+            -IsContentModified $isContentModified `
+            -HaveRev           $haveRev `
+            -HeadRev           $headRev
     }
 
     return @($result)
@@ -1444,7 +1459,7 @@ function Get-P4SubmittedChangelists {
 
         $desc = [string]$record.desc
         if ([string]::IsNullOrWhiteSpace($desc)) { $desc = '(no description)' }
-        New-P4Changelist `
+        New-P4ChangelistRecord `
             -Change $changeId `
             -User ([string]$record.user) `
             -Client ([string]$record.client) `

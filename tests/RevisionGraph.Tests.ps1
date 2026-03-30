@@ -144,7 +144,6 @@ Describe 'Get-P4FileLog parsing' {
 
         # Stub Invoke-P4 via mock
         Mock -CommandName Invoke-P4 -ModuleName P4Cli -MockWith {
-            param($P4Args)
             return @($rec1)
         }
 

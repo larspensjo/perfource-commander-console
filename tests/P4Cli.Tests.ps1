@@ -1962,7 +1962,7 @@ Describe 'Invoke-P4Resolve' {
         & (Get-Module P4Cli) { param($p) $script:P4Executable = $p } $scriptPath
         try {
             $events = [System.Collections.Generic.List[string]]::new()
-            $observer = { param($EventType,$ProcessId,$ExitCode) $events.Add($EventType) }
+            $observer = { param($EventType) $events.Add($EventType) }
             Invoke-P4Resolve -DepotPath '//depot/main/foo.txt' -ProcessObserver $observer
             $events | Should -Contain 'ProcessStarted'
             $events | Should -Contain 'ProcessFinished'

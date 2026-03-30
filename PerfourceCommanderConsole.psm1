@@ -108,6 +108,14 @@ function ConvertTo-IntValues {
 
 # Production executor: runs work in an isolated Start-ThreadJob runspace.
 # Tests override this via Set-BrowserAsyncExecutor with a synchronous executor.
+$script:AsyncThreadJobWrapper = {
+    param([pscustomobject]$Envelope, [string]$ModuleRoot, [string]$CapturedDir, [scriptblock]$CapturedWorker)
+    if (-not [string]::IsNullOrEmpty($CapturedDir)) {
+        try { Set-Location -LiteralPath $CapturedDir -ErrorAction SilentlyContinue } catch {}
+    }
+    & $CapturedWorker $Envelope $ModuleRoot
+}
+
 $script:AsyncExecutor = [pscustomobject]@{
     Execute = {
         param([pscustomobject]$Envelope, [scriptblock]$Worker)
@@ -121,13 +129,7 @@ $script:AsyncExecutor = [pscustomobject]@{
         # when the runspace's $PWD has no Perforce client mapping.
         $capturedDir    = (Get-Location).Path
         $capturedWorker = $Worker
-        $job = Start-ThreadJob -ScriptBlock {
-            param([pscustomobject]$Envelope, [string]$ModuleRoot)
-            if (-not [string]::IsNullOrEmpty($using:capturedDir)) {
-                try { Set-Location -LiteralPath $using:capturedDir -ErrorAction SilentlyContinue } catch {}
-            }
-            & $using:capturedWorker $Envelope $ModuleRoot
-        } -ArgumentList ([pscustomobject]$envProps), $script:AsyncModuleRoot
+        $job = Start-ThreadJob -ScriptBlock $script:AsyncThreadJobWrapper -ArgumentList ([pscustomobject]$envProps), $script:AsyncModuleRoot, $capturedDir, $capturedWorker
         $script:AsyncJobRegistry[[string]$Envelope.RequestId] = [pscustomobject]@{
             Job               = $job
             ProcessEventFile  = $eventFile

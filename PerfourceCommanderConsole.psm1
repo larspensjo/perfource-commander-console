@@ -957,7 +957,12 @@ function Start-BrowserAsyncWorkflow {
     )
 
     $workflowKind = [string]$Request.WorkflowKind
-    [string[]]$changeIds = @($Request.ChangeIds | ForEach-Object { [string]$_ })
+    [string[]]$changeIds = foreach ($changeId in @($Request.ChangeIds)) {
+        $text = [string]$changeId
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            $text
+        }
+    }
     $state = Invoke-BrowserReducer -State $State -Action ([pscustomobject]@{
         Type = 'WorkflowBegin'; Kind = $workflowKind; TotalCount = $changeIds.Count
     })
@@ -1659,7 +1664,11 @@ function Invoke-BrowserPendingChangesReload {
         $s.Runtime.LastError = $null
         $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{
             Type         = 'ReconcileMarks'
-            AllChangeIds = @($fresh | ForEach-Object { [string]$_.Id })
+            AllChangeIds = foreach ($change in @($fresh)) {
+                if ($null -eq $change) { continue }
+                $id = [string]$change.Id
+                if (-not [string]::IsNullOrWhiteSpace($id)) { $id }
+            }
         })
         return Update-BrowserDerivedState -State $s
     }

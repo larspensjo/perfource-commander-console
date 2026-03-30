@@ -371,6 +371,31 @@ Describe 'Workflow error handling' {
         Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
     }
 
+    It 'Start-BrowserAsyncWorkflow filters null and empty change ids before dispatch' {
+        InModuleScope PerfourceCommanderConsole {
+            $script:CapturedAsyncWorkflowRequest = $null
+            Mock Invoke-BrowserStartAsyncRequest {
+                param($State, $Request)
+                $script:CapturedAsyncWorkflowRequest = $Request
+                return $State
+            }
+
+            $state = New-BrowserState -Changes @(
+                [pscustomobject]@{ Id = '101'; Title = 'One'; HasShelvedFiles = $false; HasOpenedFiles = $true; Captured = [datetime]'2026-03-07 09:15:00' }
+            ) -InitialWidth 120 -InitialHeight 40
+
+            $next = Start-BrowserAsyncWorkflow -State $state -Request ([pscustomobject]@{
+                WorkflowKind = 'DeleteMarked'
+                ChangeIds    = @($null, '', '101')
+            })
+
+            $null = $next
+            $script:CapturedAsyncWorkflowRequest | Should -Not -BeNullOrEmpty
+            $script:CapturedAsyncWorkflowRequest.Kind     | Should -Be 'DeleteChange'
+            $script:CapturedAsyncWorkflowRequest.ChangeId | Should -Be '101'
+        }
+    }
+
     It 'DeleteMarked preserves delete failures after refreshing pending changelists' {
         InModuleScope PerfourceCommanderConsole {
             Mock Render-BrowserState { }

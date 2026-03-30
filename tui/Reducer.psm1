@@ -43,6 +43,20 @@ $script:PendingRequestScopeByKind = @{
     'LoadFileLog'         = 'Graph'
 }
 
+function ConvertTo-NonEmptyStringValues {
+    param([AllowNull()]$InputValues)
+
+    $values = [System.Collections.Generic.List[string]]::new()
+    foreach ($value in @($InputValues)) {
+        $text = [string]$value
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            [void]$values.Add($text)
+        }
+    }
+
+    return @($values)
+}
+
 function New-PendingRequest {
     <#
     .SYNOPSIS
@@ -281,7 +295,7 @@ function Get-DeleteActionableChangeIds {
     $mcProp = $State.Query.PSObject.Properties['MarkedChangeIds']
     $hasMarks = $null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0
     if ($hasMarks) {
-        return @($mcProp.Value | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+        return @(ConvertTo-NonEmptyStringValues -InputValues $mcProp.Value | Sort-Object -Unique)
     }
 
     $visibleIdsProp = $State.Derived.PSObject.Properties['VisibleChangeIds']
@@ -1258,7 +1272,11 @@ function Invoke-ChangelistReducer {
                 return $next
             }
             # Reconcile marks: remove stale IDs no longer in the fresh set
-            [string[]]$freshIds = @($Action.AllChanges | ForEach-Object { [string]$_.Id })
+            [string[]]$freshIds = foreach ($change in @($Action.AllChanges)) {
+                if ($null -eq $change) { continue }
+                $id = [string]$change.Id
+                if (-not [string]::IsNullOrWhiteSpace($id)) { $id }
+            }
             $validSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
             foreach ($id in $freshIds) { [void]$validSet.Add($id) }
             $markedProp = $next.Query.PSObject.Properties['MarkedChangeIds']
@@ -1284,7 +1302,11 @@ function Invoke-ChangelistReducer {
                 $next.Data.SubmittedChanges = @($next.Data.SubmittedChanges) + $entries
             } else {
                 # Replace: reconcile marks so stale IDs are removed
-                [string[]]$freshIds = @($entries | ForEach-Object { [string]$_.Id })
+                [string[]]$freshIds = foreach ($entry in $entries) {
+                    if ($null -eq $entry) { continue }
+                    $id = [string]$entry.Id
+                    if (-not [string]::IsNullOrWhiteSpace($id)) { $id }
+                }
                 $validSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
                 foreach ($id in $freshIds) { [void]$validSet.Add($id) }
                 $markedProp = $next.Query.PSObject.Properties['MarkedChangeIds']
@@ -1597,7 +1619,7 @@ function Invoke-ChangelistReducer {
                 'MergeTool'         { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenResolveSettings' }) }
                 'ViewRevisionGraph' { return Invoke-FilesReducer -State $next -Action ([pscustomobject]@{ Type = 'OpenRevisionGraph' }) }
                 'MoveMarkedFiles'   {
-                    [string[]]$changeIds   = @($next.Query.MarkedChangeIds | ForEach-Object { [string]$_ } | Sort-Object)
+                    [string[]]$changeIds   = @(ConvertTo-NonEmptyStringValues -InputValues $next.Query.MarkedChangeIds | Sort-Object)
                     [object[]]$visibleIds  = @($next.Derived.VisibleChangeIds)
                     $targetId = if ($visibleIds.Count -gt 0) { [string]$visibleIds[$next.Cursor.ChangeIndex] } else { '' }
                     $markedCount = $changeIds.Count
@@ -1625,7 +1647,12 @@ function Invoke-ChangelistReducer {
                         return Update-BrowserDerivedState -State $next
                     }
 
-                    [string[]]$changeIds = @($targetChanges | ForEach-Object { [string]$_.Id } | Sort-Object -Unique)
+                    [string[]]$changeIds = foreach ($change in $targetChanges) {
+                        if ($null -eq $change) { continue }
+                        $id = [string]$change.Id
+                        if (-not [string]::IsNullOrWhiteSpace($id)) { $id }
+                    }
+                    $changeIds = @($changeIds | Sort-Object -Unique)
                     $mcProp = $next.Query.PSObject.Properties['MarkedChangeIds']
                     $hasMarks = $null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0
                     if ($hasMarks) {
@@ -1765,7 +1792,7 @@ function Invoke-ChangelistReducer {
         }
         'ReconcileMarks' {
             if (($Action.PSObject.Properties.Match('AllChangeIds')).Count -gt 0) {
-                [string[]]$allIds = @($Action.AllChangeIds | ForEach-Object { [string]$_ })
+                [string[]]$allIds = @(ConvertTo-NonEmptyStringValues -InputValues $Action.AllChangeIds)
                 $validSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
                 foreach ($id in $allIds) { [void]$validSet.Add($id) }
                 $markedProp = $next.Query.PSObject.Properties['MarkedChangeIds']
@@ -1778,7 +1805,7 @@ function Invoke-ChangelistReducer {
         }
         'UnmarkChanges' {
             [string[]]$changeIds = if (($Action.PSObject.Properties.Match('ChangeIds')).Count -gt 0) {
-                @($Action.ChangeIds | ForEach-Object { [string]$_ })
+                @(ConvertTo-NonEmptyStringValues -InputValues $Action.ChangeIds)
             } else { @() }
             foreach ($changeId in $changeIds) {
                 if (-not [string]::IsNullOrWhiteSpace($changeId)) {
@@ -2018,7 +2045,12 @@ function Invoke-ChangelistReducer {
             [object[]]$targetChanges = @(Get-DeleteShelvedActionableChanges -State $next)
             if ($targetChanges.Count -eq 0) { return Update-BrowserDerivedState -State $next }
 
-            [string[]]$changeIds = @($targetChanges | ForEach-Object { [string]$_.Id } | Sort-Object -Unique)
+            [string[]]$changeIds = foreach ($change in $targetChanges) {
+                if ($null -eq $change) { continue }
+                $id = [string]$change.Id
+                if (-not [string]::IsNullOrWhiteSpace($id)) { $id }
+            }
+            $changeIds = @($changeIds | Sort-Object -Unique)
             $mcProp = $next.Query.PSObject.Properties['MarkedChangeIds']
             $hasMarks = $null -ne $mcProp -and $null -ne $mcProp.Value -and $mcProp.Value.Count -gt 0
             if ($hasMarks) {

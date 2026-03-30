@@ -185,6 +185,18 @@ Describe 'Browser reducer' {
         @($next.Ui.OverlayPayload.OnAccept.ChangeIds) | Should -Not -Contain '102'
     }
 
+    It 'DeleteChange action filters null and empty marked changelist ids' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        [void]$state.Query.MarkedChangeIds.Add('101')
+        [void]$state.Query.MarkedChangeIds.Add('')
+        [void]$state.Query.MarkedChangeIds.Add($null)
+
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'DeleteChange' })
+
+        $next.Ui.OverlayMode | Should -Be 'Confirm'
+        @($next.Ui.OverlayPayload.OnAccept.ChangeIds) | Should -Be @('101')
+    }
+
     It 'DeleteShelvedFiles action without marks sets PendingRequest with kind DeleteShelvedFiles' {
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })

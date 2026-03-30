@@ -85,6 +85,24 @@ $rows = @()
 if ($cond) { $rows = @($source) }
 ```
 
+### Avoid pipeline scriptblocks over nullable scalars
+
+When a collection can contain `$null` or `''`, avoid piping it into `ForEach-Object` with expressions like `$_ -match ...`. In PowerShell, `.NET null` values flowing through a pipeline scriptblock can trigger surprising `NullReferenceException` failures instead of behaving like ordinary `$null` checks.
+
+```powershell
+# WRONG — crashes if any element is a .NET null
+$quoted = $args | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
+
+# CORRECT
+$quoted = foreach ($arg in $args) {
+    if ($null -ne $arg -and $arg -ne '') {
+        if ($arg -match '\s') { '"' + $arg + '"' } else { $arg }
+    }
+}
+```
+
+Use a `foreach` loop when normalizing command arguments, rendering segments, or other scalar collections that may carry placeholders or optional values.
+
 ### Pester 5 test file structure — per-`Describe` `BeforeAll`
 
 Top-level code runs only during **discovery**, not execution. Functions defined at the top level are invisible inside `It`/`BeforeEach`.

@@ -566,6 +566,36 @@ Describe 'Get-P4ChangelistEntries' {
     }
 }
 
+Describe 'Get-P4PendingChangelists' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'builds changelist records when only P4Cli is imported' {
+        Mock Get-P4Info -ModuleName P4Cli {
+            [pscustomobject]@{ User = 'alice'; Client = 'ws-main'; Port = 'ssl:perforce:1666'; Root = 'C:\ws-main' }
+        }
+        Mock Invoke-P4 -ModuleName P4Cli {
+            @(
+                [pscustomobject]@{
+                    change = '12345'
+                    user   = 'alice'
+                    client = 'ws-main'
+                    time   = '1700000000'
+                    status = 'pending'
+                    desc   = 'Delete me'
+                }
+            )
+        }
+
+        $result = @(Get-P4PendingChangelists -Max 1)
+
+        $result.Count | Should -Be 1
+        $result[0].Change | Should -Be '12345'
+        $result[0].Description | Should -Be 'Delete me'
+    }
+}
+
 Describe 'Get-P4SubmittedChangelists' {
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
@@ -1879,6 +1909,10 @@ Describe 'Get-P4CommandTimeout' {
 
     It 'change command resolves to Mutating timeout (30000)' {
         Get-P4CommandTimeout -CommandLine 'p4 change -o' | Should -Be 30000
+    }
+
+    It 'skips global flags and extra spacing when resolving the subcommand' {
+        Get-P4CommandTimeout -CommandLine 'p4   -ztag   change   -d   12345' | Should -Be 30000
     }
 
     It 'info command resolves to Metadata timeout (10000)' {

@@ -354,6 +354,104 @@ Describe 'Start-P4Browser integration' {
 
         $script:ConsoleAvailabilityChecks | Should -BeGreaterThan 1
     }
+
+    It 'does not throw when profiling is enabled' {
+        $script:KeyQueue = [System.Collections.Generic.Queue[System.ConsoleKeyInfo]]::new()
+        $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new('q', [System.ConsoleKey]::Q, $false, $false, $false))
+
+        Mock Test-BrowserConsoleKeyAvailable -ModuleName PerfourceCommanderConsole {
+            return $script:KeyQueue.Count -gt 0
+        }
+
+        Mock Read-BrowserConsoleKey -ModuleName PerfourceCommanderConsole {
+            if ($script:KeyQueue.Count -le 0) {
+                throw 'Test key queue unexpectedly empty.'
+            }
+
+            return $script:KeyQueue.Dequeue()
+        }
+
+        {
+            Start-P4Browser -IntegrityTest -MaxChanges 3 -Profile
+        } | Should -Not -Throw
+    }
+
+    It 're-renders while an async command is busy so the spinner can advance' {
+        InModuleScope PerfourceCommanderConsole {
+            $script:AsyncJobRegistry = @{}
+            Set-BrowserAsyncExecutor -Executor ([pscustomobject]@{
+                Execute = {
+                    param([pscustomobject]$Envelope, [scriptblock]$Worker)
+                    $completion = & $Worker $Envelope ''
+                    $script:AsyncJobRegistry[[string]$Envelope.RequestId] = [pscustomobject]@{
+                        RemainingPolls = 3
+                        Completion     = $completion
+                    }
+                }
+                Poll = {
+                    param([string]$RequestId)
+                    if (-not $script:AsyncJobRegistry.ContainsKey($RequestId)) {
+                        return $null
+                    }
+
+                    $entry = $script:AsyncJobRegistry[$RequestId]
+                    if ([int]$entry.RemainingPolls -gt 0) {
+                        $entry.RemainingPolls = [int]$entry.RemainingPolls - 1
+                        $script:AsyncJobRegistry[$RequestId] = $entry
+                        return $null
+                    }
+
+                    [void]$script:AsyncJobRegistry.Remove($RequestId)
+                    return $entry.Completion
+                }
+                Cancel = {
+                    param([string]$RequestId)
+                    [void]$script:AsyncJobRegistry.Remove($RequestId)
+                }
+            })
+        }
+
+        $script:KeyQueue = [System.Collections.Generic.Queue[System.ConsoleKeyInfo]]::new()
+        $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new([char]0, [System.ConsoleKey]::F5, $false, $false, $false))
+        $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new('q', [System.ConsoleKey]::Q, $false, $false, $false))
+        $script:BusyRenderCount = 0
+        $script:ConsoleAvailabilityChecks = 0
+
+        Mock Test-BrowserConsoleKeyAvailable -ModuleName PerfourceCommanderConsole {
+            $script:ConsoleAvailabilityChecks++
+            if ($script:KeyQueue.Count -gt 1) {
+                return $true
+            }
+
+            if ($script:KeyQueue.Count -eq 1 -and $script:ConsoleAvailabilityChecks -ge 5) {
+                return $true
+            }
+
+            return $false
+        }
+
+        Mock Read-BrowserConsoleKey -ModuleName PerfourceCommanderConsole {
+            if ($script:KeyQueue.Count -le 0) {
+                throw 'Test key queue unexpectedly empty.'
+            }
+
+            return $script:KeyQueue.Dequeue()
+        }
+
+        Mock Render-BrowserState -ModuleName PerfourceCommanderConsole {
+            param($State)
+            if ([bool]$State.Runtime.ModalPrompt.IsBusy) {
+                $script:BusyRenderCount++
+            }
+        }
+
+        {
+            Start-P4Browser -IntegrityTest -MaxChanges 3
+        } | Should -Not -Throw
+
+        $script:BusyRenderCount | Should -BeGreaterThan 1
+        Assert-MockCalled Get-P4ChangelistEntries -ModuleName PerfourceCommanderConsole -Times 2
+    }
 }
 
 Describe 'Browser file loading helpers' {

@@ -2,6 +2,13 @@ Set-StrictMode -Version Latest
 
 Import-Module (Join-Path $PSScriptRoot 'Models.psm1') -Force -Global
 
+$script:NewP4ChangelistRecordCommand = $ExecutionContext.InvokeCommand.GetCommand('New-P4ChangelistRecord', [System.Management.Automation.CommandTypes]::Function)
+$script:ConvertToChangelistEntryCommand = $ExecutionContext.InvokeCommand.GetCommand('ConvertTo-ChangelistEntry', [System.Management.Automation.CommandTypes]::Function)
+$script:ConvertToSubmittedChangelistEntryCommand = $ExecutionContext.InvokeCommand.GetCommand('ConvertTo-SubmittedChangelistEntry', [System.Management.Automation.CommandTypes]::Function)
+$script:NewP4FileEntryCommand = $ExecutionContext.InvokeCommand.GetCommand('New-P4FileEntry', [System.Management.Automation.CommandTypes]::Function)
+$script:NewIntegrationRecordCommand = $ExecutionContext.InvokeCommand.GetCommand('New-IntegrationRecord', [System.Management.Automation.CommandTypes]::Function)
+$script:NewRevisionNodeCommand = $ExecutionContext.InvokeCommand.GetCommand('New-RevisionNode', [System.Management.Automation.CommandTypes]::Function)
+
 # Overridable in tests via InModuleScope P4Cli { $script:P4Executable = 'cmd.exe' }
 $script:P4Executable = 'p4.exe'
 
@@ -117,7 +124,7 @@ function Format-P4OutputLine {
     <#
     .SYNOPSIS
         Converts raw p4 JSON output lines into human-readable summary strings.
-    .DESCRIPTION
+            & $script:NewP4ChangelistRecordCommand `
         Parses each raw JSON line defensively.  For recognised record shapes a
         concise summary is produced (e.g. "CL#12345  Fix build  user@ws").
         Unrecognised or unparseable records fall back to a compacted version of
@@ -382,10 +389,23 @@ function Get-P4CommandTimeout {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$CommandLine)
 
-    # Strip leading 'p4 ' and find first non-option token (the subcommand).
-    $cleaned     = $CommandLine -replace '^p4\s+', ''
-    $subcommand  = ($cleaned -split '\s+' | Where-Object { $_ -ne '' -and -not $_.StartsWith('-') } | Select-Object -First 1)
-    if ([string]::IsNullOrWhiteSpace($subcommand)) { $subcommand = '' }
+    # Strip leading 'p4 ' and find the first non-option token (the subcommand).
+    # Use an explicit foreach loop rather than a pipeline predicate because split
+    # results can still carry null/empty values that trigger NullReferenceException
+    # when a scriptblock calls instance methods like StartsWith().
+    $cleaned = $CommandLine -replace '^p4\s+', ''
+    $subcommand = ''
+    foreach ($token in ($cleaned -split '\s+')) {
+        if ($null -eq $token) { continue }
+
+        $text = [string]$token
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        if ($text.StartsWith('-')) { continue }
+
+        $subcommand = $text
+        break
+    }
+
     $category    = Get-P4CommandCategory -P4Args @($subcommand)
     return [int]$script:P4TimeoutByCategory[$category]
 }
@@ -690,7 +710,7 @@ function Get-P4PendingChangelists {
         $timestamp = [double]$record.time
         $time = [datetime]::UnixEpoch.AddSeconds($timestamp).ToLocalTime()
 
-        New-P4ChangelistRecord `
+        & $script:NewP4ChangelistRecordCommand `
             -Change $changeId `
             -User ([string]$record.user) `
             -Client ([string]$record.client) `
@@ -725,7 +745,7 @@ function Get-P4ChangelistEntries {
             $defaultClient = [string]$info.Client
         }
 
-        $defaultChangelist = New-P4ChangelistRecord `
+        $defaultChangelist = & $script:NewP4ChangelistRecordCommand `
             -Change 'default' `
             -User $defaultUser `
             -Client $defaultClient `
@@ -756,7 +776,7 @@ function Get-P4ChangelistEntries {
         $openedCount      = if ($openedCounts.ContainsKey($changeNum))    { $openedCounts[$changeNum]    } else { 0 }
         $shelvedCount     = if ($shelvedCounts.ContainsKey($changeNum))   { $shelvedCounts[$changeNum]   } else { 0 }
         $unresolvedCount  = if ($unresolvedCounts.ContainsKey($changeNum)) { $unresolvedCounts[$changeNum] } else { 0 }
-        ConvertTo-ChangelistEntry -Changelist $_ -OpenedFileCount $openedCount `
+        & $script:ConvertToChangelistEntryCommand -Changelist $_ -OpenedFileCount $openedCount `
             -ShelvedFileCount $shelvedCount -UnresolvedFileCount $unresolvedCount
     }
 }
@@ -1117,7 +1137,7 @@ function Get-P4OpenedFiles {
         $isUnresolved = Test-P4FstatRecordIsUnresolved -Record $record
         $haveRev = if ($null -ne ($record.PSObject.Properties['haveRev'])) { [int]$record.haveRev } else { 0 }
         $headRev = if ($null -ne ($record.PSObject.Properties['headRev'])) { [int]$record.headRev } else { 0 }
-        New-P4FileEntry -DepotPath $depotPath -Action $action -FileType $fileType `
+        & $script:NewP4FileEntryCommand -DepotPath $depotPath -Action $action -FileType $fileType `
                         -Change $recChange -SourceKind 'Opened' -IsUnresolved $isUnresolved `
                         -HaveRev $haveRev -HeadRev $headRev
     }
@@ -1392,7 +1412,7 @@ function Set-P4FileEntriesUnresolvedState {
         $isUnresolved = [bool]$UnresolvedDepotPaths.Contains($depotPath)
         $haveRev      = if ($null -ne ($entry.PSObject.Properties['HaveRev'])) { [int]$entry.HaveRev } else { 0 }
         $headRev      = if ($null -ne ($entry.PSObject.Properties['HeadRev'])) { [int]$entry.HeadRev } else { 0 }
-        New-P4FileEntry `
+        & $script:NewP4FileEntryCommand `
             -DepotPath    $depotPath `
             -Action       ([string]$entry.Action) `
             -FileType     ([string]$entry.FileType) `
@@ -1434,7 +1454,7 @@ function Set-P4FileEntriesContentModifiedState {
         $isContentModified = [bool]$ModifiedDepotPaths.Contains($depotPath)
         $haveRev           = if ($null -ne ($entry.PSObject.Properties['HaveRev'])) { [int]$entry.HaveRev } else { 0 }
         $headRev           = if ($null -ne ($entry.PSObject.Properties['HeadRev'])) { [int]$entry.HeadRev } else { 0 }
-        New-P4FileEntry `
+        & $script:NewP4FileEntryCommand `
             -DepotPath         $depotPath `
             -Action            ([string]$entry.Action) `
             -FileType          ([string]$entry.FileType) `
@@ -1573,7 +1593,7 @@ function Get-P4SubmittedChangelists {
 
         $desc = [string]$record.desc
         if ([string]::IsNullOrWhiteSpace($desc)) { $desc = '(no description)' }
-        New-P4ChangelistRecord `
+        & $script:NewP4ChangelistRecordCommand `
             -Change $changeId `
             -User ([string]$record.user) `
             -Client ([string]$record.client) `
@@ -1608,7 +1628,7 @@ function Get-P4SubmittedChangelistEntries {
     $changelists = Get-P4SubmittedChangelists -Max $Max -BeforeChange $BeforeChange -Client $Client -ProcessObserver $ProcessObserver
 
     $changelists | ForEach-Object {
-        ConvertTo-SubmittedChangelistEntry -Changelist $_
+        & $script:ConvertToSubmittedChangelistEntryCommand -Changelist $_
     }
 }
 
@@ -1845,7 +1865,7 @@ function Get-P4FileLog {
                 [void][int]::TryParse($srevStr, [ref]$srevInt)
                 [void][int]::TryParse($erevStr, [ref]$erevInt)
                 $integrations.Add(
-                    (New-IntegrationRecord -How ([string]$howProp.Value) -File ([string]$fileProp.Value) `
+                    (& $script:NewIntegrationRecordCommand -How ([string]$howProp.Value) -File ([string]$fileProp.Value) `
                         -StartRev $srevInt -EndRev $erevInt)
                 ) | Out-Null
             }
@@ -1876,7 +1896,7 @@ function Get-P4FileLog {
         $nodeUser     = if ($null -ne $userProp)   { [string]$userProp.Value   } else { '' }
         $nodeClient   = if ($null -ne $clientProp) { [string]$clientProp.Value } else { '' }
         $nodeDesc     = if ($null -ne $descProp)   { [string]$descProp.Value   } else { '' }
-        $result.Add((New-RevisionNode `
+        $result.Add((& $script:NewRevisionNodeCommand `
             -DepotFile    ([string]$depotFileProp.Value) `
             -Rev          $revInt `
             -Change       $changeInt `

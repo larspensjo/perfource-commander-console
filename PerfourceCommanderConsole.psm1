@@ -382,8 +382,8 @@ $script:AsyncWorkers = @{
     'ReloadPending' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -415,8 +415,8 @@ $script:AsyncWorkers = @{
     'ReloadSubmitted' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -457,8 +457,8 @@ $script:AsyncWorkers = @{
     'LoadMore' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -509,8 +509,8 @@ $script:AsyncWorkers = @{
     'LoadFiles' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed  = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -561,8 +561,8 @@ $script:AsyncWorkers = @{
     'LoadFilesEnrichment' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -597,8 +597,8 @@ $script:AsyncWorkers = @{
     'FetchDescribe' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -631,8 +631,8 @@ $script:AsyncWorkers = @{
     'DeleteChange' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -662,8 +662,8 @@ $script:AsyncWorkers = @{
     'DeleteShelvedFiles' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -693,8 +693,8 @@ $script:AsyncWorkers = @{
     'ShelveFiles' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -724,8 +724,8 @@ $script:AsyncWorkers = @{
     'SubmitChange' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -755,8 +755,8 @@ $script:AsyncWorkers = @{
     'MoveFiles' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -786,8 +786,8 @@ $script:AsyncWorkers = @{
     'ResolveFile' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -825,8 +825,8 @@ $script:AsyncWorkers = @{
     'LoadFileLog' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -1793,12 +1793,15 @@ function Start-P4Browser {
     $state  = New-BrowserState -Changes @() -InitialWidth $width -InitialHeight $height
     $profiler = New-BrowserProfiler -Enabled ([bool]$Profile) -Path $ProfilePath -ThresholdMs $ProfileThresholdMs
     $getProfileStateFields = ${function:Get-BrowserProfileStateFields}
+    $writeProfileEvent = $ExecutionContext.InvokeCommand.GetCommand('Write-BrowserProfileEvent', [System.Management.Automation.CommandTypes]::Function)
     $startupFailureMessage = ''
 
-    Set-RenderProfiler {
+    $renderProfilerCallback = {
         param($Stage, $DurationMs, $Fields)
-        Write-BrowserProfileEvent -Profiler $profiler -Stage $Stage -DurationMs ([int]$DurationMs) -Fields $Fields
-    }
+        & $writeProfileEvent -Profiler $profiler -Stage $Stage -DurationMs ([int]$DurationMs) -Fields $Fields
+    }.GetNewClosure()
+
+    Set-RenderProfiler $renderProfilerCallback
 
     # Phase 0.2: Store configured max for consistent reload behaviour
     $state.Runtime.ConfiguredMax = $MaxChanges
@@ -1885,6 +1888,10 @@ function Start-P4Browser {
                             })
                         }
                         Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.ResizeRender' -Fields @{ Width = $currentWidth; Height = $currentHeight } -ScriptBlock {
+                            Render-BrowserState -State $state
+                        } | Out-Null
+                    } elseif ([bool]$state.Runtime.ModalPrompt.IsOpen -and [bool]$state.Runtime.ModalPrompt.IsBusy) {
+                        Invoke-BrowserProfiled -Profiler $profiler -Stage 'Loop.IdleBusyRender' -Fields @{ HasActiveCommand = ($null -ne $state.Runtime.ActiveCommand) } -ScriptBlock {
                             Render-BrowserState -State $state
                         } | Out-Null
                     }

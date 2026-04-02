@@ -536,7 +536,7 @@ Describe 'Frame helpers' {
                 $state.Runtime.ModalPrompt.IsOpen = $false
                 $frame = Build-FrameFromState -State $state
                 $allText = ($frame.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
-                $allText | Should -Not -Match 'p4 Commands'
+                $allText | Should -Not -Match 'Perforce Activity'
             }
 
             It 'renders modal overlay when CommandModal is open and includes current command' {
@@ -547,7 +547,8 @@ Describe 'Frame helpers' {
                 $frame    = Build-FrameFromState -State $state
                 $overlaid = Apply-ModalOverlay -Frame $frame -ModalPrompt $state.Runtime.ModalPrompt
                 $allText  = ($overlaid.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
-                $allText | Should -Match 'p4 Commands'
+                $allText | Should -Match 'Perforce Activity'
+                $allText | Should -Match '\[P4 BUSY\] Fetching pending changelists'
                 $allText | Should -Match 'p4 changes -s pending'
             }
 
@@ -566,8 +567,24 @@ Describe 'Frame helpers' {
                 $firstText = ($firstOverlay.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
                 $nextText  = ($nextOverlay.Rows  | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
 
-                $firstText | Should -Match '◐ Running:'
-                $nextText  | Should -Match '◓ Running:'
+                $firstText | Should -Match '\[P4 BUSY\].*◐'
+                $nextText  | Should -Match '\[P4 BUSY\].*◓'
+            }
+
+            It 'renders the busy spinner in a distinct color' {
+                $state = New-RenderStateFixture
+                $state.Runtime.ModalPrompt.IsOpen         = $true
+                $state.Runtime.ModalPrompt.IsBusy         = $true
+                $state.Runtime.ModalPrompt.CurrentCommand = 'p4 changes -s pending'
+                $state.Runtime.ModalPrompt | Add-Member -NotePropertyName CurrentTimeoutMs -NotePropertyValue 0 -Force
+                $startedAt = [datetime]'2026-01-01 10:00:00'
+
+                $rows = @(Build-CommandModalRows -CommandModal $state.Runtime.ModalPrompt -Width 60 -MaxRows 8 -StartedAt $startedAt -CurrentTime $startedAt)
+                $busyRow = @($rows[1])
+                $spinnerSegment = $busyRow | Where-Object { [string]$_.Text -eq '◐' } | Select-Object -First 1
+
+                $spinnerSegment | Should -Not -BeNullOrEmpty
+                $spinnerSegment.Color | Should -Be 'Cyan'
             }
 
             It 'renders history rows newest-first and includes duration' {
@@ -671,7 +688,7 @@ Describe 'Frame helpers' {
                 $overlaid  = Apply-ModalOverlay -Frame $frame -ModalPrompt $state.Runtime.ModalPrompt -StartedAt $startedAt
                 $allText   = ($overlaid.Rows | ForEach-Object { ($_.Segments | ForEach-Object { $_.Text }) -join '' }) -join "`n"
                 $allText   | Should -Match 'p4 changes -s pending'
-                $allText   | Should -Match '\(\d+s\)'
+                $allText   | Should -Match '\d{2}:\d{2}'
             }
         }
     }

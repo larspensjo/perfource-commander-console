@@ -109,6 +109,50 @@ function Get-BusyIndicatorGlyph {
     return $frames[$elapsedSeconds % $frames.Count]
 }
 
+function Get-BusyActivityLabel {
+    param([string]$CommandLine = '')
+
+    $cmd = if ([string]::IsNullOrWhiteSpace($CommandLine)) { '' } else { $CommandLine.Trim() }
+    if ([string]::IsNullOrWhiteSpace($cmd)) {
+        return 'Working'
+    }
+
+    switch -Regex ($cmd) {
+        '^p4\s+changes\b.*\s-s\s+pending\b'   { return 'Fetching pending changelists' }
+        '^p4\s+changes\b.*\s-s\s+submitted\b' { return 'Fetching submitted changelists' }
+        '^p4\s+opened\b'                        { return 'Loading opened files' }
+        '^p4\s+describe\b'                      { return 'Loading changelist details' }
+        '^p4\s+filelog\b'                       { return 'Loading revision history' }
+        '^p4\s+fstat\b'                         { return 'Loading file metadata' }
+        '^p4\s+print\b'                         { return 'Loading file contents' }
+        '^p4\s+diff(?:2)?\b'                    { return 'Checking content status' }
+        '^p4\s+resolve\b'                       { return 'Resolving files' }
+        '^p4\b'                                  { return 'Running Perforce command' }
+        default                                   { return 'Running command' }
+    }
+}
+
+function Format-BusyElapsedLabel {
+    param(
+        [datetime]$StartedAt = [datetime]::MinValue,
+        [datetime]$CurrentTime = [datetime]::MinValue
+    )
+
+    if ($StartedAt -eq [datetime]::MinValue) {
+        return ''
+    }
+
+    $now = if ($CurrentTime -ne [datetime]::MinValue) { $CurrentTime } else { Get-Date }
+    $elapsedSeconds = [Math]::Max(0, [int](($now - $StartedAt).TotalSeconds))
+    $elapsed = [timespan]::FromSeconds($elapsedSeconds)
+
+    if ($elapsedSeconds -ge 3600) {
+        return ('{0:00}:{1:00}:{2:00}' -f [int]$elapsed.TotalHours, $elapsed.Minutes, $elapsed.Seconds)
+    }
+
+    return ('{0:00}:{1:00}' -f $elapsed.Minutes, $elapsed.Seconds)
+}
+
 function Test-IsSegmentLike {
     param([AllowNull()]$Value)
 
@@ -1172,7 +1216,8 @@ function Build-CommandModalRows {
     $history        = @(Get-PropertyValueOrDefault        -Object $CommandModal -Name 'History'           -Default @())
     $timeoutMs      = [int](Get-PropertyValueOrDefault    -Object $CommandModal -Name 'CurrentTimeoutMs'  -Default 0)
     $indicatorGlyph = Get-BusyIndicatorGlyph -StartedAt $StartedAt -CurrentTime $CurrentTime
-    $now            = if ($CurrentTime -ne [datetime]::MinValue) { $CurrentTime } else { Get-Date }
+    $activityLabel  = Get-BusyActivityLabel -CommandLine $currentCommand
+    $elapsedLabel   = Format-BusyElapsedLabel -StartedAt $StartedAt -CurrentTime $CurrentTime
 
     # Box height: top + inner content rows + bottom border; minimum 4
     $boxHeight = [Math]::Max(4, [Math]::Min($MaxRows, 12))
@@ -1181,31 +1226,41 @@ function Build-CommandModalRows {
     $contentRows = [System.Collections.Generic.List[object]]::new()
 
     if ($isBusy) {
-        # Workflow step progress row (shown when a workflow is active)
+        $stepDisplay = ''
         if ($null -ne $ActiveWorkflow) {
             $done  = [int]$ActiveWorkflow.DoneCount
             $total = [int]$ActiveWorkflow.TotalCount
-            $stepDisplay = if ($total -gt 0) { "(step $($done + 1)/$total)" } else { '' }
+            if ($total -gt 0) {
+                $stepDisplay = "step $($done + 1)/$total"
+            }
+        }
+
+        if ($contentRows.Count -lt ($innerRows - 1)) {
+            $busySegments = [System.Collections.Generic.List[object]]::new()
+            $busySegments.Add(@{ Text = '[P4 BUSY] '; Color = 'Yellow' })
+            $busySegments.Add(@{ Text = $activityLabel; Color = 'Yellow' })
+            if (-not [string]::IsNullOrWhiteSpace($stepDisplay)) {
+                $busySegments.Add(@{ Text = "  ($stepDisplay)"; Color = 'DarkGray' })
+            }
+            $busySegments.Add(@{ Text = '  '; Color = 'DarkGray' })
+            $busySegments.Add(@{ Text = $indicatorGlyph; Color = 'Cyan' })
+            if (-not [string]::IsNullOrWhiteSpace($elapsedLabel)) {
+                $busySegments.Add(@{ Text = "  $elapsedLabel"; Color = 'DarkGray' })
+            }
+            $contentRows.Add(@($busySegments.ToArray()))
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($currentCommand) -and $contentRows.Count -lt ($innerRows - 1)) {
             $contentRows.Add(@(
-                @{ Text = $indicatorGlyph + ' Working… '; Color = 'Yellow' },
-                @{ Text = $stepDisplay;                   Color = 'DarkGray' }
+                @{ Text = $currentCommand; Color = 'Gray' }
             ))
         }
+
         # Cancel / quit banner row (M3.4)
         if ($CancelRequested -and $contentRows.Count -lt ($innerRows - 1)) {
             $contentRows.Add(@(@{ Text = [char]0x26A0 + ' Cancel requested — finishing current step…'; Color = 'Yellow' }))
         } elseif ($QuitRequested -and $contentRows.Count -lt ($innerRows - 1)) {
             $contentRows.Add(@(@{ Text = [char]0x26A0 + ' Will quit after current command…'; Color = 'Yellow' }))
-        }
-        # Currently running command row
-        if ($contentRows.Count -lt ($innerRows - 1)) {
-            $elapsedSec   = if ($StartedAt -ne [datetime]::MinValue) { [int](($now - $StartedAt).TotalSeconds) } else { 0 }
-            $elapsedLabel = if ($elapsedSec -gt 0) { "  ($($elapsedSec)s)" } else { '' }
-            $contentRows.Add(@(
-                @{ Text = $indicatorGlyph + ' Running: '; Color = 'DarkGray' },
-                @{ Text = $currentCommand;                Color = 'Yellow' },
-                @{ Text = $elapsedLabel;                  Color = 'DarkGray' }
-            ))
         }
     }
 
@@ -1274,7 +1329,7 @@ function Build-CommandModalRows {
     $contentRows.Add(@(@{ Text = $footerText; Color = $footerColor }))
 
     $rows = [System.Collections.Generic.List[object]]::new()
-    $rows.Add((Build-BoxTopSegments    -Title '[p4 Commands]' -Width $Width -BorderColor $borderColor -TitleColor 'Cyan'))
+    $rows.Add((Build-BoxTopSegments    -Title '[Perforce Activity]' -Width $Width -BorderColor $borderColor -TitleColor 'Cyan'))
     foreach ($row in $contentRows) {
         $rows.Add((Build-BorderedRowSegments -InnerSegments $row -Width $Width -BorderColor $borderColor))
     }

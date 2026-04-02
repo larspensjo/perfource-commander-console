@@ -52,9 +52,61 @@ Describe 'ConvertFrom-KeyInfoToAction' {
         $action.Type | Should -Be 'MoveEnd'
     }
 
-    It 'Spacebar maps to ToggleFilter' {
+    It 'Spacebar defaults to ToggleFilter when no state is available' {
         $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key Spacebar)
         $action.Type | Should -Be 'ToggleFilter'
+    }
+
+    It 'Spacebar maps to ToggleFilter when the filters pane is active' {
+        $mockState = [pscustomobject]@{
+            Ui = [pscustomobject]@{
+                ScreenStack = @('Changelists')
+                ActivePane  = 'Filters'
+                ViewMode    = 'Pending'
+            }
+        }
+
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key Spacebar) -State $mockState
+        $action.Type | Should -Be 'ToggleFilter'
+    }
+
+    It 'Spacebar maps to ToggleMarkCurrent when the changelist pane is active' {
+        $mockState = [pscustomobject]@{
+            Ui = [pscustomobject]@{
+                ScreenStack = @('Changelists')
+                ActivePane  = 'Changelists'
+                ViewMode    = 'Pending'
+            }
+        }
+
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key Spacebar) -State $mockState
+        $action.Type | Should -Be 'ToggleMarkCurrent'
+    }
+
+    It 'Spacebar has no binding on the command log list pane' {
+        $mockState = [pscustomobject]@{
+            Ui = [pscustomobject]@{
+                ScreenStack = @('Changelists')
+                ActivePane  = 'Changelists'
+                ViewMode    = 'CommandLog'
+            }
+        }
+
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key Spacebar) -State $mockState
+        $action | Should -BeNullOrEmpty
+    }
+
+    It 'Spacebar has no binding outside the changelists screen' {
+        $mockState = [pscustomobject]@{
+            Ui = [pscustomobject]@{
+                ScreenStack = @('Changelists', 'Files')
+                ActivePane  = 'Changelists'
+                ViewMode    = 'Pending'
+            }
+        }
+
+        $action = ConvertFrom-KeyInfoToAction -KeyInfo (New-KeyInfo -Key Spacebar) -State $mockState
+        $action | Should -BeNullOrEmpty
     }
 
     It 'Enter maps to Describe' {

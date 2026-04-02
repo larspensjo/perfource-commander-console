@@ -755,6 +755,7 @@ Describe 'Build-HelpOverlayRows' {
         $allText = ($rows | ForEach-Object { ($_ | ForEach-Object { $_.Text }) -join '' }) -join "`n"
 
         $firstContentRowText | Should -Match 'Tab\s+Switch pane'
+        $allText | Should -Match 'Space\s+Toggle filter or CL selection'
         $allText | Should -Match 'M / Ins\s+Mark/unmark current changelist'
         $allText | Should -Match 'Shift\+M\s+Mark all visible changelists'
         $allText | Should -Match 'C\s+Clear all changelist marks'

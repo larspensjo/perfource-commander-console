@@ -1171,7 +1171,24 @@ function Build-StatusBarRow {
     }
 
     $expandHint  = if ((Get-PropertyValueOrDefault -Object $State.Ui -Name 'ExpandedChangelists' -Default $false)) { '[E] Collapse' } else { '[E] Expand' }
-    $statusText  = "$viewBadge Filtered: $filteredCount/$totalCount |$markBadge$workflowBadge [F1] Help [1/2/3] View [Tab] Pane [Space] Filter [Enter] Describe $expandHint [F5] Reload [Q] Quit"
+    $spaceHint   = if ((Get-PropertyValueOrDefault -Object $State.Ui -Name 'ActivePane' -Default 'Filters') -eq 'Filters') {
+        '[Space] Filter'
+    } elseif ((Get-PropertyValueOrDefault -Object $State.Ui -Name 'ViewMode' -Default 'Pending') -eq 'CommandLog') {
+        ''
+    } else {
+        '[Space] Select'
+    }
+    $statusParts = @(
+        "$viewBadge Filtered: $filteredCount/$totalCount |$markBadge$workflowBadge"
+        '[F1] Help'
+        '[1/2/3] View'
+        '[Tab] Pane'
+    )
+    if (-not [string]::IsNullOrWhiteSpace($spaceHint)) {
+        $statusParts += $spaceHint
+    }
+    $statusParts += @('[Enter] Describe', $expandHint, '[F5] Reload', '[Q] Quit')
+    $statusText  = ($statusParts -join ' ')
     $statusWidth = [Math]::Max(0, $Layout.StatusPane.W - 1)
 
     $segments = Write-ColorSegments -Segments @(@{
@@ -1359,7 +1376,7 @@ function Build-HelpOverlayRows {
         @{ Key = '↑ ↓';        Desc = 'Navigate' },
         @{ Key = 'PgUp/PgDn';  Desc = 'Page scroll' },
         @{ Key = 'Home/End';   Desc = 'Jump top/bottom' },
-        @{ Key = 'Space';      Desc = 'Toggle filter' },
+        @{ Key = 'Space';      Desc = 'Toggle filter or CL selection' },
         @{ Key = 'M / Ins';    Desc = 'Mark/unmark current changelist' },
         @{ Key = 'Shift+M';    Desc = 'Mark all visible changelists' },
         @{ Key = 'C';          Desc = 'Clear all changelist marks' },
@@ -2197,7 +2214,18 @@ function Build-CommandLogStatusBarRow {
 
     $totalCount    = if (($State.Runtime.PSObject.Properties.Match('CommandLog')).Count -gt 0) { @($State.Runtime.CommandLog).Count } else { 0 }
     $filteredCount = if (($State.Derived.PSObject.Properties.Match('VisibleCommandIds')).Count -gt 0) { $State.Derived.VisibleCommandIds.Count } else { 0 }
-    $statusText    = "[Commands] Showing: $filteredCount/$totalCount | [F1] Help [1/2/3] View [Tab] Pane [Space] Filter [E] Expand [→] Output [F5] Reload [Q] Quit"
+    $spaceHint     = if ((Get-PropertyValueOrDefault -Object $State.Ui -Name 'ActivePane' -Default 'Filters') -eq 'Filters') { '[Space] Filter' } else { '' }
+    $statusParts   = @(
+        "[Commands] Showing: $filteredCount/$totalCount |"
+        '[F1] Help'
+        '[1/2/3] View'
+        '[Tab] Pane'
+    )
+    if (-not [string]::IsNullOrWhiteSpace($spaceHint)) {
+        $statusParts += $spaceHint
+    }
+    $statusParts += @('[E] Expand', '[→] Output', '[F5] Reload', '[Q] Quit')
+    $statusText    = ($statusParts -join ' ')
     $statusWidth   = [Math]::Max(0, $Layout.StatusPane.W - 1)
 
     $seg  = @{ Text = $statusText; Color = 'DarkGray'; BackgroundColor = '' }

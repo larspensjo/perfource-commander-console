@@ -1,5 +1,38 @@
 Set-StrictMode -Version Latest
 
+function Get-SpacebarAction {
+    param($State)
+
+    if ($null -eq $State) {
+        return [pscustomobject]@{ Type = 'ToggleFilter' }
+    }
+
+    $screenStackProp = $State.Ui.PSObject.Properties['ScreenStack']
+    [object[]]$screenStack = if ($null -ne $screenStackProp -and $null -ne $screenStackProp.Value) {
+        @($screenStackProp.Value)
+    } else {
+        @('Changelists')
+    }
+    $activeScreen = if ($screenStack.Count -gt 0) { [string]$screenStack[-1] } else { 'Changelists' }
+    if ($activeScreen -ne 'Changelists') {
+        return $null
+    }
+
+    $activePaneProp = $State.Ui.PSObject.Properties['ActivePane']
+    $activePane = if ($null -ne $activePaneProp) { [string]$activePaneProp.Value } else { 'Filters' }
+    if ($activePane -eq 'Filters') {
+        return [pscustomobject]@{ Type = 'ToggleFilter' }
+    }
+
+    $viewModeProp = $State.Ui.PSObject.Properties['ViewMode']
+    $viewMode = if ($null -ne $viewModeProp) { [string]$viewModeProp.Value } else { 'Pending' }
+    if ($viewMode -eq 'CommandLog') {
+        return $null
+    }
+
+    return [pscustomobject]@{ Type = 'ToggleMarkCurrent' }
+}
+
 function ConvertFrom-KeyInfoToAction {
     param(
         [Parameter(Mandatory = $true)][System.ConsoleKeyInfo]$KeyInfo,
@@ -66,7 +99,7 @@ function ConvertFrom-KeyInfoToAction {
         'PageDown' { return [pscustomobject]@{ Type = 'PageDown' } }
         'Home' { return [pscustomobject]@{ Type = 'MoveHome' } }
         'End' { return [pscustomobject]@{ Type = 'MoveEnd' } }
-        'Spacebar' { return [pscustomobject]@{ Type = 'ToggleFilter' } }
+        'Spacebar' { return Get-SpacebarAction -State $State }
         'Enter' { return [pscustomobject]@{ Type = 'Describe' } }
         'E' { return [pscustomobject]@{ Type = 'ToggleChangelistView' } }
         'Delete' { return [pscustomobject]@{ Type = 'DeleteChange' } }

@@ -134,6 +134,29 @@ Describe 'Invoke-P4' {
         }
     }
 
+    It 'does not hang after a successful delete when a background child keeps inherited handles alive briefly' {
+        $scriptPath = Join-Path $TestDrive 'p4-change-delete-child-handle.cmd'
+        Set-Content -Path $scriptPath -Value @(
+            '@echo off',
+            'start "" /b cmd /c "ping -n 6 127.0.0.1 >nul"',
+            'echo {^"data^":^"Change 27202548 deleted.^",^"level^":0}',
+            'exit /b 0'
+        )
+
+        try {
+            & (Get-Module P4Cli) { param($path) $script:P4Executable = $path } $scriptPath
+            $before = Get-Date
+            {
+                & (Get-Module P4Cli) { Invoke-P4 -P4Args @('change', '-d', '27202548') }
+            } | Should -Not -Throw
+            $elapsed = (Get-Date) - $before
+            $elapsed.TotalSeconds | Should -BeLessThan 3
+        }
+        finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'cmd.exe' }
+        }
+    }
+
     It 'throws a timeout error and does not hang when the process exceeds TimeoutMs' {
         # cmd.exe /c ping -n 10 127.0.0.1 takes ~9 s; 400 ms timeout fires first.
         $before = Get-Date

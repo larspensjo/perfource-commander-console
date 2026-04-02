@@ -2,6 +2,69 @@ Set-StrictMode -Version Latest
 
 Import-Module (Join-Path $PSScriptRoot 'Models.psm1') -Force -Global
 
+if ($null -eq ('PerfourceCommanderConsole.P4LineCollector' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Threading;
+
+namespace PerfourceCommanderConsole {
+    public sealed class P4LineCollector : IDisposable {
+        private readonly Process _process;
+        private readonly DataReceivedEventHandler _stdoutHandler;
+        private readonly DataReceivedEventHandler _stderrHandler;
+
+        public ConcurrentQueue<string> StdoutLines { get; } = new ConcurrentQueue<string>();
+        public ConcurrentQueue<string> StderrLines { get; } = new ConcurrentQueue<string>();
+        public ManualResetEventSlim StdoutClosed { get; } = new ManualResetEventSlim(false);
+        public ManualResetEventSlim StderrClosed { get; } = new ManualResetEventSlim(false);
+
+        public P4LineCollector(Process process) {
+            _process = process;
+            _stdoutHandler = (sender, args) => {
+                if (args.Data == null) {
+                    StdoutClosed.Set();
+                    return;
+                }
+
+                StdoutLines.Enqueue(args.Data);
+            };
+            _stderrHandler = (sender, args) => {
+                if (args.Data == null) {
+                    StderrClosed.Set();
+                    return;
+                }
+
+                StderrLines.Enqueue(args.Data);
+            };
+
+            _process.OutputDataReceived += _stdoutHandler;
+            _process.ErrorDataReceived += _stderrHandler;
+        }
+
+        public void BeginRead() {
+            _process.BeginOutputReadLine();
+            _process.BeginErrorReadLine();
+        }
+
+        public void StopRead() {
+            try { _process.CancelOutputRead(); } catch { }
+            try { _process.CancelErrorRead(); } catch { }
+            try { _process.OutputDataReceived -= _stdoutHandler; } catch { }
+            try { _process.ErrorDataReceived -= _stderrHandler; } catch { }
+        }
+
+        public void Dispose() {
+            StopRead();
+            StdoutClosed.Dispose();
+            StderrClosed.Dispose();
+        }
+    }
+}
+'@
+}
+
 $script:NewP4ChangelistRecordCommand = $ExecutionContext.InvokeCommand.GetCommand('New-P4ChangelistRecord', [System.Management.Automation.CommandTypes]::Function)
 $script:ConvertToChangelistEntryCommand = $ExecutionContext.InvokeCommand.GetCommand('ConvertTo-ChangelistEntry', [System.Management.Automation.CommandTypes]::Function)
 $script:ConvertToSubmittedChangelistEntryCommand = $ExecutionContext.InvokeCommand.GetCommand('ConvertTo-SubmittedChangelistEntry', [System.Management.Automation.CommandTypes]::Function)
@@ -44,6 +107,11 @@ $script:P4TimeoutByCategory = @{
     Describe  = 15000
     Mutating  = 30000
 }
+
+# Maximum time to wait for redirected stdout/stderr tasks to drain after the
+# root p4 process has exited. Keeps inherited pipe handles in child processes
+# from freezing the browser indefinitely after the command itself is done.
+$script:P4StreamDrainTimeoutMs = 1000
 
 # Maximum total time (ms) spent on per-CL unresolved enrichment inside Get-P4UnresolvedFileCounts.
 # When exceeded, remaining changelists are skipped and their unresolved count defaults to 0.
@@ -541,12 +609,12 @@ function Invoke-P4 {
         $process.StandardInput.Close()
     }
 
-    # Read stdout and stderr concurrently via async tasks to prevent the
-    # deadlock that can occur when one pipe's buffer fills before the other
-    # is drained.  WaitForExit(timeout) then gives us a hard upper bound on
-    # how long a stalled p4 call can block the UI.
-    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-    $stderrTask = $process.StandardError.ReadToEndAsync()
+    # Read stdout and stderr concurrently via async line handlers to prevent the
+    # deadlock that can occur when one pipe's buffer fills before the other is
+    # drained. We keep already received output even if a descendant process holds
+    # the redirected handles open after the root p4 process has exited.
+    $lineCollector = [PerfourceCommanderConsole.P4LineCollector]::new($process)
+    $lineCollector.BeginRead()
 
     $exited = $process.WaitForExit($effectiveTimeoutMs)
 
@@ -560,21 +628,42 @@ function Invoke-P4 {
         if ($ProcessObserver) {
             try { & $ProcessObserver -EventType 'ProcessFinished' -ProcessId $process.Id -ExitCode -1 } catch { }
         }
-        # Dispose closes the redirected stream handles so ReadToEndAsync tasks
-        # complete promptly instead of dangling until GC finalizes them.
+        try { $lineCollector.StopRead() } catch { <# best-effort #> }
         try { $process.Dispose() } catch { <# best-effort #> }
+        $lineCollector.Dispose()
         throw "p4 timed out after ${effectiveTimeoutMs} ms. Args: $($psi.Arguments)"
     }
 
-    $stdout = $stdoutTask.GetAwaiter().GetResult()
-    $stderr = $stderrTask.GetAwaiter().GetResult()
     $exitCode = $process.ExitCode
     if ($ProcessObserver) {
         try { & $ProcessObserver -EventType 'ProcessFinished' -ProcessId $process.Id -ExitCode $exitCode } catch { }
     }
+    # Give the async readers a short grace window to flush any lines emitted
+    # immediately before exit, then detach from the redirected streams so a
+    # descendant process cannot keep this call blocked indefinitely.
+    [void]$lineCollector.StdoutClosed.Wait([int]$script:P4StreamDrainTimeoutMs)
+    [void]$lineCollector.StderrClosed.Wait([int]$script:P4StreamDrainTimeoutMs)
+
+    $lineCollector.StopRead()
     $process.Dispose()
 
-    $rawLines  = @(($stdout -split "`r?`n") | Where-Object { $_ -ne '' })
+    $stdoutLineArray = @($lineCollector.StdoutLines.ToArray())
+    $stderrLineArray = @($lineCollector.StderrLines.ToArray())
+    $lineCollector.Dispose()
+
+    $stdout = $stdoutLineArray -join "`n"
+    $stderr = $stderrLineArray -join "`n"
+
+    $rawLinesList = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in $stdoutLineArray) {
+        if ($null -eq $line) { continue }
+
+        $text = [string]$line
+        if ($text -ne '') {
+            [void]$rawLinesList.Add($text)
+        }
+    }
+    $rawLines  = @($rawLinesList)
     $records   = @($rawLines | ForEach-Object { ConvertFrom-Json $_ })
     $stdoutErrorMessages = @()
 

@@ -1023,4 +1023,111 @@ Describe 'Async cancellation races (M5.5)' {
             (Invoke-BrowserCompletionDrain -State $state) | Should -BeNullOrEmpty
         }
     }
+
+    It 'cancel performs a second process sweep after stopping the worker' {
+        $script:StoppedProcessIds = [System.Collections.Generic.List[int]]::new()
+        Mock Stop-P4ProcessTree -ModuleName PerfourceCommanderConsole {
+            param([int]$ProcessId)
+            $script:StoppedProcessIds.Add($ProcessId) | Out-Null
+        }
+
+        InModuleScope PerfourceCommanderConsole {
+            $startedAt = [datetime]'2026-03-12T10:10:00'
+            $eventFile = [System.IO.Path]::GetTempFileName()
+            $originalAsyncExecutor = $script:AsyncExecutor
+
+            try {
+                $state = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
+                $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                    Type        = 'AsyncCommandStarted'
+                    RequestId   = 'req-3'
+                    Kind        = 'DeleteChange'
+                    Scope       = 'Mutation'
+                    Generation  = 0
+                    CommandLine = 'p4 change -d 303'
+                    StartedAt   = $startedAt
+                    TimeoutMs   = 30000
+                })
+
+                $script:AsyncJobRegistry['req-3'] = [pscustomobject]@{
+                    Job               = $null
+                    ProcessEventFile  = $eventFile
+                    LastEventLineRead = 0
+                    ActiveProcessIds  = @()
+                }
+
+                $script:AsyncExecutor = [pscustomobject]@{
+                    Execute = $originalAsyncExecutor.Execute
+                    Poll    = { return $null }
+                    Cancel  = {
+                        param([string]$RequestId)
+                        $payload = [pscustomobject]@{
+                            EventType = 'ProcessStarted'
+                            RequestId = $RequestId
+                            ProcessId = 5151
+                            ExitCode  = $null
+                        }
+                        Add-Content -LiteralPath $eventFile -Value ($payload | ConvertTo-Json -Compress)
+                    }.GetNewClosure()
+                }
+
+                $cancelResult = Invoke-BrowserCancelActiveCommand -State $state
+
+                @($cancelResult.ProcessEvents).Count | Should -Be 1
+                $cancelResult.ProcessEvents[0].Type | Should -Be 'ProcessStarted'
+                $cancelResult.ProcessEvents[0].ProcessId | Should -Be 5151
+                (Get-BrowserAsyncRegistryEntry -RequestId 'req-3') | Should -BeNullOrEmpty
+                (Test-Path -LiteralPath $eventFile) | Should -BeFalse
+            }
+            finally {
+                $script:AsyncExecutor = $originalAsyncExecutor
+                if (Test-Path -LiteralPath $eventFile) {
+                    Remove-Item -LiteralPath $eventFile -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        $script:StoppedProcessIds | Should -Contain 5151
+    }
+}
+
+Describe 'Async thread job failures' {
+    It 'converts a failed thread job into AsyncCommandFailed with the job reason' {
+        InModuleScope PerfourceCommanderConsole {
+            $requestId = 'req-job-fail'
+            $job = Start-ThreadJob -ScriptBlock { throw 'synthetic async worker failure' }
+            Wait-Job $job | Out-Null
+
+            $script:AsyncJobRegistry = @{}
+            $script:AsyncJobRegistry[$requestId] = [pscustomobject]@{
+                Job               = $job
+                Kind              = 'DeleteChange'
+                Generation        = 7
+                ProcessEventFile  = ''
+                LastEventLineRead = 0
+                ActiveProcessIds  = @()
+            }
+
+            $state = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
+            $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{
+                Type        = 'AsyncCommandStarted'
+                RequestId   = $requestId
+                Kind        = 'DeleteChange'
+                Scope       = 'Mutation'
+                Generation  = 7
+                CommandLine = 'p4 change -d 707'
+                StartedAt   = [datetime]'2026-03-12T10:15:00'
+                TimeoutMs   = 30000
+            })
+
+            $drainResult = Receive-BrowserAsyncJobCompletion -RequestId $requestId -Entry $script:AsyncJobRegistry[$requestId] -Job $job
+
+            $drainResult.Type | Should -Be 'AsyncCommandFailed'
+            $drainResult.RequestId | Should -Be $requestId
+            $drainResult.Generation | Should -Be 7
+            $drainResult.ErrorText | Should -Match 'synthetic async worker failure'
+            $drainResult.Outcome | Should -Be 'Failed'
+            (Get-BrowserAsyncRegistryEntry -RequestId $requestId) | Should -BeNullOrEmpty
+        }
+    }
 }

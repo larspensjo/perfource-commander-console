@@ -60,6 +60,7 @@ $script:AsyncWorkflowContext = $null
 $script:AsyncMutationWorkflowKinds = @('DeleteMarked', 'DeleteShelvedFiles', 'ShelveFiles', 'MoveMarkedFiles')
 # Module root for background worker imports
 $script:AsyncModuleRoot   = $PSScriptRoot
+$script:BrowserProfiler   = $null
 
 function ConvertTo-NonEmptyStringValues {
     param([AllowNull()]$InputValues)
@@ -109,16 +110,26 @@ function ConvertTo-IntValues {
 # Production executor: runs work in an isolated Start-ThreadJob runspace.
 # Tests override this via Set-BrowserAsyncExecutor with a synchronous executor.
 $script:AsyncThreadJobWrapper = {
-    param([pscustomobject]$Envelope, [string]$ModuleRoot, [string]$CapturedDir, [scriptblock]$CapturedWorker)
+    param([pscustomobject]$Envelope, [string]$ModuleRoot, [string]$CapturedDir, [string]$WorkerKind)
     if (-not [string]::IsNullOrEmpty($CapturedDir)) {
         try { Set-Location -LiteralPath $CapturedDir -ErrorAction SilentlyContinue } catch {}
     }
-    & $CapturedWorker $Envelope $ModuleRoot
+
+    $modulePath = Join-Path $ModuleRoot 'PerfourceCommanderConsole.psd1'
+    $module = Import-Module $modulePath -Force -PassThru
+    & $module {
+        param($Kind, $WorkerEnvelope, $WorkerModuleRoot)
+        if (-not $script:AsyncWorkers.ContainsKey([string]$Kind)) {
+            throw "Unknown async worker kind '$Kind'."
+        }
+
+        & $script:AsyncWorkers[[string]$Kind] $WorkerEnvelope $WorkerModuleRoot
+    } $WorkerKind $Envelope $ModuleRoot
 }
 
 $script:AsyncExecutor = [pscustomobject]@{
     Execute = {
-        param([pscustomobject]$Envelope, [scriptblock]$Worker)
+        param([pscustomobject]$Envelope)
         $envProps = @{}
         foreach ($prop in $Envelope.PSObject.Properties) { $envProps[$prop.Name] = $prop.Value }
         $eventFile = [System.IO.Path]::GetTempFileName()
@@ -127,14 +138,22 @@ $script:AsyncExecutor = [pscustomobject]@{
         # independent runspace with an unrelated $PWD) runs p4.exe from within
         # the workspace.  Without this, 'p4 describe' and similar commands fail
         # when the runspace's $PWD has no Perforce client mapping.
-        $capturedDir    = (Get-Location).Path
-        $capturedWorker = $Worker
-        $job = Start-ThreadJob -ScriptBlock $script:AsyncThreadJobWrapper -ArgumentList ([pscustomobject]$envProps), $script:AsyncModuleRoot, $capturedDir, $capturedWorker
+        $capturedDir = (Get-Location).Path
+        $workerKind = [string]$Envelope.Kind
+        $job = Start-ThreadJob -ScriptBlock $script:AsyncThreadJobWrapper -ArgumentList ([pscustomobject]$envProps), $script:AsyncModuleRoot, $capturedDir, $workerKind
         $script:AsyncJobRegistry[[string]$Envelope.RequestId] = [pscustomobject]@{
             Job               = $job
+            Kind              = [string]$Envelope.Kind
+            Generation        = [int]$Envelope.Generation
             ProcessEventFile  = $eventFile
             LastEventLineRead = 0
             ActiveProcessIds  = @()
+        }
+        Write-BrowserProcessProfileEvent -Stage 'Async.RequestStarted' -Fields @{
+            RequestId = [string]$Envelope.RequestId
+            Kind      = [string]$Envelope.Kind
+            Scope     = [string]$Envelope.Scope
+            JobId     = [int]$job.Id
         }
     }
     Poll = {
@@ -145,16 +164,7 @@ $script:AsyncExecutor = [pscustomobject]@{
         if ($null -eq $job)                                          { return $null }
         if ($job -isnot [System.Management.Automation.Job])         { return $null }
         if ($job.State -notin @('Completed', 'Failed', 'Stopped'))  { return $null }
-        $result = $job | Receive-Job -Wait -ErrorAction SilentlyContinue
-        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
-        if ($null -ne $entry -and ($entry.PSObject.Properties.Match('ProcessEventFile')).Count -gt 0) {
-            $eventFile = [string]$entry.ProcessEventFile
-            if (-not [string]::IsNullOrWhiteSpace($eventFile) -and (Test-Path -LiteralPath $eventFile)) {
-                Remove-Item -LiteralPath $eventFile -Force -ErrorAction SilentlyContinue
-            }
-        }
-        [void]$script:AsyncJobRegistry.Remove($RequestId)
-        return $result
+        return Receive-BrowserAsyncJobCompletion -RequestId $RequestId -Entry $entry -Job $job
     }
     Cancel = {
         param([string]$RequestId)
@@ -164,13 +174,7 @@ $script:AsyncExecutor = [pscustomobject]@{
             try { Stop-Job  -Job $job }         catch {}
             try { Remove-Job -Job $job -Force } catch {}
         }
-        if ($null -ne $entry -and ($entry.PSObject.Properties.Match('ProcessEventFile')).Count -gt 0) {
-            $eventFile = [string]$entry.ProcessEventFile
-            if (-not [string]::IsNullOrWhiteSpace($eventFile) -and (Test-Path -LiteralPath $eventFile)) {
-                Remove-Item -LiteralPath $eventFile -Force -ErrorAction SilentlyContinue
-            }
-        }
-        [void]$script:AsyncJobRegistry.Remove($RequestId)
+        Write-BrowserProcessProfileEvent -Stage 'Async.JobCancelled' -Fields @{ RequestId = $RequestId }
     }
 }
 
@@ -226,11 +230,12 @@ function Write-BrowserProfileEvent {
         [Parameter(Mandatory = $true)]$Profiler,
         [Parameter(Mandatory = $true)][string]$Stage,
         [Parameter(Mandatory = $true)][int]$DurationMs,
-        [Parameter(Mandatory = $false)][hashtable]$Fields = @{}
+        [Parameter(Mandatory = $false)][hashtable]$Fields = @{},
+        [Parameter(Mandatory = $false)][switch]$AlwaysWrite
     )
 
     if ($null -eq $Profiler -or -not [bool]$Profiler.Enabled) { return }
-    if ($DurationMs -lt [int]$Profiler.ThresholdMs) { return }
+    if (-not $AlwaysWrite -and $DurationMs -lt [int]$Profiler.ThresholdMs) { return }
 
     $payload = [ordered]@{
         Timestamp  = (Get-Date).ToString('o')
@@ -242,6 +247,19 @@ function Write-BrowserProfileEvent {
     }
 
     Add-Content -LiteralPath ([string]$Profiler.Path) -Value (($payload | ConvertTo-Json -Compress -Depth 6))
+}
+
+function Write-BrowserProcessProfileEvent {
+    param(
+        [Parameter(Mandatory = $true)][string]$Stage,
+        [Parameter(Mandatory = $false)][hashtable]$Fields = @{}
+    )
+
+    if ($null -eq $script:BrowserProfiler -or -not [bool]$script:BrowserProfiler.Enabled) {
+        return
+    }
+
+    Write-BrowserProfileEvent -Profiler $script:BrowserProfiler -Stage $Stage -DurationMs 0 -Fields $Fields -AlwaysWrite
 }
 
 function Invoke-BrowserProfiled {
@@ -296,6 +314,94 @@ function Get-BrowserAsyncRegistryEntry {
     return $script:AsyncJobRegistry[$RequestId]
 }
 
+function Remove-BrowserAsyncRegistryEntry {
+    param([Parameter(Mandatory)][string]$RequestId)
+
+    $entry = Get-BrowserAsyncRegistryEntry -RequestId $RequestId
+    if ($null -ne $entry -and ($entry.PSObject.Properties.Match('ProcessEventFile')).Count -gt 0) {
+        $eventFile = [string]$entry.ProcessEventFile
+        if (-not [string]::IsNullOrWhiteSpace($eventFile) -and (Test-Path -LiteralPath $eventFile)) {
+            Remove-Item -LiteralPath $eventFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    [void]$script:AsyncJobRegistry.Remove($RequestId)
+}
+
+function Get-BrowserAsyncJobFailureText {
+    param($Job)
+
+    if ($null -eq $Job) {
+        return 'Async worker failed without a job handle.'
+    }
+
+    $reason = $null
+    try {
+        if ($null -ne $Job.ChildJobs -and $Job.ChildJobs.Count -gt 0) {
+            $reason = $Job.ChildJobs[0].JobStateInfo.Reason
+        } else {
+            $reason = $Job.JobStateInfo.Reason
+        }
+    } catch {
+        $reason = $null
+    }
+
+    if ($null -ne $reason -and -not [string]::IsNullOrWhiteSpace([string]$reason.Message)) {
+        return [string]$reason.Message
+    }
+
+    $errorLines = [System.Collections.Generic.List[string]]::new()
+    try {
+        if ($null -ne $Job.ChildJobs -and $Job.ChildJobs.Count -gt 0) {
+            foreach ($errorRecord in @($Job.ChildJobs[0].Error)) {
+                if ($null -eq $errorRecord) { continue }
+
+                $text = [string]$errorRecord
+                if (-not [string]::IsNullOrWhiteSpace($text)) {
+                    [void]$errorLines.Add($text)
+                }
+            }
+        }
+    } catch {
+        $errorLines.Clear()
+    }
+
+    if ($errorLines.Count -gt 0) {
+        return ($errorLines -join "`n")
+    }
+
+    return 'Async worker failed without returning an error payload.'
+}
+
+function Receive-BrowserAsyncJobCompletion {
+    param(
+        [Parameter(Mandatory)][string]$RequestId,
+        [Parameter(Mandatory)]$Entry,
+        [Parameter(Mandatory)][System.Management.Automation.Job]$Job
+    )
+
+    $result = $Job | Receive-Job -Wait -ErrorAction SilentlyContinue
+    $jobFailureText = if ([string]$Job.State -eq 'Failed') { Get-BrowserAsyncJobFailureText -Job $Job } else { '' }
+    Remove-Job -Job $Job -Force -ErrorAction SilentlyContinue
+    Write-BrowserProcessProfileEvent -Stage 'Async.RequestCompleted' -Fields @{
+        RequestId   = $RequestId
+        JobState    = [string]$Job.State
+        FailureText = $jobFailureText
+    }
+    if ($null -eq $result -and [string]$Job.State -eq 'Failed') {
+        $result = [pscustomobject]@{
+            Type       = 'AsyncCommandFailed'
+            RequestId  = $RequestId
+            Generation = if (($Entry.PSObject.Properties.Match('Generation')).Count -gt 0) { [int]$Entry.Generation } else { 0 }
+            ErrorText  = $jobFailureText
+            Success    = $false
+            Outcome    = 'Failed'
+        }
+    }
+    Remove-BrowserAsyncRegistryEntry -RequestId $RequestId
+    return $result
+}
+
 function Read-BrowserAsyncProcessEvents {
     param([Parameter(Mandatory)][string]$RequestId)
 
@@ -340,6 +446,11 @@ function Read-BrowserAsyncProcessEvents {
                 ProcessId = $processId
                 ExitCode  = if (($parsed.PSObject.Properties.Match('ExitCode')).Count -gt 0 -and $null -ne $parsed.ExitCode) { [int]$parsed.ExitCode } else { $null }
             }) | Out-Null
+            Write-BrowserProcessProfileEvent -Stage ("Async.$eventType") -Fields @{
+                RequestId = [string]$parsed.RequestId
+                ProcessId = $processId
+                ExitCode  = if (($parsed.PSObject.Properties.Match('ExitCode')).Count -gt 0 -and $null -ne $parsed.ExitCode) { [int]$parsed.ExitCode } else { $null }
+            }
         } catch { }
     }
 
@@ -352,11 +463,43 @@ function Stop-BrowserAsyncRequest {
 
     $events = @(Read-BrowserAsyncProcessEvents -RequestId $RequestId)
     $entry  = Get-BrowserAsyncRegistryEntry -RequestId $RequestId
+    $killedProcessIds = [System.Collections.Generic.List[int]]::new()
     $processIds = if ($null -ne $entry -and ($entry.PSObject.Properties.Match('ActiveProcessIds')).Count -gt 0) { @(ConvertTo-IntValues -InputValues $entry.ActiveProcessIds) } else { @() }
-    foreach ($processId in $processIds) {
-        Stop-P4ProcessTree -ProcessId ([int]$processId)
+
+    Write-BrowserProcessProfileEvent -Stage 'Async.CancelRequested' -Fields @{
+        RequestId         = $RequestId
+        KnownProcessCount = @($processIds).Count
+        KnownProcessIds   = @($processIds)
     }
+
+    foreach ($processId in $processIds) {
+        Write-BrowserProcessProfileEvent -Stage 'Async.KillProcessTree' -Fields @{ RequestId = $RequestId; ProcessId = [int]$processId; Phase = 'PreCancel' }
+        Stop-P4ProcessTree -ProcessId ([int]$processId)
+        [void]$killedProcessIds.Add([int]$processId)
+    }
+
     & $script:AsyncExecutor.Cancel $RequestId
+
+    $entry = Get-BrowserAsyncRegistryEntry -RequestId $RequestId
+    if ($null -ne $entry) {
+        $events += @(Read-BrowserAsyncProcessEvents -RequestId $RequestId)
+        $processIds = if (($entry.PSObject.Properties.Match('ActiveProcessIds')).Count -gt 0) { @(ConvertTo-IntValues -InputValues $entry.ActiveProcessIds) } else { @() }
+        foreach ($processId in $processIds) {
+            if ($killedProcessIds -contains [int]$processId) { continue }
+
+            Write-BrowserProcessProfileEvent -Stage 'Async.KillProcessTree' -Fields @{ RequestId = $RequestId; ProcessId = [int]$processId; Phase = 'PostCancel' }
+            Stop-P4ProcessTree -ProcessId ([int]$processId)
+            [void]$killedProcessIds.Add([int]$processId)
+        }
+    }
+
+    Write-BrowserProcessProfileEvent -Stage 'Async.CancelCompleted' -Fields @{
+        RequestId         = $RequestId
+        KilledProcessIds  = @($killedProcessIds)
+        ProcessEventCount = $events.Count
+    }
+
+    Remove-BrowserAsyncRegistryEntry -RequestId $RequestId
     return @($events)
 }
 
@@ -382,8 +525,8 @@ $script:AsyncWorkers = @{
     'ReloadPending' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -415,8 +558,8 @@ $script:AsyncWorkers = @{
     'ReloadSubmitted' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -457,8 +600,8 @@ $script:AsyncWorkers = @{
     'LoadMore' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -509,8 +652,8 @@ $script:AsyncWorkers = @{
     'LoadFiles' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
         }
         $observed  = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -561,8 +704,8 @@ $script:AsyncWorkers = @{
     'LoadFilesEnrichment' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -597,8 +740,8 @@ $script:AsyncWorkers = @{
     'FetchDescribe' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -631,8 +774,8 @@ $script:AsyncWorkers = @{
     'DeleteChange' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -662,8 +805,8 @@ $script:AsyncWorkers = @{
     'DeleteShelvedFiles' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -693,8 +836,8 @@ $script:AsyncWorkers = @{
     'ShelveFiles' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -724,8 +867,8 @@ $script:AsyncWorkers = @{
     'SubmitChange' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -1746,8 +1889,8 @@ function Start-P4Browser {
         throws a terminating error immediately, halting the session so the
         offending state can be inspected.
     .PARAMETER Profile
-        When specified, writes slow-path timing events for the UI loop to a
-        JSON Lines file.
+        When specified, writes JSON Lines diagnostics for slow-path UI timing
+        and async process-management events.
     .PARAMETER ProfilePath
         Optional path for the profiling output.  When omitted, a timestamped
         file is created in the system temp directory.
@@ -1792,6 +1935,7 @@ function Start-P4Browser {
     $height = [int]$consoleSize.Height
     $state  = New-BrowserState -Changes @() -InitialWidth $width -InitialHeight $height
     $profiler = New-BrowserProfiler -Enabled ([bool]$Profile) -Path $ProfilePath -ThresholdMs $ProfileThresholdMs
+    $script:BrowserProfiler = $profiler
     $getProfileStateFields = ${function:Get-BrowserProfileStateFields}
     $writeProfileEvent = $ExecutionContext.InvokeCommand.GetCommand('Write-BrowserProfileEvent', [System.Management.Automation.CommandTypes]::Function)
     $startupFailureMessage = ''
@@ -2181,6 +2325,7 @@ function Start-P4Browser {
         }
     }
     finally {
+        $script:BrowserProfiler = $null
         Set-RenderProfiler $null
         Reset-RenderState
         Restore-BrowserConsole -ConsoleState $consoleState

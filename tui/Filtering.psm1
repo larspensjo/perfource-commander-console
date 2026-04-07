@@ -155,6 +155,41 @@ function Test-EntryMatchesFilter {
     return [bool](& $predicate $Entry)
 }
 
+function Test-IsDefaultChangelistEntry {
+    param([AllowNull()]$Entry)
+
+    if ($null -eq $Entry) { return $false }
+    return [string]$Entry.Id -match '^(?i)default$'
+}
+
+function Get-ChangeIdDescendingSortKey {
+    param([AllowNull()]$Entry)
+
+    if ($null -eq $Entry) { return [long]::MinValue }
+
+    $changeId = [string]$Entry.Id
+    if ($changeId -match '^(?i)default$') { return [long]::MaxValue }
+
+    $changeNumber = 0L
+    if ([long]::TryParse($changeId, [ref]$changeNumber)) {
+        return $changeNumber
+    }
+
+    return [long]::MinValue
+}
+
+function Get-ChangeCapturedDescendingSortKey {
+    param([AllowNull()]$Entry)
+
+    if ($null -eq $Entry) { return [long]::MaxValue }
+
+    if ($Entry.Captured -is [datetime]) {
+        return -([datetime]$Entry.Captured).Ticks
+    }
+
+    return [long]::MaxValue
+}
+
 function Get-VisibleChangeIds {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$AllChanges,
@@ -224,10 +259,22 @@ function Get-VisibleChangeIds {
 
     switch ($SortMode) {
         'CapturedDesc' {
-            $filtered = @($filtered | Sort-Object @{ Expression = { if ($_.Captured -is [datetime]) { -$_.Captured.Ticks } else { [long]::MaxValue } } }, @{ Expression = { $_.Id } })
+            $filtered = @(
+                $filtered | Sort-Object `
+                    @{ Expression = { if (Test-IsDefaultChangelistEntry -Entry $_) { 0 } else { 1 } } }, `
+                    @{ Expression = { Get-ChangeCapturedDescendingSortKey -Entry $_ } }, `
+                    @{ Expression = { -(Get-ChangeIdDescendingSortKey -Entry $_) } }, `
+                    @{ Expression = { [string]$_.Id } }
+            )
         }
         default {
-            $filtered = @($filtered | Sort-Object Id)
+            $filtered = @(
+                $filtered | Sort-Object `
+                    @{ Expression = { if (Test-IsDefaultChangelistEntry -Entry $_) { 0 } else { 1 } } }, `
+                    @{ Expression = { Get-ChangeCapturedDescendingSortKey -Entry $_ } }, `
+                    @{ Expression = { -(Get-ChangeIdDescendingSortKey -Entry $_) } }, `
+                    @{ Expression = { [string]$_.Id } }
+            )
         }
     }
 

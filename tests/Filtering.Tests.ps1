@@ -15,17 +15,17 @@ Describe 'Get-VisibleChangeIds' {
 
     It 'returns all ids when selected filters is null' {
         $ids = Get-VisibleChangeIds -AllChanges $changes -SelectedFilters $null
-        $ids | Should -Be @('101', '102', '103')
+        $ids | Should -Be @('102', '103', '101')
     }
 
     It 'returns all ids when selected filters is empty' {
         $ids = Get-VisibleChangeIds -AllChanges $changes -SelectedFilters @()
-        $ids | Should -Be @('101', '102', '103')
+        $ids | Should -Be @('102', '103', '101')
     }
 
     It 'No shelved files filter excludes CLs with shelved files' {
         $ids = Get-VisibleChangeIds -AllChanges $changes -SelectedFilters @('No shelved files')
-        $ids | Should -Be @('101', '103')
+        $ids | Should -Be @('103', '101')
     }
 
     It 'No opened files filter shows only CLs with no opened files' {
@@ -40,7 +40,7 @@ Describe 'Get-VisibleChangeIds' {
 
     It 'unknown filter name has no effect' {
         $ids = Get-VisibleChangeIds -AllChanges $changes -SelectedFilters @('does-not-exist')
-        $ids | Should -Be @('101', '102', '103')
+        $ids | Should -Be @('102', '103', '101')
     }
 
     It 'returns empty when all CLs are excluded' {
@@ -54,6 +54,28 @@ Describe 'Get-VisibleChangeIds' {
     It 'sorts by CapturedDesc' {
         $ids = Get-VisibleChangeIds -AllChanges $changes -SelectedFilters @() -SortMode CapturedDesc
         $ids | Should -Be @('102', '103', '101')
+    }
+
+    It 'pins default changelist first before numbered changelists' {
+        $withDefault = @(
+            [pscustomobject]@{ Id = '101'; Title = 'Alpha'; Captured = [datetime]'2026-02-10' },
+            [pscustomobject]@{ Id = 'default'; Title = 'Default'; Captured = [datetime]'2026-01-01' },
+            [pscustomobject]@{ Id = '105'; Title = 'Omega'; Captured = [datetime]'2026-02-11' }
+        )
+
+        $ids = Get-VisibleChangeIds -AllChanges $withDefault -SelectedFilters @()
+        $ids | Should -Be @('default', '105', '101')
+    }
+
+    It 'sorts submitted changelists descending by changelist number' {
+        $submitted = @(
+            [pscustomobject]@{ Id = '2001'; Title = 'Old'; User = 'alice'; Captured = [datetime]'2026-02-01' },
+            [pscustomobject]@{ Id = '2003'; Title = 'New'; User = 'alice'; Captured = [datetime]'2026-02-03' },
+            [pscustomobject]@{ Id = '2002'; Title = 'Mid'; User = 'bob';   Captured = [datetime]'2026-02-02' }
+        )
+
+        $ids = Get-VisibleChangeIds -AllChanges $submitted -SelectedFilters @() -ViewMode Submitted -CurrentUser 'alice'
+        $ids | Should -Be @('2003', '2002', '2001')
     }
 
     It 'filters by search text' {

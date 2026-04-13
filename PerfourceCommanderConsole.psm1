@@ -1,8 +1,8 @@
 Set-StrictMode -Version Latest
 
 # Import sub-modules; each handles its own internal dependencies via $PSScriptRoot
-Import-Module (Join-Path $PSScriptRoot 'p4\Models.psm1')    -Force
-Import-Module (Join-Path $PSScriptRoot 'p4\P4Cli.psm1')     -Force
+Import-Module (Join-Path $PSScriptRoot 'p4\Models.psm1')    -Force -Global
+Import-Module (Join-Path $PSScriptRoot 'p4\P4Cli.psm1')     -Force -Global
 Import-Module (Join-Path $PSScriptRoot 'tui\Helpers.psm1')  -Force -Global
 Import-Module (Join-Path $PSScriptRoot 'tui\Theme.psm1')    -Force -Global
 Import-Module (Join-Path $PSScriptRoot 'tui\Filtering.psm1') -Force -Global
@@ -525,8 +525,8 @@ $script:AsyncWorkers = @{
     'ReloadPending' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -558,8 +558,8 @@ $script:AsyncWorkers = @{
     'ReloadSubmitted' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -600,8 +600,8 @@ $script:AsyncWorkers = @{
     'LoadMore' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -652,8 +652,8 @@ $script:AsyncWorkers = @{
     'LoadFiles' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed  = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -704,8 +704,8 @@ $script:AsyncWorkers = @{
     'LoadFilesEnrichment' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -740,8 +740,8 @@ $script:AsyncWorkers = @{
     'FetchDescribe' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -774,8 +774,8 @@ $script:AsyncWorkers = @{
     'DeleteChange' = {
         param([pscustomobject]$Envelope, [string]$ModuleRoot)
         if (![string]::IsNullOrEmpty($ModuleRoot)) {
-            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force
-            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force
+            Import-Module (Join-Path $ModuleRoot 'p4\Models.psm1') -Force -Global
+            Import-Module (Join-Path $ModuleRoot 'p4\P4Cli.psm1')  -Force -Global
         }
         $observed = [System.Collections.Generic.List[pscustomobject]]::new()
         $processObserver = {
@@ -1697,6 +1697,172 @@ function Invoke-BrowserSideEffect {
     return $s
 }
 
+function Invoke-BrowserInteractiveSideEffect {
+    <#
+    .SYNOPSIS
+        Runs an interactive command while temporarily suspending the TUI.
+    .DESCRIPTION
+        Used for commands such as `p4 change` that launch an editor and need to
+        inherit the active console. The browser renders the busy state, restores
+        the console, runs the interactive work item, then reinitializes the TUI
+        and records the command in history and the command log.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]$ConsoleState,
+        [Parameter(Mandatory = $true)][string]$CommandLine,
+        [Parameter(Mandatory = $true)][scriptblock]$WorkItem
+    )
+
+    $s = Invoke-BrowserReducer -State $State -Action ([pscustomobject]@{
+        Type        = 'CommandStart'
+        CommandLine = $CommandLine
+        TimeoutMs   = 0
+        StartedAt   = (Get-Date)
+    })
+    Render-BrowserState -State $s
+
+    $eventQueue = [System.Collections.Generic.List[pscustomobject]]::new()
+    Register-P4Observer -Observer {
+        param($ObservedCommandLine, $RawLines, $ExitCode, $ErrorOutput, $StartedAt, $EndedAt, $DurationMs)
+        $formatted = Format-P4OutputLine -RawLines @($RawLines)
+        $eventQueue.Add([pscustomobject]@{
+            CommandLine    = $ObservedCommandLine
+            FormattedLines = $formatted.FormattedLines
+            OutputCount    = $formatted.OutputCount
+            SummaryLine    = ''
+            ExitCode       = $ExitCode
+            ErrorText      = $ErrorOutput
+            Succeeded      = ($ExitCode -eq 0)
+            StartedAt      = $StartedAt
+            EndedAt        = $EndedAt
+            DurationMs     = $DurationMs
+        })
+    }
+
+    $startedAt = Get-Date
+    $endedAt = $startedAt
+    $succeeded = $true
+    $errorText = ''
+    $exitCode = 0
+    $nextConsoleState = $ConsoleState
+
+    Restore-BrowserConsole -ConsoleState $ConsoleState
+    try {
+        $s = & $WorkItem $s
+    } catch {
+        $succeeded = $false
+        $exitCode  = 1
+        $errorText = $_.Exception.Message
+        $s.Runtime.LastError = $errorText
+    } finally {
+        $endedAt = Get-Date
+        Unregister-P4Observer
+        $nextConsoleState = Initialize-BrowserConsole
+        Reset-RenderState
+    }
+
+    if ($eventQueue.Count -eq 0) {
+        $eventQueue.Add([pscustomobject]@{
+            CommandLine    = $CommandLine
+            FormattedLines = @()
+            OutputCount    = 0
+            SummaryLine    = ''
+            ExitCode       = $exitCode
+            ErrorText      = $errorText
+            Succeeded      = $succeeded
+            StartedAt      = $startedAt
+            EndedAt        = $endedAt
+            DurationMs     = [int](($endedAt - $startedAt).TotalMilliseconds)
+        }) | Out-Null
+    }
+
+    foreach ($evt in $eventQueue) {
+        $evtDurationClass = Get-DurationClass -DurationMs ([int]$evt.DurationMs)
+        $evtOutcome = if ([bool]$evt.Succeeded) { 'Completed' } elseif (Test-IsP4TimeoutError -Message ([string]$evt.ErrorText)) { 'TimedOut' } else { 'Failed' }
+        $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{
+            Type           = 'LogCommandExecution'
+            CommandLine    = [string]$evt.CommandLine
+            FormattedLines = @($evt.FormattedLines)
+            OutputCount    = [int]$evt.OutputCount
+            SummaryLine    = [string]$evt.SummaryLine
+            ExitCode       = [int]$evt.ExitCode
+            ErrorText      = [string]$evt.ErrorText
+            Succeeded      = [bool]$evt.Succeeded
+            StartedAt      = [datetime]$evt.StartedAt
+            EndedAt        = [datetime]$evt.EndedAt
+            DurationMs     = [int]$evt.DurationMs
+            DurationClass  = $evtDurationClass
+            Outcome        = $evtOutcome
+        })
+    }
+
+    $outerDurationMs = [int](($endedAt - $startedAt).TotalMilliseconds)
+    $outerDurationClass = Get-DurationClass -DurationMs $outerDurationMs
+    $outerOutcome = if ($succeeded) { 'Completed' } elseif (Test-IsP4TimeoutError -Message $errorText) { 'TimedOut' } else { 'Failed' }
+    $s = Invoke-BrowserReducer -State $s -Action ([pscustomobject]@{
+        Type          = 'CommandFinish'
+        CommandLine   = $CommandLine
+        StartedAt     = $startedAt
+        EndedAt       = $endedAt
+        ExitCode      = $exitCode
+        Succeeded     = $succeeded
+        ErrorText     = $errorText
+        DurationClass = $outerDurationClass
+        Outcome       = $outerOutcome
+    })
+
+    return [pscustomobject]@{
+        State        = $s
+        ConsoleState = $nextConsoleState
+        Succeeded    = $succeeded
+        ErrorText    = $errorText
+    }
+}
+
+function Invoke-BrowserEditChangeDescription {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]$ConsoleState,
+        [Parameter(Mandatory = $true)][string]$ChangeId
+    )
+
+    $normalizedChange = ConvertTo-P4ChangelistId -Value $ChangeId
+    if ([string]::IsNullOrWhiteSpace($normalizedChange)) {
+        return [pscustomobject]@{
+            State        = $State
+            ConsoleState = $ConsoleState
+            Succeeded    = $false
+            ErrorText    = "Invalid changelist id '$ChangeId'."
+        }
+    }
+
+    $p4Args = @('change')
+    if ($normalizedChange -ne 'default') {
+        $p4Args += "$normalizedChange"
+    }
+    $commandLine = Format-P4CommandLine -P4Args $p4Args
+
+    $interactiveResult = Invoke-BrowserInteractiveSideEffect -State $State -ConsoleState $ConsoleState -CommandLine $commandLine -WorkItem ({
+        param($s)
+        Invoke-P4EditChangelistDescription -Change $normalizedChange
+        $s.Runtime.LastError = $null
+        return $s
+    }.GetNewClosure())
+
+    $nextState = $interactiveResult.State
+    if ([bool]$interactiveResult.Succeeded) {
+        $nextState = Invoke-BrowserPendingChangesReload -State $nextState
+    }
+
+    return [pscustomobject]@{
+        State        = $nextState
+        ConsoleState = $interactiveResult.ConsoleState
+        Succeeded    = [bool]$interactiveResult.Succeeded
+        ErrorText    = [string]$interactiveResult.ErrorText
+    }
+}
+
 function ConvertTo-BrowserSubmittedFileEntries {
     param(
         [Parameter(Mandatory = $true)]$Describe,
@@ -2119,6 +2285,15 @@ function Start-P4Browser {
                                 $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
                                 if ($null -ne $change -and -not $state.Data.DescribeCache.ContainsKey($change)) {
                                     return Invoke-BrowserStartAsyncRequest -State $state -Request $req
+                                }
+                                return $state
+                            }
+                            'EditChangeDescription' {
+                                $change = ConvertTo-P4ChangelistId -Value $req.ChangeId
+                                if ($null -ne $change) {
+                                    $interactiveResult = Invoke-BrowserEditChangeDescription -State $state -ConsoleState $consoleState -ChangeId ([string]$req.ChangeId)
+                                    $consoleState = $interactiveResult.ConsoleState
+                                    return $interactiveResult.State
                                 }
                                 return $state
                             }

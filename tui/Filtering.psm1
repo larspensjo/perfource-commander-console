@@ -1,6 +1,6 @@
 Set-StrictMode -Version Latest
 
-Import-Module (Join-Path $PSScriptRoot 'Theme.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Theme.psm1') -Force -Global
 
 # Predicate registry for pending changelists
 $script:PendingFilterPredicates = [ordered]@{

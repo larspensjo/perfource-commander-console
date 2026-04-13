@@ -32,6 +32,7 @@ $script:PendingRequestScopeByKind = @{
     'ReloadSubmitted'     = 'Submitted'
     'LoadMore'            = 'Submitted'
     'FetchDescribe'       = 'Describe'
+    'EditChangeDescription' = 'Mutation'
     'DeleteChange'        = 'Mutation'
     'DeleteShelvedFiles'  = 'Mutation'
     'ShelveFiles'         = 'Mutation'
@@ -122,6 +123,13 @@ function New-PendingRequest {
 
 $script:MenuDefinitions = @{
     'File' = @(
+        [pscustomobject]@{
+            Id          = 'EditChangeDescription'
+            Label       = 'Edit changelist description…'
+            Accelerator = 'D'
+            IsSeparator = $false
+            IsEnabled   = { param($s) Test-CanEditSelectedChange -State $s }
+        },
         [pscustomobject]@{
             Id         = 'DeleteChange'
             Label      = 'Delete focused / marked changelists'
@@ -264,9 +272,9 @@ $script:MenuDefinitions = @{
     )
 }
 
-Import-Module (Join-Path $PSScriptRoot 'Filtering.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'Layout.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Filtering.psm1') -Force -Global
+Import-Module (Join-Path $PSScriptRoot 'Layout.psm1') -Force -Global
+Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force -Global
 
 function Test-ChangeHasOpenedFiles {
     param($Change)
@@ -494,6 +502,40 @@ function Test-CanShelveSelectedChanges {
     param($State)
 
     return @(Get-ShelveActionableChanges -State $State).Count -gt 0
+}
+
+function Get-EditActionableChangeId {
+    param($State)
+
+    $screenStackProp = $State.Ui.PSObject.Properties['ScreenStack']
+    [object[]]$screenStack = if ($null -ne $screenStackProp -and $null -ne $screenStackProp.Value) {
+        @($screenStackProp.Value)
+    } else {
+        @('Changelists')
+    }
+    $activeScreen = if ($screenStack.Count -gt 0) { [string]$screenStack[-1] } else { 'Changelists' }
+    if ($activeScreen -ne 'Changelists') { return $null }
+
+    $viewMode = if ($State.Ui.PSObject.Properties['ViewMode']) { [string]$State.Ui.ViewMode } else { 'Pending' }
+    if ($viewMode -ne 'Pending') { return $null }
+
+    $visibleIdsProp = $State.Derived.PSObject.Properties['VisibleChangeIds']
+    if ($null -eq $visibleIdsProp -or $null -eq $visibleIdsProp.Value) { return $null }
+
+    [object[]]$visibleIds = @($visibleIdsProp.Value)
+    if ($visibleIds.Count -eq 0) { return $null }
+
+    $focusedIndex = [Math]::Max(0, [Math]::Min([int]$State.Cursor.ChangeIndex, $visibleIds.Count - 1))
+    $focusedId = [string]$visibleIds[$focusedIndex]
+    if ([string]::IsNullOrWhiteSpace($focusedId)) { return $null }
+
+    return $focusedId
+}
+
+function Test-CanEditSelectedChange {
+    param($State)
+
+    return -not [string]::IsNullOrWhiteSpace([string](Get-EditActionableChangeId -State $State))
 }
 
 function Get-SubmitActionableChangeId {
@@ -1626,6 +1668,7 @@ function Invoke-ChangelistReducer {
             # Dispatch the underlying action
             $itemId = [string]$item.Id
             switch ($itemId) {
+                'EditChangeDescription' { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'EditChangeDescription' }) }
                 'DeleteChange'      { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'DeleteChange' }) }
                 'DeleteShelvedFiles' { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'DeleteShelvedFiles' }) }
                 'MarkAllVisible'    { return Invoke-ChangelistReducer -State $next -Action ([pscustomobject]@{ Type = 'MarkAllVisible' }) }
@@ -2028,6 +2071,13 @@ function Invoke-ChangelistReducer {
             if ($changeId -eq 'default') { return $next }
             $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'FetchDescribe'; ChangeId = $changeId }
             $next.Runtime.DetailChangeId = $changeId  # persists for rendering
+            return Update-BrowserDerivedState -State $next
+        }
+        'EditChangeDescription' {
+            $changeId = Get-EditActionableChangeId -State $next
+            if ([string]::IsNullOrWhiteSpace([string]$changeId)) { return $next }
+
+            $next.Runtime.PendingRequest = New-PendingRequest @{ Kind = 'EditChangeDescription'; ChangeId = $changeId }
             return Update-BrowserDerivedState -State $next
         }
         'SubmitChange' {

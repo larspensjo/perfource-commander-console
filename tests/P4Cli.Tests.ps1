@@ -2043,6 +2043,49 @@ Describe 'Get-P4MergeTool and Set-P4MergeTool' {
     }
 }
 
+Describe 'Invoke-P4EditChangelistDescription' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force
+    }
+
+    It 'invokes p4 change for the default changelist' {
+        $argsFile = Join-Path $TestDrive 'p4-change-default.args'
+        $scriptPath = Join-Path $TestDrive 'p4-change-default.cmd'
+        Set-Content -LiteralPath $scriptPath -Value "@echo off`r`necho %* > `"$argsFile`"`r`nexit /b 0"
+        & (Get-Module P4Cli) { param($p) $script:P4Executable = $p } $scriptPath
+        try {
+            { Invoke-P4EditChangelistDescription -Change 'default' } | Should -Not -Throw
+            ((Get-Content -LiteralPath $argsFile -Raw).Trim()) | Should -Be 'change'
+        } finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'p4.exe' }
+        }
+    }
+
+    It 'invokes p4 change with the numbered changelist id' {
+        $argsFile = Join-Path $TestDrive 'p4-change-numbered.args'
+        $scriptPath = Join-Path $TestDrive 'p4-change-numbered.cmd'
+        Set-Content -LiteralPath $scriptPath -Value "@echo off`r`necho %* > `"$argsFile`"`r`nexit /b 0"
+        & (Get-Module P4Cli) { param($p) $script:P4Executable = $p } $scriptPath
+        try {
+            { Invoke-P4EditChangelistDescription -Change '12345' } | Should -Not -Throw
+            ((Get-Content -LiteralPath $argsFile -Raw).Trim()) | Should -Be 'change 12345'
+        } finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'p4.exe' }
+        }
+    }
+
+    It 'throws when p4 change exits non-zero' {
+        $scriptPath = Join-Path $TestDrive 'p4-change-fail.cmd'
+        Set-Content -LiteralPath $scriptPath -Value "@echo off`r`necho edit failed 1>&2`r`nexit /b 1"
+        & (Get-Module P4Cli) { param($p) $script:P4Executable = $p } $scriptPath
+        try {
+            { Invoke-P4EditChangelistDescription -Change '12345' } | Should -Throw -ExpectedMessage '*edit failed*'
+        } finally {
+            & (Get-Module P4Cli) { $script:P4Executable = 'p4.exe' }
+        }
+    }
+}
+
 Describe 'Invoke-P4Resolve' {
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '..\p4\P4Cli.psm1') -Force

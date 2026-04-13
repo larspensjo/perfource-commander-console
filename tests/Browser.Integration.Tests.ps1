@@ -209,6 +209,111 @@ Describe 'Start-P4Browser integration' {
         }
     }
 
+    It 'edits a pending changelist description from the File menu and reloads pending changelists' {
+        $script:EditedChangeIds = [System.Collections.Generic.List[string]]::new()
+        $script:PendingLoadCount = 0
+
+        Mock Get-P4ChangelistEntries -ModuleName PerfourceCommanderConsole {
+            $script:PendingLoadCount++
+            if ($script:PendingLoadCount -eq 1) {
+                return @(
+                    [pscustomobject]@{
+                        Id               = '1001'
+                        Title            = 'Fix build pipeline'
+                        Kind             = 'Pending'
+                        User             = 'alice'
+                        Captured         = [datetime]'2026-03-07 09:15:00'
+                        HasOpenedFiles   = $true
+                        HasShelvedFiles  = $false
+                        OpenedFileCount  = 4
+                        ShelvedFileCount = 0
+                    },
+                    [pscustomobject]@{
+                        Id               = '1002'
+                        Title            = 'Refactor submit flow'
+                        Kind             = 'Pending'
+                        User             = 'alice'
+                        Captured         = [datetime]'2026-03-06 17:30:00'
+                        HasOpenedFiles   = $false
+                        HasShelvedFiles  = $true
+                        OpenedFileCount  = 0
+                        ShelvedFileCount = 2
+                    }
+                )
+            }
+
+            return @(
+                [pscustomobject]@{
+                    Id               = '1001'
+                    Title            = 'Fix build pipeline'
+                    Kind             = 'Pending'
+                    User             = 'alice'
+                    Captured         = [datetime]'2026-03-07 09:15:00'
+                    HasOpenedFiles   = $true
+                    HasShelvedFiles  = $false
+                    OpenedFileCount  = 4
+                    ShelvedFileCount = 0
+                },
+                [pscustomobject]@{
+                    Id               = '1002'
+                    Title            = 'Refactor submit flow (edited)'
+                    Kind             = 'Pending'
+                    User             = 'alice'
+                    Captured         = [datetime]'2026-03-06 17:30:00'
+                    HasOpenedFiles   = $false
+                    HasShelvedFiles  = $true
+                    OpenedFileCount  = 0
+                    ShelvedFileCount = 2
+                }
+            )
+        }
+
+        Mock Invoke-BrowserEditChangeDescription -ModuleName PerfourceCommanderConsole {
+            param($State, $ConsoleState, [string]$ChangeId)
+            $script:EditedChangeIds.Add([string]$ChangeId) | Out-Null
+            $nextState = & (Get-Module PerfourceCommanderConsole) {
+                param($currentState)
+                Invoke-BrowserPendingChangesReload -State $currentState
+            } $State
+            return [pscustomobject]@{
+                State        = $nextState
+                ConsoleState = $ConsoleState
+                Succeeded    = $true
+                ErrorText    = ''
+            }
+        }
+
+        $script:KeyQueue = [System.Collections.Generic.Queue[System.ConsoleKeyInfo]]::new()
+        $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new(' ', [System.ConsoleKey]::Tab, $false, $false, $false))
+        $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new([char]0, [System.ConsoleKey]::DownArrow, $false, $false, $false))
+        $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new([char][System.ConsoleKey]::F, [System.ConsoleKey]::F, $false, $true, $false))
+        $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new('d', [System.ConsoleKey]::D, $false, $false, $false))
+        $script:KeyQueue.Enqueue([System.ConsoleKeyInfo]::new('q', [System.ConsoleKey]::Q, $false, $false, $false))
+
+        Mock Test-BrowserConsoleKeyAvailable -ModuleName PerfourceCommanderConsole {
+            return $script:KeyQueue.Count -gt 0
+        }
+
+        Mock Read-BrowserConsoleKey -ModuleName PerfourceCommanderConsole {
+            if ($script:KeyQueue.Count -le 0) {
+                throw 'Test key queue unexpectedly empty.'
+            }
+            return $script:KeyQueue.Dequeue()
+        }
+
+        {
+            Start-P4Browser -IntegrityTest -MaxChanges 3
+        } | Should -Not -Throw
+
+        Assert-MockCalled Invoke-BrowserEditChangeDescription -ModuleName PerfourceCommanderConsole -Times 1 -Exactly -ParameterFilter {
+            $ChangeId -eq '1002'
+        }
+        Assert-MockCalled Get-P4ChangelistEntries -ModuleName PerfourceCommanderConsole -Times 2 -Exactly -ParameterFilter {
+            $Max -eq 3
+        }
+        @($script:EditedChangeIds) | Should -Contain '1002'
+    }
+
     It 'surfaces startup p4 failures as a browser error instead of throwing' {
         $script:RenderedLastErrors = [System.Collections.Generic.List[string]]::new()
         $script:PrintedStartupErrors = [System.Collections.Generic.List[string]]::new()

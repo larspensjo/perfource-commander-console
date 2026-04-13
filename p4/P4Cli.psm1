@@ -1764,6 +1764,97 @@ function Invoke-P4ReopenFiles {
     return @{ MovedCount = $depotPaths.Count; Files = $depotPaths }
 }
 
+function Invoke-P4EditChangelistDescription {
+    <#
+    .SYNOPSIS
+        Opens a pending changelist form in the user's configured editor.
+    .DESCRIPTION
+        Runs `p4 change` for the default changelist or `p4 change <change>` for a
+        numbered pending changelist. The call is made directly rather than via
+        Invoke-P4 because the editor session is interactive and must inherit the
+        console while the browser is suspended.
+    .PARAMETER Change
+        The pending changelist number to edit. Use `default` (the default) to
+        edit the default changelist description.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()][string]$Change = 'default',
+        [scriptblock]$ProcessObserver = $null
+    )
+
+    $normalizedChange = ConvertTo-P4ChangelistId -Value $Change
+    if ([string]::IsNullOrWhiteSpace($normalizedChange)) {
+        throw "Invalid changelist id '$Change'."
+    }
+
+    $p4Args = @('change')
+    if ($normalizedChange -ne 'default') {
+        $p4Args += "$normalizedChange"
+    }
+    $commandLine = Format-P4CommandLine -P4Args $p4Args
+
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName               = $script:P4Executable
+    $psi.Arguments              = $commandLine.Substring(3)
+    $psi.WorkingDirectory       = (Get-Location).Path
+    $psi.RedirectStandardInput  = $false
+    $psi.RedirectStandardOutput = $false
+    $psi.RedirectStandardError  = $true
+    $psi.UseShellExecute        = $false
+    $psi.CreateNoWindow         = $false
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $psi
+
+    $startedAt = Get-Date
+    if (-not $process.Start()) {
+        throw 'Failed to start p4.exe'
+    }
+
+    if ($ProcessObserver) {
+        try { & $ProcessObserver -EventType 'ProcessStarted' -ProcessId $process.Id -ExitCode $null } catch { }
+    }
+
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+
+    $process.WaitForExit()
+
+    $stderr   = $stderrTask.GetAwaiter().GetResult()
+    $exitCode = $process.ExitCode
+
+    if ($ProcessObserver) {
+        try { & $ProcessObserver -EventType 'ProcessFinished' -ProcessId $process.Id -ExitCode $exitCode } catch { }
+    }
+
+    $endedAt    = Get-Date
+    $durationMs = [int](($endedAt - $startedAt).TotalMilliseconds)
+
+    $effectiveObserver = $script:P4ExecutionObserver
+    if ($effectiveObserver) {
+        try {
+            & $effectiveObserver `
+                -CommandLine $commandLine `
+                -RawLines @() `
+                -ExitCode $exitCode `
+                -ErrorOutput $stderr `
+                -StartedAt $startedAt `
+                -EndedAt $endedAt `
+                -DurationMs $durationMs
+        } catch { }
+    }
+
+    $process.Dispose()
+
+    if ($exitCode -ne 0) {
+        $message = "p4 change failed (exit $exitCode)."
+        if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+            $message += " STDERR: $stderr"
+        }
+        throw $message
+    }
+}
+
 # ── Resolve ───────────────────────────────────────────────────────────────────
 
 function Invoke-P4Resolve {
@@ -2003,5 +2094,5 @@ function Get-P4FileLog {
 }
 
 Export-ModuleMember -Function ConvertTo-P4ChangelistId, Format-P4CommandLine, Format-P4OutputLine, Register-P4Observer, Unregister-P4Observer, Get-P4CommandCategory, Get-DurationClass, Get-P4CommandTimeout, Stop-P4ProcessTree, Test-IsP4TimeoutError, Invoke-P4, Get-P4Info, Get-P4PendingChangelists, Get-P4ChangelistEntries, Get-P4Describe, Get-P4OpenedChangeNumbers, Get-P4OpenedFileCounts, Get-P4ShelvedChangeNumbers, Get-P4ShelvedFileCounts, ConvertFrom-P4OpenedLinesToFileCounts, ConvertFrom-P4DescribeShelvedLinesToFileCounts, Test-IsP4NoUnresolvedFilesError, ConvertFrom-P4FstatUnresolvedRecordsToFileCounts, Get-P4UnresolvedFileCounts, Get-P4UnresolvedDepotPaths, Get-P4ModifiedDepotPaths, Set-P4FileEntriesUnresolvedState, Set-P4FileEntriesContentModifiedState, Remove-P4Changelist, Invoke-P4Submit, Invoke-P4ShelveFiles, Remove-P4ShelvedFiles, Get-P4SubmittedChangelists, Get-P4SubmittedChangelistEntries, Get-P4OpenedFiles, Invoke-P4ReopenFiles, `
-    Get-P4MergeToolPresets, Get-P4MergeTool, Set-P4MergeTool, Invoke-P4Resolve, `
+    Invoke-P4EditChangelistDescription, Get-P4MergeToolPresets, Get-P4MergeTool, Set-P4MergeTool, Invoke-P4Resolve, `
     Get-P4FileLog

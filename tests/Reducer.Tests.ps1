@@ -134,6 +134,25 @@ Describe 'Browser reducer' {
         $next.Runtime.PendingRequest.ChangeId | Should -Be $state.Derived.VisibleChangeIds[$state.Cursor.ChangeIndex]
     }
 
+    It 'EditChangeDescription action sets PendingRequest with kind EditChangeDescription' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $next  = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'EditChangeDescription' })
+        $next.Runtime.PendingRequest.Kind     | Should -Be 'EditChangeDescription'
+        $next.Runtime.PendingRequest.ChangeId | Should -Be '102'
+    }
+
+    It 'File menu accelerator D queues EditChangeDescription for the focused pending changelist' {
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'SwitchPane' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
+        $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
+
+        $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuAccelerator'; Key = 'D' })
+
+        $next.Runtime.PendingRequest.Kind     | Should -Be 'EditChangeDescription'
+        $next.Runtime.PendingRequest.ChangeId | Should -Be '102'
+    }
+
     It 'Describe action on empty list is a no-op' {
         $emptyState = New-BrowserState -Changes @() -InitialWidth 120 -InitialHeight 40
         $next = Invoke-BrowserReducer -State $emptyState -Action ([pscustomobject]@{ Type = 'Describe' })
@@ -1598,6 +1617,24 @@ Describe 'Workflow framework actions' {
 Describe 'Phase 5 — DeleteChange, DeleteShelvedFiles and MoveMarkedFiles menu actions' {
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '..\tui\Reducer.psm1') -Force
+
+        function script:Get-MenuFocusIndex {
+            param(
+                [Parameter(Mandatory = $true)][object[]]$ComputedItems,
+                [Parameter(Mandatory = $true)][string]$ItemId
+            )
+
+            $navIndex = 0
+            foreach ($item in $ComputedItems) {
+                if ([bool]$item.IsSeparator) { continue }
+                if ([string]$item.Id -eq $ItemId) {
+                    return $navIndex
+                }
+                $navIndex++
+            }
+
+            throw "Menu item '$ItemId' was not found."
+        }
     }
 
     BeforeEach {
@@ -1611,10 +1648,10 @@ Describe 'Phase 5 — DeleteChange, DeleteShelvedFiles and MoveMarkedFiles menu 
 
     # ── File menu now includes delete-shelved support ─────────────────────────
 
-    It 'File menu has 11 navigable items including DeleteShelvedFiles, SubmitChange, ResolveFile and MergeTool' {
+    It 'File menu has 12 navigable items including EditChangeDescription, DeleteShelvedFiles, SubmitChange, ResolveFile and MergeTool' {
         $items = @(Get-ComputedMenuItems -MenuName 'File' -State $state)
         $navCount = Get-MenuNavigableCount -ComputedItems $items
-        $navCount | Should -Be 11
+        $navCount | Should -Be 12
     }
 
     # ── DeleteChange ─────────────────────────────────────────────────────────
@@ -1626,10 +1663,11 @@ Describe 'Phase 5 — DeleteChange, DeleteShelvedFiles and MoveMarkedFiles menu 
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
 
-        # Open File menu and select DeleteChange (nav index 0)
+        # Open File menu and select DeleteChange
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
         [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
-        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 0; MenuItems = $menuItems }
+        $focusIndex = Get-MenuFocusIndex -ComputedItems $menuItems -ItemId 'DeleteChange'
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = $focusIndex; MenuItems = $menuItems }
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
 
         $next.Ui.OverlayMode                          | Should -Be 'Confirm'
@@ -1645,7 +1683,8 @@ Describe 'Phase 5 — DeleteChange, DeleteShelvedFiles and MoveMarkedFiles menu 
 
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
         [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
-        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 0; MenuItems = $menuItems }
+        $focusIndex = Get-MenuFocusIndex -ComputedItems $menuItems -ItemId 'DeleteChange'
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = $focusIndex; MenuItems = $menuItems }
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
 
         @($next.Ui.OverlayPayload.OnAccept.ChangeIds) | Should -Contain '101'
@@ -1721,7 +1760,8 @@ Describe 'Phase 5 — DeleteChange, DeleteShelvedFiles and MoveMarkedFiles menu 
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'ToggleMarkCurrent' })
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
         [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
-        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 1; MenuItems = $menuItems }
+        $focusIndex = Get-MenuFocusIndex -ComputedItems $menuItems -ItemId 'DeleteShelvedFiles'
+        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = $focusIndex; MenuItems = $menuItems }
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
 
         $next.Ui.OverlayMode                          | Should -Be 'Confirm'
@@ -1748,9 +1788,9 @@ Describe 'Phase 5 — DeleteChange, DeleteShelvedFiles and MoveMarkedFiles menu 
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MoveDown' })
 
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
-        # MoveMarkedFiles is nav index 2
         [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
-        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 2; MenuItems = $menuItems }
+    $focusIndex = Get-MenuFocusIndex -ComputedItems $menuItems -ItemId 'MoveMarkedFiles'
+    $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = $focusIndex; MenuItems = $menuItems }
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
 
         $next.Ui.OverlayMode                          | Should -Be 'Confirm'
@@ -1765,7 +1805,8 @@ Describe 'Phase 5 — DeleteChange, DeleteShelvedFiles and MoveMarkedFiles menu 
 
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
         [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
-        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 2; MenuItems = $menuItems }
+    $focusIndex = Get-MenuFocusIndex -ComputedItems $menuItems -ItemId 'MoveMarkedFiles'
+    $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = $focusIndex; MenuItems = $menuItems }
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
 
         $next.Ui.OverlayPayload.OnAccept.TargetChangeId | Should -Be '101'
@@ -1779,7 +1820,8 @@ Describe 'Phase 5 — DeleteChange, DeleteShelvedFiles and MoveMarkedFiles menu 
 
         $state = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'OpenMenu'; Menu = 'File' })
         [object[]]$menuItems = @($state.Ui.OverlayPayload.MenuItems)
-        $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = 2; MenuItems = $menuItems }
+    $focusIndex = Get-MenuFocusIndex -ComputedItems $menuItems -ItemId 'MoveMarkedFiles'
+    $state.Ui.OverlayPayload = [pscustomobject]@{ ActiveMenu = 'File'; FocusIndex = $focusIndex; MenuItems = $menuItems }
         $next = Invoke-BrowserReducer -State $state -Action ([pscustomobject]@{ Type = 'MenuSelect' })
 
         @($next.Ui.OverlayPayload.OnAccept.ChangeIds) | Should -Contain '101'

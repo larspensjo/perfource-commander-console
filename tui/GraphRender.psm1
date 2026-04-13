@@ -1,6 +1,6 @@
 Set-StrictMode -Version Latest
 
-Import-Module (Join-Path $PSScriptRoot 'Theme.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Theme.psm1') -Force -Global
 
 # Graph-specific glyphs (matches the visual design in Plan.RevisionGraph.md)
 $GRAPH_NODE_GLYPH    = [char]0x25CF   # ●  revision node
